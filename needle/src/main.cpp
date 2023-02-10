@@ -312,13 +312,13 @@ void shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
     case PacketType::Login:
     {
       spotify::authentication::ClientResponseEncrypted client_response;
-      client_response.ParseFromArray(&buf[3], num_bytes);
+      client_response.ParseFromArray(&buf[3], num_bytes - 3);
       PRINT_PROTO_MESSAGE(client_response);
       break;
     }
     default:
     {
-      log_hex(buf, num_bytes);
+      log_hex(&buf[3], num_bytes - 3);
       break;
     }
   }
@@ -360,8 +360,10 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
       }
       case PacketType::Ping:
       {
-        std::int64_t server_ts = (std::int64_t) bigendian::read_u32(buf) * 1000;
+        std::int64_t server_ts = static_cast<std::int64_t>(bigendian::read_u32(buf)) * 1000;
+        std::int64_t our_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         printf("Server TS: %ld\n", server_ts);
+        printf("Our TS: %ld\n", our_ts);
         break;
       }
       case PacketType::PongAck:
@@ -382,7 +384,7 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
       case PacketType::ProductInfo:
       {
         pugi::xml_document document;
-        document.load_string((char *) buf);
+        document.load_buffer(buf, num_bytes);
         if (!document.child("products").child("product"))
         {
           printf("Failed to parse ProductInfo: ");
