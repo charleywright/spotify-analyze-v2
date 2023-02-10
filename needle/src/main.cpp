@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include "subhook.h"
 
 pthread_once_t patch_once = PTHREAD_ONCE_INIT;
 
@@ -132,6 +133,33 @@ void find_shn(void **shn_encrypt_addr, void **shn_decrypt_addr)
   printf("[FOUND] shn_encrypt=%p\n", *shn_encrypt_addr);
 }
 
+void log_hex(std::uint8_t *buf, int num_bytes)
+{
+  for (int i = 0; i < num_bytes; i++)
+  {
+    printf("%02x", buf[i]);
+  }
+  printf("\n");
+}
+
+subhook_t shn_encrypt_hook;
+
+void shn_encrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
+{
+  printf("shn_encrypt ");
+  log_hex(buf, num_bytes);
+  reinterpret_cast<std::add_pointer_t<decltype(shn_encrypt)>>(subhook_get_trampoline(shn_encrypt_hook))(c, buf, num_bytes);
+}
+
+subhook_t shn_decrypt_hook;
+
+void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
+{
+  reinterpret_cast<std::add_pointer_t<decltype(shn_decrypt)>>(subhook_get_trampoline(shn_decrypt_hook))(c, buf, num_bytes);
+  printf("shn_decrypt ");
+  log_hex(buf, num_bytes);
+}
+
 // TODO: Could we start our own thread, then use a hook to signal when to shutdown (Maybe when a specific file is written as the app shuts down?)
 void entrypoint()
 {
@@ -142,5 +170,27 @@ void entrypoint()
     return;
   }
 
-  printf("Found shn_encrypt=%p shn_decrypt=%p\n", shn_encrypt_addr, shn_decrypt_addr);
+  const auto hook_flags = static_cast<subhook_flags_t>(SUBHOOK_TRAMPOLINE | SUBHOOK_64BIT_OFFSET);
+
+  shn_encrypt_hook = subhook_new(shn_encrypt_addr, reinterpret_cast<void *>(&shn_encrypt), hook_flags);
+  if (subhook_install(shn_encrypt_hook) != 0)
+  {
+    fprintf(stderr, "[ERROR] Failed to hook shn_encrypt\n");
+    subhook_free(shn_encrypt_hook);
+    return;
+  }
+
+  shn_decrypt_hook = subhook_new(shn_decrypt_addr, reinterpret_cast<void *>(&shn_decrypt), hook_flags);
+  if (subhook_install(shn_decrypt_hook) != 0)
+  {
+    fprintf(stderr, "[ERROR] Failed to hook shn_decrypt\n");
+    subhook_remove(shn_encrypt_hook);
+    subhook_free(shn_encrypt_hook);
+    subhook_free(shn_decrypt_hook);
+    return;
+  }
+
+  printf("Installed hooks\n");
+
+  // TODO: If a persistent thread is added, add a socket to allow communication (add/remove hooks, look at memory, breakpoints etc)
 }

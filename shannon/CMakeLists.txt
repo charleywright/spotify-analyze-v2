@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.2)
 project(shannon-test)
 
 add_executable(${PROJECT_NAME}
@@ -6,3 +6,7 @@ add_executable(${PROJECT_NAME}
   ShannonFast.c
   hexlib.c
 )
+
+add_library(shannon SHARED Shannon.h ShannonFast.c)
+set(Shannon_LIBRARIES shannon PARENT_SCOPE)
+set(Shannon_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} PARENT_SCOPE)
