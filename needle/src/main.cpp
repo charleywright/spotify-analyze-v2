@@ -11,6 +11,7 @@
 #include "subhook.h"
 #include "bigendian.hpp"
 #include "pugixml.hpp"
+#include "json.hpp"
 
 #include "authentication/authentication.old.pb.h"
 
@@ -272,6 +273,12 @@ void text_reset()
   printf("\033[0m");
 }
 
+#ifndef NEEDLE_COMPACT_PROTO
+#define PRINT_PROTO_MESSAGE(message) (printf("%s\n", message.DebugString().c_str()))
+#else
+#define PRINT_PROTO_MESSAGE(message) (printf("%s\n", message.ShortDebugString().c_str()))
+#endif
+
 subhook_t shn_encrypt_hook;
 
 void shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
@@ -296,7 +303,7 @@ void shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
     {
       spotify::authentication::ClientResponseEncrypted client_response;
       client_response.ParseFromArray(&buf[3], num_bytes);
-      client_response.PrintDebugString();
+      PRINT_PROTO_MESSAGE(client_response);
       break;
     }
     default:
@@ -338,7 +345,7 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
       {
         spotify::authentication::APWelcome welcome;
         welcome.ParseFromArray(buf, num_bytes);
-        welcome.PrintDebugString();
+        PRINT_PROTO_MESSAGE(welcome);
         break;
       }
       case PacketType::Ping:
@@ -365,16 +372,34 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
       case PacketType::ProductInfo:
       {
         pugi::xml_document document;
-        document.load_buffer(buf, num_bytes);
+        document.load_string((char *) buf);
         if (!document.child("products").child("product"))
         {
           printf("Failed to parse ProductInfo: ");
           log_hex(buf, num_bytes);
         }
+
+#ifdef NEEDLE_JSON_PI
+        nlohmann::json product_info;
+        for (pugi::xml_node node: document.child("products").child("product").children())
+        {
+          product_info.emplace(node.name(), node.child_value());
+        }
+#ifdef NEEDLE_COMPACT_PI
+        printf("%s\n", product_info.dump().c_str());
+#else
+        printf("%s\n", product_info.dump(4).c_str());
+#endif
+#else
+#ifdef NEEDLE_COMPACT_PI
+        printf("%.*s\n", num_bytes, reinterpret_cast<char*>(buf));
+#else
         for (pugi::xml_node node: document.child("products").child("product").children())
         {
           printf("%s = %s\n", node.name(), node.child_value());
         }
+#endif
+#endif
         break;
       }
       default:
