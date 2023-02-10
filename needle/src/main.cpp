@@ -11,6 +11,8 @@
 #include "subhook.h"
 #include "bigendian.hpp"
 
+#include "authentication/authentication.old.pb.h"
+
 pthread_once_t patch_once = PTHREAD_ONCE_INIT;
 
 void entrypoint();
@@ -273,17 +275,34 @@ subhook_t shn_encrypt_hook;
 
 void shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
 {
+  if (num_bytes < 2)
+  {
+    text_green();
+    printf("[SEND] FAILED TO PARSE:\n");
+    log_hex(buf, num_bytes);
+    printf("\n");
+    text_reset();
+    return;
+  }
+
   auto type = static_cast<PacketType>(buf[0]);
-  std::uint16_t length = bigendian::read_u16(buf + 1);
+  std::uint16_t length = bigendian::read_u16(&buf[1]);
   text_green();
   printf("[SEND] type=%s len=%u\n", packet_type_str(type), (std::uint32_t) length);
   switch (type)
   {
     case PacketType::Login:
-      printf("Login packet, protobuf todo\n");
+    {
+      spotify::authentication::ClientResponseEncrypted client_response;
+      client_response.ParseFromArray(&buf[3], num_bytes);
+      client_response.PrintDebugString();
       break;
+    }
     default:
+    {
       log_hex(buf, num_bytes);
+      break;
+    }
   }
   printf("\n");
   text_reset();
@@ -314,12 +333,44 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
     printf("[RECV] type=%s len=%u\n", packet_type_str(header.type), (std::uint32_t) header.length);
     switch (header.type)
     {
+      case PacketType::APWelcome:
+      {
+        spotify::authentication::APWelcome welcome;
+        welcome.ParseFromArray(buf, num_bytes);
+        welcome.PrintDebugString();
+        break;
+      }
+      case PacketType::Ping:
+      {
+        std::int64_t server_ts = (std::int64_t) bigendian::read_u32(buf) * 1000;
+        printf("Server TS: %ld\n", server_ts);
+        break;
+      }
+      case PacketType::PongAck:
+      {
+        printf("Pong Ack\n");
+        break;
+      }
+      case PacketType::CountryCode:
+      {
+        printf("Country Code: ");
+        for (int i = 0; i < num_bytes; i++)
+        {
+          printf("%c", buf[i]);
+        }
+        printf("\n");
+        break;
+      }
       default:
+      {
         log_hex(buf, num_bytes);
         break;
+      }
     }
     printf("\n");
     text_reset();
+    header.type = PacketType::Error;
+    header.length = 0;
   }
 }
 

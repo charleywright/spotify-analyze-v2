@@ -16,3 +16,16 @@ FetchContent_Declare(subhook
         )
 FetchContent_MakeAvailable(subhook)
 target_link_libraries(needle PRIVATE subhook)
+
+find_package(Protobuf REQUIRED CONFIG)
+file(GLOB_RECURSE ProtoFiles "${CMAKE_CURRENT_SOURCE_DIR}/proto/**.proto")
+protobuf_generate(
+        LANGUAGE cpp
+        TARGET needle
+        IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
+        PROTOC_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto"
+        OUT_VAR PROTO_GENERATED_FILES
+        PROTOS ${ProtoFiles})
+set_source_files_properties(${PROTO_GENERATED_FILES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+target_link_libraries(needle PRIVATE protobuf::libprotobuf)
+target_include_directories(needle PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/proto)
