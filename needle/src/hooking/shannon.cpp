@@ -29,6 +29,14 @@ void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
     return;
   }
 
+#ifdef NEEDLE_HIDE_PINGS
+  if (type == util::PacketType::Pong)
+  {
+    reinterpret_cast<std::add_pointer_t<decltype(shn_encrypt)>>(subhook_get_trampoline(shn_encrypt_hook))(c, buf, num_bytes);
+    return;
+  }
+#endif
+
   util::text_green();
   printf("%s [SEND] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
   switch (type)
@@ -85,6 +93,15 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
       header.length = 0;
       return;
     }
+
+#ifdef NEEDLE_HIDE_PINGS
+    if (header.type == util::PacketType::Ping || header.type == util::PacketType::PongAck)
+    {
+      header.type = util::PacketType::Error;
+      header.length = 0;
+      return;
+    }
+#endif
 
     util::text_red();
     printf("%s [RECV] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
