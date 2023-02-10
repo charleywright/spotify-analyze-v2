@@ -273,6 +273,16 @@ void text_reset()
   printf("\033[0m");
 }
 
+std::string time_str()
+{
+  std::string str;
+  str.resize(11);
+  time_t time = std::time(nullptr);
+  tm *tm = std::localtime(&time);
+  std::snprintf(str.data(), str.size(), "[%02d:%02d:%02d]", tm->tm_hour, tm->tm_min, tm->tm_sec);
+  return str;
+}
+
 #ifndef NEEDLE_COMPACT_PROTO
 #define PRINT_PROTO_MESSAGE(message) (printf("%s\n", message.DebugString().c_str()))
 #else
@@ -296,7 +306,7 @@ void shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
   auto type = static_cast<PacketType>(buf[0]);
   std::uint16_t length = bigendian::read_u16(&buf[1]);
   text_green();
-  printf("[SEND] type=%s len=%u\n", packet_type_str(type), (std::uint32_t) length);
+  printf("%s [SEND] type=%s len=%u\n", time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
   switch (type)
   {
     case PacketType::Login:
@@ -338,7 +348,7 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
   } else
   {
     text_red();
-    printf("[RECV] type=%s len=%u\n", packet_type_str(header.type), (std::uint32_t) header.length);
+    printf("%s [RECV] type=%s len=%u\n", time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
     switch (header.type)
     {
       case PacketType::APWelcome:
