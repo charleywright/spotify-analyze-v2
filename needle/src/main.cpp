@@ -10,6 +10,7 @@
 #include <string>
 #include "subhook.h"
 #include "bigendian.hpp"
+#include "pugixml.hpp"
 
 #include "authentication/authentication.old.pb.h"
 
@@ -359,6 +360,21 @@ void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
           printf("%c", buf[i]);
         }
         printf("\n");
+        break;
+      }
+      case PacketType::ProductInfo:
+      {
+        pugi::xml_document document;
+        document.load_buffer(buf, num_bytes);
+        if (!document.child("products").child("product"))
+        {
+          printf("Failed to parse ProductInfo: ");
+          log_hex(buf, num_bytes);
+        }
+        for (pugi::xml_node node: document.child("products").child("product").children())
+        {
+          printf("%s = %s\n", node.name(), node.child_value());
+        }
         break;
       }
       default:

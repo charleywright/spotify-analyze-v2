@@ -29,3 +29,11 @@ protobuf_generate(
 set_source_files_properties(${PROTO_GENERATED_FILES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 target_link_libraries(needle PRIVATE protobuf::libprotobuf)
 target_include_directories(needle PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/proto)
+
+FetchContent_Declare(pugixml
+        GIT_REPOSITORY https://github.com/zeux/pugixml
+        GIT_TAG 1dc3266fffdb1f37961172c5c96af2f7e6132789
+        )
+FetchContent_MakeAvailable(pugixml)
+target_include_directories(needle PRIVATE ${pugixml_SOURCE_DIR}/src)
+target_link_libraries(needle PRIVATE pugixml)
