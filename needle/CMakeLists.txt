@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.25)
+project(needle)
+
+file(GLOB_RECURSE SrcFiles "${CMAKE_CURRENT_SOURCE_DIR}/src/**.cpp")
+add_library(needle MODULE ${SrcFiles})
+target_link_libraries(needle PRIVATE dl)
+set_property(TARGET needle PROPERTY POSITION_IN ON)
+set_property(TARGET needle PROPERTY PREFIX "")
+set_property(TARGET needle PROPERTY OUTPUT_NAME needle)
+set_property(TARGET needle PROPERTY SUFFIX .so)
