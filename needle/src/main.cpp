@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string>
 #include "subhook.h"
+#include "bigendian.hpp"
 
 pthread_once_t patch_once = PTHREAD_ONCE_INIT;
 
@@ -142,22 +143,184 @@ void log_hex(std::uint8_t *buf, int num_bytes)
   printf("\n");
 }
 
+enum class PacketType : std::uint8_t
+{
+    SecretBlock = 0x02,
+    Ping = 0x04,
+    StreamChunk = 0x08,
+    StreamChunkRes = 0x09,
+    ChannelError = 0x0a,
+    ChannelAbort = 0x0b,
+    RequestKey = 0x0c,
+    AesKey = 0x0d,
+    AesKeyError = 0x0e,
+    Image = 0x19,
+    CountryCode = 0x1b,
+    Pong = 0x49,
+    PongAck = 0x4a,
+    Pause = 0x4b,
+    ProductInfo = 0x50,
+    LegacyWelcome = 0x69,
+    LicenseVersion = 0x76,
+    Login = 0xab,
+    APWelcome = 0xac,
+    AuthFailure = 0xad,
+    MercuryReq = 0xb2,
+    MercurySub = 0xb3,
+    MercuryUnsub = 0xb4,
+    MercuryEvent = 0xb5,
+    TrackEndedTime = 0x82,
+    UnknownDataAllZeros = 0x1f,
+    PreferredLocale = 0x74,
+    Unknown0x0f = 0x0f,
+    Unknown0x10 = 0x10,
+    Unknown0x4f = 0x4f,
+    Unknown0xb6 = 0xb6,
+
+    Error = 0xff
+};
+
+const char *packet_type_str(PacketType type)
+{
+  switch (type)
+  {
+    case PacketType::SecretBlock:
+      return "SecretBlock";
+    case PacketType::Ping:
+      return "Ping";
+    case PacketType::StreamChunk:
+      return "StreamChunk";
+    case PacketType::StreamChunkRes:
+      return "StreamChunkRes";
+    case PacketType::ChannelError:
+      return "ChannelError";
+    case PacketType::ChannelAbort:
+      return "ChannelAbort";
+    case PacketType::RequestKey:
+      return "RequestKey";
+    case PacketType::AesKey:
+      return "AesKey";
+    case PacketType::AesKeyError:
+      return "AesKeyError";
+    case PacketType::Image:
+      return "Image";
+    case PacketType::CountryCode:
+      return "CountryCode";
+    case PacketType::Pong:
+      return "Pong";
+    case PacketType::PongAck:
+      return "PongAck";
+    case PacketType::Pause:
+      return "Pause";
+    case PacketType::ProductInfo:
+      return "ProductInfo";
+    case PacketType::LegacyWelcome:
+      return "LegacyWelcome";
+    case PacketType::LicenseVersion:
+      return "LicenseVersion";
+    case PacketType::Login:
+      return "Login";
+    case PacketType::APWelcome:
+      return "APWelcome";
+    case PacketType::AuthFailure:
+      return "AuthFailure";
+    case PacketType::MercuryReq:
+      return "MercuryReq";
+    case PacketType::MercurySub:
+      return "MercurySub";
+    case PacketType::MercuryUnsub:
+      return "MercuryUnsub";
+    case PacketType::MercuryEvent:
+      return "MercuryEvent";
+    case PacketType::TrackEndedTime:
+      return "TrackEndedTime";
+    case PacketType::UnknownDataAllZeros:
+      return "UnknownDataAllZeros";
+    case PacketType::PreferredLocale:
+      return "PreferredLocale";
+    case PacketType::Unknown0x0f:
+      return "Unknown0x0f";
+    case PacketType::Unknown0x10:
+      return "Unknown0x10";
+    case PacketType::Unknown0x4f:
+      return "Unknown0x4f";
+    case PacketType::Unknown0xb6:
+      return "Unknown0xb6";
+    case PacketType::Error:
+      return "Error";
+    default:
+      return "Default";
+  }
+};
+
+// https://man7.org/linux/man-pages/man5/terminal-colors.d.5.html
+void text_red()
+{
+  printf("\033[31m");
+}
+
+void text_green()
+{
+  printf("\033[32m");
+}
+
+void text_reset()
+{
+  printf("\033[0m");
+}
+
 subhook_t shn_encrypt_hook;
 
-void shn_encrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
+void shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
 {
-  printf("shn_encrypt ");
-  log_hex(buf, num_bytes);
+  auto type = static_cast<PacketType>(buf[0]);
+  std::uint16_t length = bigendian::read_u16(buf + 1);
+  text_green();
+  printf("[SEND] type=%s len=%u\n", packet_type_str(type), (std::uint32_t) length);
+  switch (type)
+  {
+    case PacketType::Login:
+      printf("Login packet, protobuf todo\n");
+      break;
+    default:
+      log_hex(buf, num_bytes);
+  }
+  printf("\n");
+  text_reset();
+
   reinterpret_cast<std::add_pointer_t<decltype(shn_encrypt)>>(subhook_get_trampoline(shn_encrypt_hook))(c, buf, num_bytes);
 }
 
 subhook_t shn_decrypt_hook;
 
+struct recv_header
+{
+    PacketType type = PacketType::Error;
+    std::uint16_t length = 0;
+};
+
 void shn_decrypt(struct shn_ctx *c, uint8_t *buf, int num_bytes)
 {
+  static recv_header header;
   reinterpret_cast<std::add_pointer_t<decltype(shn_decrypt)>>(subhook_get_trampoline(shn_decrypt_hook))(c, buf, num_bytes);
-  printf("shn_decrypt ");
-  log_hex(buf, num_bytes);
+
+  if (num_bytes == 3)
+  {
+    header.type = static_cast<PacketType>(static_cast<std::uint8_t>(buf[0]));
+    header.length = bigendian::read_u16(&buf[1]);
+  } else
+  {
+    text_red();
+    printf("[RECV] type=%s len=%u\n", packet_type_str(header.type), (std::uint32_t) header.length);
+    switch (header.type)
+    {
+      default:
+        log_hex(buf, num_bytes);
+        break;
+    }
+    printf("\n");
+    text_reset();
+  }
 }
 
 // TODO: Could we start our own thread, then use a hook to signal when to shutdown (Maybe when a specific file is written as the app shuts down?)
