@@ -8,7 +8,7 @@ set(NEEDLE_JSON_PI OFF CACHE BOOL "Convert ProductInfo to a JSON object")
 
 file(GLOB_RECURSE SrcFiles "${CMAKE_CURRENT_SOURCE_DIR}/src/**.cpp")
 add_library(needle MODULE ${SrcFiles})
-target_include_directories(needle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(needle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(needle PRIVATE dl)
 set_property(TARGET needle PROPERTY POSITION_IN ON)
 set_property(TARGET needle PROPERTY PREFIX "")

@@ -1,7 +1,9 @@
 #pragma once
+
 #include <cstdint>
 #include <ctime>
 #include <string>
+#include <vector>
 
 #ifndef NEEDLE_COMPACT_PROTO
 #define PRINT_PROTO_MESSAGE(message) (printf("%s\n", message.DebugString().c_str()))
@@ -147,12 +149,25 @@ namespace util
       return str;
     }
 
-    inline void log_hex(std::uint8_t *buf, int num_bytes)
+    inline void log_hex(const std::uint8_t *buf, int num_bytes)
     {
       for (int i = 0; i < num_bytes; i++)
       {
         printf("%02x", buf[i]);
       }
       printf("\n");
+    }
+
+    inline std::vector<std::string> split_str(std::string in, char delim)
+    {
+      std::vector<std::string> out;
+      std::size_t index;
+      while (index = in.find(delim), index != std::string::npos)
+      {
+        out.push_back(in.substr(0, index));
+        in = in.substr(index + 1);
+      }
+      out.push_back(in);
+      return out;
     }
 }

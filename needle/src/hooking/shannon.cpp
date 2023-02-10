@@ -1,16 +1,17 @@
 #include "hooking.hpp"
-#include "../util.hpp"
-#include "../bigendian.hpp"
+#include "util.hpp"
+#include "bigendian.hpp"
 #include "authentication/authentication.old.pb.h"
 #include "pugixml.hpp"
 #include "json.hpp"
+#include "mercury/mercury.hpp"
 
 void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
 {
   if (num_bytes < 2)
   {
     util::text_green();
-    printf("[SEND] FAILED TO PARSE:\n");
+    printf("%s [SEND] FAILED TO PARSE:\n", util::time_str().c_str());
     util::log_hex(buf, num_bytes);
     printf("\n");
     util::text_reset();
@@ -19,6 +20,15 @@ void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
 
   auto type = static_cast<util::PacketType>(buf[0]);
   std::uint16_t length = bigendian::read_u16(&buf[1]);
+
+  if (type == util::PacketType::MercuryReq || type == util::PacketType::MercuryEvent || type == util::PacketType::MercurySub ||
+      type == util::PacketType::MercuryUnsub)
+  {
+    mercury::send(type, buf + 3, length);
+    reinterpret_cast<std::add_pointer_t<decltype(shn_encrypt)>>(subhook_get_trampoline(shn_encrypt_hook))(c, buf, num_bytes);
+    return;
+  }
+
   util::text_green();
   printf("%s [SEND] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
   switch (type)
@@ -28,6 +38,14 @@ void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
       spotify::authentication::ClientResponseEncrypted client_response;
       client_response.ParseFromArray(&buf[3], num_bytes - 3);
       PRINT_PROTO_MESSAGE(client_response);
+      break;
+    }
+    case util::PacketType::MercuryEvent:
+    case util::PacketType::MercuryReq:
+    case util::PacketType::MercurySub:
+    case util::PacketType::MercuryUnsub:
+    {
+      mercury::send(type, &buf[3], length);
       break;
     }
     default:
@@ -59,6 +77,15 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
     header.length = bigendian::read_u16(&buf[1]);
   } else
   {
+    if (header.type == util::PacketType::MercuryReq || header.type == util::PacketType::MercuryEvent || header.type == util::PacketType::MercurySub ||
+        header.type == util::PacketType::MercuryUnsub)
+    {
+      mercury::recv(header.type, buf, num_bytes);
+      header.type = util::PacketType::Error;
+      header.length = 0;
+      return;
+    }
+
     util::text_red();
     printf("%s [RECV] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
     switch (header.type)
@@ -115,7 +142,7 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
         printf("%s\n", product_info.dump(4).c_str());
 #endif
 #else
-        #ifdef NEEDLE_COMPACT_PI
+#ifdef NEEDLE_COMPACT_PI
         printf("%.*s\n", num_bytes, reinterpret_cast<char*>(buf));
 #else
         for (pugi::xml_node node: document.child("products").child("product").children())
@@ -128,7 +155,13 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
       }
       default:
       {
-        util::log_hex(buf, num_bytes);
+        if (num_bytes == 0)
+        {
+          printf("<EMPTY>\n");
+        } else
+        {
+          util::log_hex(buf, num_bytes);
+        }
         break;
       }
     }
