@@ -5,14 +5,16 @@
 #include <pthread.h>
 #include <cstdio>
 #include <cstring>
-#include <inttypes.h>
+#include <fstream>
+#include <iostream>
+#include <string>
 
 pthread_once_t patch_once = PTHREAD_ONCE_INIT;
 
 void entrypoint();
 
 // [LINUX] Trigger an entrypoint by providing a new connect() function that calls our entry once
-int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+int connect(int sock_fd, const struct sockaddr *addr, socklen_t addrlen)
 {
   static int (*real_connect)(int, const struct sockaddr *, socklen_t) = nullptr;
   if (real_connect == nullptr)
@@ -20,51 +22,59 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
     real_connect = reinterpret_cast<decltype(real_connect)>(dlsym(RTLD_NEXT, "connect"));
   }
   pthread_once(&patch_once, entrypoint);
-  return real_connect(sockfd, addr, addrlen);
+  return real_connect(sock_fd, addr, addrlen);
 }
 
-void *get_executable_memory(uint64_t *len)
+std::uint8_t *get_executable_memory(std::uint64_t *len)
 {
   *len = 0;
-  FILE *mapfile = fopen("/proc/self/maps", "r");
-  if (mapfile == nullptr)
+
+  std::fstream mapfile("/proc/self/maps", std::ios::in);
+  if (!mapfile.good())
   {
     return nullptr;
   }
-  char line[256], flags[4];
-  uint64_t start = 0, end = 0;
-  unsigned found = 0;
-  while (fgets(line, sizeof(line), mapfile))
+
+  while (!mapfile.eof())
   {
-    sscanf(line, "%llx-%llx %4s", &start, &end, flags);
-    if (strcmp(flags, "r-xp") == 0)
+    std::string line;
+    std::getline(mapfile, line);
+    std::uint64_t start = 0, end = 0;
+    char permissions[5] = {0};
+    std::sscanf(line.data(), "%lx-%lx %4s", &start, &end, permissions);
+    if (std::strncmp(permissions, "r-xp", 4) == 0)
     {
-      found = 1;
-      break;
+      *len = end - start;
+      return reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(start));
     }
   }
-  fclose(mapfile);
-  *len = end - start;
-  return (void *)(uintptr_t)start;
+
+  std::cout << "End of file" << std::endl;
+  return nullptr;
 }
 
-// Avoid GNU Source
-void *memrmem(const void *haystack, size_t haystack_size,
-              const void *needle, size_t needle_size)
+// Find block of memory inside a larger block, starting from the end working backwards. Taken from GNU Source and rewritten
+template<typename ptr>
+ptr memrmem(ptr const haystack, std::size_t haystack_len, ptr const needle, const std::size_t needle_len)
 {
-  if (haystack_size < needle_size)
-    return nullptr;
-  if (needle_size == 0)
-    return (void *)haystack + haystack_size;
-
-  const void *p;
-  for (p = haystack + haystack_size - needle_size; haystack_size >= needle_size; --p, --haystack_size)
+  if (haystack_len < needle_len)
   {
-    if (memcmp(p, needle, needle_size) == 0)
+    return nullptr;
+  }
+  if (needle_len == 0)
+  {
+    return haystack + haystack_len;
+  }
+
+  auto p = reinterpret_cast<std::uint8_t const *>(haystack) + haystack_len - needle_len;
+  for (; haystack_len >= needle_len; --p, --haystack_len)
+  {
+    if (std::memcmp(p, needle, needle_len) == 0)
     {
-      return (void *)p;
+      return reinterpret_cast<ptr>(p);
     }
   }
+
   return nullptr;
 }
 
@@ -73,46 +83,46 @@ void find_shn(void **shn_encrypt_addr, void **shn_decrypt_addr)
   *shn_encrypt_addr = nullptr;
   *shn_decrypt_addr = nullptr;
 
-  uint64_t exec_mem_len = 0;
-  void *exec_mem = get_executable_memory(&exec_mem_len);
+  std::uint64_t exec_mem_len = 0;
+  const std::uint8_t *exec_mem = get_executable_memory(&exec_mem_len);
   if (exec_mem == nullptr || exec_mem_len == 0)
   {
-    fprintf(stderr, "[ERROR] Failed get_executable_memory, exec_mem=%p exec_mem_len=%llu\n", exec_mem, exec_mem_len);
+    fprintf(stderr, "[ERROR] Failed get_executable_memory, exec_mem=%p exec_mem_len=%lu\n", exec_mem, exec_mem_len);
     return;
   }
   printf("[FOUND] text=%p size=%zx\n", exec_mem, exec_mem_len);
 
-  const static unsigned char SHN_CONSTANT[] = {0x3a, 0xc5, 0x96, 0x69};
-  void *constant_location = memrmem(exec_mem, exec_mem_len, SHN_CONSTANT, sizeof(SHN_CONSTANT));
+  const static std::uint8_t SHN_CONSTANT[] = {0x3a, 0xc5, 0x96, 0x69};
+  const std::uint8_t *constant_location = memrmem(exec_mem, exec_mem_len, SHN_CONSTANT, sizeof(SHN_CONSTANT));
   if (constant_location == nullptr)
   {
     fprintf(stderr, "[ERROR] Failed to find shannon constant 0x6996c53a\n");
     return;
   }
   printf("[FOUND] shn_const=%p\n", constant_location);
-  exec_mem_len = reinterpret_cast<unsigned char *>(constant_location) - reinterpret_cast<unsigned char *>(exec_mem);
+  exec_mem_len = constant_location - exec_mem;
 
-  const static unsigned char SHN_FUNCTION_PATTERN[] = {0x55, 0x48, 0x89, 0xe5}; // PUSH RBP; MOV RBP,RSP
+  const static std::uint8_t SHN_FUNCTION_PATTERN[] = {0x55, 0x48, 0x89, 0xe5}; // PUSH RBP; MOV RBP,RSP
 
-  void *shn_finish_addr = memrmem(exec_mem, exec_mem_len, SHN_FUNCTION_PATTERN, sizeof(SHN_FUNCTION_PATTERN));
+  const void *shn_finish_addr = memrmem(exec_mem, exec_mem_len, SHN_FUNCTION_PATTERN, sizeof(SHN_FUNCTION_PATTERN));
   if (shn_finish_addr == nullptr)
   {
     fprintf(stderr, "[ERROR] Failed to find shn_finish\n");
     return;
   }
   printf("[FOUND] shn_finish=%p\n", shn_finish_addr);
-  exec_mem_len = reinterpret_cast<unsigned char *>(shn_finish_addr) - reinterpret_cast<unsigned char *>(exec_mem);
+  exec_mem_len = reinterpret_cast<const std::uint8_t *>(shn_finish_addr) - exec_mem;
 
-  *shn_decrypt_addr = memrmem(exec_mem, exec_mem_len, SHN_FUNCTION_PATTERN, sizeof(SHN_FUNCTION_PATTERN));
+  *shn_decrypt_addr = const_cast<void *>(reinterpret_cast<const void *>(memrmem(exec_mem, exec_mem_len, SHN_FUNCTION_PATTERN, sizeof(SHN_FUNCTION_PATTERN))));
   if (*shn_decrypt_addr == nullptr)
   {
     fprintf(stderr, "[ERROR] Failed to find shn_decrypt\n");
     return;
   }
   printf("[FOUND] shn_decrypt=%p\n", *shn_decrypt_addr);
-  exec_mem_len = reinterpret_cast<unsigned char *>(*shn_decrypt_addr) - reinterpret_cast<unsigned char *>(exec_mem);
+  exec_mem_len = reinterpret_cast<std::uint8_t *>(*shn_decrypt_addr) - exec_mem;
 
-  *shn_encrypt_addr = memrmem(exec_mem, exec_mem_len, SHN_FUNCTION_PATTERN, sizeof(SHN_FUNCTION_PATTERN));
+  *shn_encrypt_addr = const_cast<void *>(reinterpret_cast<const void *>(memrmem(exec_mem, exec_mem_len, SHN_FUNCTION_PATTERN, sizeof(SHN_FUNCTION_PATTERN))));
   if (*shn_encrypt_addr == nullptr)
   {
     fprintf(stderr, "[ERROR] Failed to find shn_decrypt\n");
@@ -120,8 +130,6 @@ void find_shn(void **shn_encrypt_addr, void **shn_decrypt_addr)
     return;
   }
   printf("[FOUND] shn_encrypt=%p\n", *shn_encrypt_addr);
-
-  return;
 }
 
 // TODO: Could we start our own thread, then use a hook to signal when to shutdown (Maybe when a specific file is written as the app shuts down?)
