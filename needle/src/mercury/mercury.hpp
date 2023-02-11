@@ -7,6 +7,7 @@
 #include <string>
 #include <functional>
 #include <mutex>
+#include "events/events.hpp"
 #include "hermes_mercury/mercury.old.pb.h"
 
 namespace mercury
@@ -21,10 +22,14 @@ namespace mercury
 
         inline std::unordered_map<std::uint64_t, std::vector<std::string>> pending_send_messages;
         inline std::mutex pending_send_mutex;
-        inline std::unordered_map<std::string, handler_t> send_handlers = {};
+        inline std::unordered_map<std::string, handler_t> send_handlers = {
+                {"hm://event-service/v1/events", &events::send_event_service_event}
+        };
 
         inline std::unordered_map<std::uint64_t, std::vector<std::string>> pending_recv_messages;
         inline std::mutex pending_recv_mutex;
-        inline std::unordered_map<std::string, handler_t> recv_handlers = {};
+        inline std::unordered_map<std::string, handler_t> recv_handlers = {
+                {"hm://event-service/v1/events", &events::recv_event_service_event}
+        };
     }
 }
