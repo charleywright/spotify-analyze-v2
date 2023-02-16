@@ -2,6 +2,7 @@
 #include "bigendian.hpp"
 #include "hermes_mercury/mercury.old.pb.h"
 #include "url.hpp"
+#include "logger.hpp"
 
 void mercury::recv(util::PacketType type, std::uint8_t *data, int buff_len)
 {
@@ -29,7 +30,7 @@ void mercury::recv(util::PacketType type, std::uint8_t *data, int buff_len)
     }
     default:
     {
-      fprintf(stderr, "[ERROR] Invalid mercury sequence size %u\n", (std::uint32_t) seq_len);
+      logger::error("[ERROR] Invalid mercury sequence size %u\n", (std::uint32_t) seq_len);
       break;
     }
   }
@@ -66,8 +67,8 @@ void mercury::recv(util::PacketType type, std::uint8_t *data, int buff_len)
   const std::string &url = header.uri();
   std::unordered_map<std::string, std::string> params;
   auto handler_it = url::find_match(url, mercury::detail::recv_handlers, params);
-  util::text_red();
-  printf("%s [RECV] MERCURY - %s\n", util::time_str().c_str(), url.c_str());
+  logger::set_option(logger::option::FG_LIGHT_RED);
+  logger::info("%s [RECV] MERCURY - %s\n", util::time_str().c_str(), url.c_str());
   PRINT_PROTO_MESSAGE(header);
   if (handler_it == mercury::detail::recv_handlers.end())
   {
@@ -79,6 +80,6 @@ void mercury::recv(util::PacketType type, std::uint8_t *data, int buff_len)
   {
     handler_it->second(params, std::move(header), std::move(parts));
   }
-  printf("\n");
-  util::text_reset();
+  logger::info("\n");
+  logger::set_option(logger::option::DEFAULT);
 }

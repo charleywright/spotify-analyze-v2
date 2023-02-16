@@ -4,11 +4,12 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include "logger.hpp"
 
 #ifndef NEEDLE_COMPACT_PROTO
-#define PRINT_PROTO_MESSAGE(message) (printf("%s\n", message.DebugString().c_str()))
+#define PRINT_PROTO_MESSAGE(message) (logger::info("%s\n", message.DebugString().c_str()))
 #else
-#define PRINT_PROTO_MESSAGE(message) (printf("%s\n", message.ShortDebugString().c_str()))
+#define PRINT_PROTO_MESSAGE(message) (logger::info("%s\n", message.ShortDebugString().c_str()))
 #endif
 
 namespace util
@@ -123,22 +124,6 @@ namespace util
       }
     };
 
-    // https://man7.org/linux/man-pages/man5/terminal-colors.d.5.html
-    inline void text_red()
-    {
-      printf("\033[31m");
-    }
-
-    inline void text_green()
-    {
-      printf("\033[32m");
-    }
-
-    inline void text_reset()
-    {
-      printf("\033[0m");
-    }
-
     inline std::string time_str()
     {
       std::string str;
@@ -153,9 +138,9 @@ namespace util
     {
       for (int i = 0; i < num_bytes; i++)
       {
-        printf("%02x", buf[i]);
+        logger::info("%02x", buf[i]);
       }
-      printf("\n");
+      logger::info("\n");
     }
 
     inline std::vector<std::string> split_str(std::string in, char delim)

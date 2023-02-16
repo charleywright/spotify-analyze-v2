@@ -29,7 +29,7 @@ void mercury::send(util::PacketType type, std::uint8_t *data, int buff_len)
     }
     default:
     {
-      fprintf(stderr, "[ERROR] Invalid mercury sequence size %u\n", (std::uint32_t) seq_len);
+      logger::error("[ERROR] Invalid mercury sequence size %u\n", (std::uint32_t) seq_len);
       break;
     }
   }
@@ -66,8 +66,8 @@ void mercury::send(util::PacketType type, std::uint8_t *data, int buff_len)
   const std::string &url = header.uri();
   std::unordered_map<std::string, std::string> params;
   auto handler_it = url::find_match(url, mercury::detail::send_handlers, params);
-  util::text_green();
-  printf("%s [SEND] MERCURY - %s\n", util::time_str().c_str(), url.c_str());
+  logger::set_option(logger::option::FG_DARK_GREEN);
+  logger::info("%s [SEND] MERCURY - %s\n", util::time_str().c_str(), url.c_str());
   PRINT_PROTO_MESSAGE(header);
   if (handler_it == mercury::detail::send_handlers.end())
   {
@@ -79,6 +79,6 @@ void mercury::send(util::PacketType type, std::uint8_t *data, int buff_len)
   {
     handler_it->second(params, std::move(header), std::move(parts));
   }
-  printf("\n");
-  util::text_reset();
+  logger::info("\n");
+  logger::set_option(logger::option::DEFAULT);
 }

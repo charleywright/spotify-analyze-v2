@@ -8,7 +8,7 @@ void events::send_event_service_event(std::unordered_map<std::string, std::strin
     std::vector<std::string> event_parts = util::split_str(part, 0x09);
     for (const auto &event_part: event_parts)
     {
-      printf("%.*s\n", (int) event_part.size(), event_part.data());
+      logger::info("%.*s\n", (int) event_part.size(), event_part.data());
     }
   }
 }
@@ -22,7 +22,7 @@ void events::recv_event_service_event(std::unordered_map<std::string, std::strin
     std::vector<std::string> event_parts = util::split_str(part, 0x09);
     for (const auto &event_part: event_parts)
     {
-      printf("%.*s\n", (int) event_part.size(), event_part.data());
+      logger::info("%.*s\n", (int) event_part.size(), event_part.data());
     }
   }
 }

@@ -1,3 +1,4 @@
+#ifdef __linux__
 #include "entry.hpp"
 #include <sys/socket.h>
 #include <dlfcn.h>
@@ -15,3 +16,4 @@ int __attribute__((used)) connect(int sock_fd, const struct sockaddr *addr, sock
   pthread_once(&patch_once, &entry::entrypoint);
   return real_connect(sock_fd, addr, addrlen);
 }
+#endif

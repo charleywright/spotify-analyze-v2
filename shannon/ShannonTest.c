@@ -30,9 +30,6 @@ shn_ctx ctx;
 #include <time.h>
 #include "hexlib.h"
 
-/* Trigger entrypoint */
-#include <sys/socket.h>
-
 /* mostly for debugging, print the LFSR contents. */
 int	v = 0; /* disables debug stuff */
 int	bulkflag = 0; /* bulk binary output for testing */
@@ -335,10 +332,17 @@ time_shn(void)
 	(((double)i/((double)t / (double)CLOCKS_PER_SEC))) / 1000000.0);
 }
 
+#ifndef _WIN32
+/* Trigger entrypoint */
+#include <sys/socket.h>
+#endif
+
 int
 main(int ac, char **av)
 {
+#ifndef _WIN32
     connect(0, NULL, 0); // Trigger entrypoint
+#endif
 
     int         n, i;
     int		vflag = 0;

@@ -1,20 +1,22 @@
 #include "hooking.hpp"
 #include "util.hpp"
+#include <type_traits>
 #include "bigendian.hpp"
+
 #include "authentication/authentication.old.pb.h"
 #include "pugixml.hpp"
 #include "json.hpp"
 #include "mercury/mercury.hpp"
 
-void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
+void hooking::detail::hooks::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
 {
   if (num_bytes < 2)
   {
-    util::text_green();
-    printf("%s [SEND] FAILED TO PARSE:\n", util::time_str().c_str());
+    logger::set_option(logger::option::FG_DARK_GREEN);
+    logger::info("%s [SEND] FAILED TO PARSE:\n", util::time_str().c_str());
     util::log_hex(buf, num_bytes);
-    printf("\n");
-    util::text_reset();
+    logger::info("\n");
+    logger::set_option(logger::option::DEFAULT);
     return;
   }
 
@@ -37,8 +39,8 @@ void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
   }
 #endif
 
-  util::text_green();
-  printf("%s [SEND] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
+  logger::set_option(logger::option::FG_DARK_GREEN);
+  logger::info("%s [SEND] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
   switch (type)
   {
     case util::PacketType::Login:
@@ -48,25 +50,18 @@ void hooking::detail::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
       PRINT_PROTO_MESSAGE(client_response);
       break;
     }
-    case util::PacketType::MercuryEvent:
-    case util::PacketType::MercuryReq:
-    case util::PacketType::MercurySub:
-    case util::PacketType::MercuryUnsub:
-    {
-      mercury::send(type, &buf[3], length);
-      break;
-    }
     default:
     {
       util::log_hex(&buf[3], num_bytes - 3);
       break;
     }
   }
-  printf("\n");
-  util::text_reset();
+  logger::info("\n");
+  logger::set_option(logger::option::DEFAULT);
 
   reinterpret_cast<std::add_pointer_t<decltype(shn_encrypt)>>(subhook_get_trampoline(shn_encrypt_hook))(c, buf, num_bytes);
 }
+
 
 struct recv_header
 {
@@ -74,7 +69,7 @@ struct recv_header
     std::uint16_t length = 0;
 };
 
-void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
+void hooking::detail::hooks::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_bytes)
 {
   static recv_header header;
   reinterpret_cast<std::add_pointer_t<decltype(shn_decrypt)>>(subhook_get_trampoline(shn_decrypt_hook))(c, buf, num_bytes);
@@ -103,8 +98,8 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
     }
 #endif
 
-    util::text_red();
-    printf("%s [RECV] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
+    logger::set_option(logger::option::FG_LIGHT_RED);
+    logger::info("%s [RECV] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
     switch (header.type)
     {
       case util::PacketType::APWelcome:
@@ -118,23 +113,23 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
       {
         std::int64_t server_ts = static_cast<std::int64_t>(bigendian::read_u32(buf)) * 1000;
         std::int64_t our_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        printf("Server TS: %ld\n", server_ts);
-        printf("Our TS: %ld\n", our_ts);
+        logger::info("Server TS: %ld\n", server_ts);
+        logger::info("Our TS: %ld\n", our_ts);
         break;
       }
       case util::PacketType::PongAck:
       {
-        printf("Pong Ack\n");
+        logger::info("Pong Ack\n");
         break;
       }
       case util::PacketType::CountryCode:
       {
-        printf("Country Code: ");
+        logger::info("Country Code: ");
         for (int i = 0; i < num_bytes; i++)
         {
-          printf("%c", buf[i]);
+          logger::info("%c", buf[i]);
         }
-        printf("\n");
+        logger::info("\n");
         break;
       }
       case util::PacketType::ProductInfo:
@@ -143,7 +138,7 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
         document.load_buffer(buf, num_bytes);
         if (!document.child("products").child("product"))
         {
-          printf("Failed to parse ProductInfo: ");
+          logger::info("Failed to parse ProductInfo: ");
           util::log_hex(buf, num_bytes);
         }
 
@@ -154,17 +149,17 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
           product_info.emplace(node.name(), node.child_value());
         }
 #ifdef NEEDLE_COMPACT_PI
-        printf("%s\n", product_info.dump().c_str());
+        logger::info("%s\n", product_info.dump().c_str());
 #else
-        printf("%s\n", product_info.dump(4).c_str());
+        logger::info("%s\n", product_info.dump(4).c_str());
 #endif
 #else
 #ifdef NEEDLE_COMPACT_PI
-        printf("%.*s\n", num_bytes, reinterpret_cast<char*>(buf));
+        logger::info("%.*s\n", num_bytes, reinterpret_cast<char*>(buf));
 #else
         for (pugi::xml_node node: document.child("products").child("product").children())
         {
-          printf("%s = %s\n", node.name(), node.child_value());
+          logger::info("%s = %s\n", node.name(), node.child_value());
         }
 #endif
 #endif
@@ -174,7 +169,7 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
       {
         if (num_bytes == 0)
         {
-          printf("<EMPTY>\n");
+          logger::info("<EMPTY>\n");
         } else
         {
           util::log_hex(buf, num_bytes);
@@ -182,8 +177,8 @@ void hooking::detail::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, int num_
         break;
       }
     }
-    printf("\n");
-    util::text_reset();
+    logger::info("\n");
+    logger::set_option(logger::option::DEFAULT);
     header.type = util::PacketType::Error;
     header.length = 0;
   }
