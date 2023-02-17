@@ -13,6 +13,7 @@ void print_help(const char *argv0)
             "  --username <username/email>                       - Specify a username/email for autologin\n"
             "  --password <password>                             - Specify a password for autologin\n"
             "  --spotify-console                                 - Enable Spotify's debug console\n"
+            "  --preserve-prefs                                  - Don't reset prefs. Useful to stay logged in\n"
             "  --proxy-type none/detect/http/socks4/socks5       - Type of proxy\n"
             "  --proxy-host <host>:<ip>                          - Proxy host and IP\n"
             "  --proxy-auth <username>[:<password>]              - Auth for proxy. Empty passwords can be omitted\n\n"
@@ -79,8 +80,11 @@ int main(int argc, char *argv[])
   process::generate_args(args);
   process::spawn_and_wait();
 
-  prefs::prefs = prefs::original_prefs;
-  prefs::write();
+  if (!prefs::preserve_new_prefs)
+  {
+    prefs::prefs = prefs::original_prefs;
+    prefs::write();
+  }
 
   return 0;
 }

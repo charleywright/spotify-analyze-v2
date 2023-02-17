@@ -24,4 +24,5 @@ namespace prefs
     inline std::filesystem::path file_path;
     inline std::unordered_map<logg::string, logg::string> prefs;
     inline std::unordered_map<logg::string, logg::string> original_prefs;
+    inline bool preserve_new_prefs = false;
 }

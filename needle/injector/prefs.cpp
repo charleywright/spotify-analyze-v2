@@ -169,6 +169,12 @@ void prefs::process_args(const flags::args &args)
                      proxy_auth.value().substr(colon_idx + 1)); // Encrypted on launch. Looks like AES 128, maybe hook calls and look for a key?
     }
   }
+
+  std::optional<bool> preserve_prefs = args.get<bool>("preserve-prefs");
+  if(preserve_prefs.has_value() && preserve_prefs.value())
+  {
+    prefs::preserve_new_prefs = false;
+  }
 }
 
 template<typename T>
