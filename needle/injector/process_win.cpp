@@ -18,6 +18,7 @@ void process::spawn_and_wait()
   PROCESS_INFORMATION pi;
   ZeroMemory(&pi, sizeof(pi));
 
+  logg::log("Executing %s%s\n", LOGG_PATH(executable::path), process::process_args.c_str());
   CreateProcess(LOGG_PATH(executable::path), process::process_args.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &info, &pi);
   logg::log("Created process\n");
   std::this_thread::sleep_for(100ms);

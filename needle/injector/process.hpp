@@ -10,4 +10,6 @@ namespace process
 
     inline logg::string process_args;
     inline std::filesystem::path lib_to_inject;
+    inline std::filesystem::path our_process_path;
+    inline std::filesystem::path our_process_dir;
 }

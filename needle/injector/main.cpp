@@ -14,7 +14,8 @@ void print_help(const char *argv0)
             "  --password <password>                             - Specify a password for autologin\n"
             "  --spotify-console                                 - Enable Spotify's debug console\n"
             "  --preserve-prefs                                  - Don't reset prefs. Useful to stay logged in\n"
-            "  --proxy-type none/detect/http/socks4/socks5       - Type of proxy\n"
+            "  --multiple                                        - Support running instances of Spotify at once\n"
+            "  --proxy-type <none/detect/http/socks4/socks5>     - Type of proxy\n"
             "  --proxy-host <host>:<ip>                          - Proxy host and IP\n"
             "  --proxy-auth <username>[:<password>]              - Auth for proxy. Empty passwords can be omitted\n\n"
             "Program arguments:\n"
@@ -26,7 +27,8 @@ void print_help(const char *argv0)
 int main(int argc, char *argv[])
 {
   const flags::args args(argc, argv);
-  std::filesystem::path binary_dir = std::filesystem::absolute(argv[0]).parent_path();
+  process::our_process_path = std::filesystem::absolute(argv[0]);
+  process::our_process_dir = process::our_process_path.parent_path();
 
   if (args.get<bool>("h") || args.get<bool>("help"))
   {
@@ -37,7 +39,7 @@ int main(int argc, char *argv[])
   std::filesystem::path lib_path = args.positional().empty() ? "" : args.positional().at(0);
   if (lib_path.empty() || !std::filesystem::exists(lib_path))
   {
-    for (const auto &file: std::filesystem::directory_iterator(binary_dir))
+    for (const auto &file: std::filesystem::directory_iterator(process::our_process_dir))
     {
       if (!file.is_regular_file() || file.path().stem() != "needle")
       {
