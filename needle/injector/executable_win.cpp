@@ -81,19 +81,8 @@ std::filesystem::path resolve_lnk(const std::filesystem::path &lnk_path)
   return link_path;
 }
 
-bool executable::find(const flags::args &args)
+bool executable::platform_find()
 {
-  const std::optional<logg::string> path_from_args = args.get<logg::string>("exec");
-  if (path_from_args.has_value())
-  {
-    std::filesystem::path p = path_from_args.value();
-    if (std::filesystem::exists(p))
-    {
-      executable::path = p;
-      return true;
-    }
-  }
-
   std::filesystem::path lnk_file = find_spotify_lnk();
   if (lnk_file.empty())
   {

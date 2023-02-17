@@ -9,6 +9,7 @@
 namespace prefs
 {
     bool find_file(const flags::args &args);
+    bool platform_find_file();
     void read();
     void write();
     void set_str(const logg::string &key, const logg::string &value);

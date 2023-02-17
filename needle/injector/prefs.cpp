@@ -4,6 +4,70 @@
 #include <fstream>
 #include <sstream>
 
+#if defined(__linux__)
+
+bool prefs::platform_find_file()
+{
+  char* env_var = std::getenv("XDG_CONFIG_HOME");
+  std::filesystem::path xdg_home;
+  if (env_var == nullptr)
+  {
+    env_var = std::getenv("HOME");
+    if(env_var == nullptr)
+    {
+      logg::error("HOME environment variable not set\n");
+      return false;
+    }
+    xdg_home = env_var;
+    xdg_home /= ".config";
+  } else
+  {
+    xdg_home = env_var;
+  }
+
+  if (!std::filesystem::exists(xdg_home))
+  {
+    return false;
+  }
+
+  std::filesystem::path spotify_path = xdg_home / "spotify";
+
+  if (!std::filesystem::exists(spotify_path))
+  {
+    logg::error("%s doesn't exist\n", LOGG_PATH(spotify_path));
+    return false;
+  }
+
+  spotify_path /= "prefs";
+
+  if (!std::filesystem::exists(spotify_path))
+  {
+    logg::error("Prefs file not found in %s\n", LOGG_PATH(spotify_path));
+    return false;
+  }
+
+  prefs::file_path = spotify_path;
+  return true;
+}
+
+#else
+
+bool prefs::platform_find_file()
+{
+  std::filesystem::path spotify_dir = executable::path.parent_path();
+  std::filesystem::path p = spotify_dir / "prefs";
+  if (!std::filesystem::exists(p))
+  {
+    logg::error("Prefs file not in same directory as spotify executable\n");
+    return false;
+  }
+
+  prefs::file_path = p;
+  return true;
+}
+
+#endif
+
 bool prefs::find_file(const flags::args &args)
 {
   const std::optional<logg::string> prefs_path_from_args = args.get<logg::string>("prefs");
@@ -17,16 +81,7 @@ bool prefs::find_file(const flags::args &args)
     }
   }
 
-  std::filesystem::path spotify_dir = executable::path.parent_path();
-  std::filesystem::path p = spotify_dir / "prefs";
-  if (!std::filesystem::exists(p))
-  {
-    logg::error("Prefs file not in same directory as spotify executable\n");
-    return false;
-  }
-
-  prefs::file_path = p;
-  return true;
+  return prefs::platform_find_file();
 }
 
 void prefs::read()
@@ -171,7 +226,7 @@ void prefs::process_args(const flags::args &args)
   }
 
   std::optional<bool> preserve_prefs = args.get<bool>("preserve-prefs");
-  if(preserve_prefs.has_value() && preserve_prefs.value())
+  if (preserve_prefs.has_value() && preserve_prefs.value())
   {
     prefs::preserve_new_prefs = false;
   }
