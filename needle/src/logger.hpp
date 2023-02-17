@@ -155,8 +155,8 @@ namespace logger
         };
 #else
         inline bool is_console_intitiated = true;
-        inline FILE* our_out = stdout;
-        inline FILE* our_err = stderr;
+        inline FILE *our_out = stdout;
+        inline FILE *our_err = stderr;
 
         // https://ss64.com/nt/syntax-ansi.html
         inline const std::unordered_map<logger::option, std::string> option_codes = {
@@ -204,6 +204,7 @@ namespace logger
 
         inline void ensure_init()
         {
+#ifdef _WIN32
           if (!detail::is_console_intitiated)
           {
             if (!AttachConsole(GetCurrentProcessId()))
@@ -225,6 +226,7 @@ namespace logger
           {
             detail::our_err = std::fopen("CONOUT$", "w");
           }
+#endif
         }
     }
 

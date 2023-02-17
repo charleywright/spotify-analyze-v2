@@ -17,8 +17,8 @@ add_executable(needle-injector ${InjectorSrcFiles})
 target_include_directories(needle-injector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/injector)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON) # Otherwise SubHook doesn't compile
     target_link_libraries(needle PRIVATE dl)
-    set_property(TARGET needle PROPERTY POSITION_IN ON)
     set_property(TARGET needle PROPERTY PREFIX "")
     set_property(TARGET needle PROPERTY OUTPUT_NAME needle)
     set_property(TARGET needle PROPERTY SUFFIX .so)
@@ -26,6 +26,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Workaround for VS Build Tools making Debug and Release directories
     set_target_properties(needle PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/$<0:>)
     set_target_properties(needle-injector PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/$<0:>)
+    set(SUBHOOK_FORCE_32BIT ON)
 endif ()
 
 if (NEEDLE_COMPACT_PROTO)
@@ -44,7 +45,6 @@ endif ()
 set(SUBHOOK_STATIC ON)
 set(SUBHOOK_INSTALL OFF)
 set(SUBHOOK_TESTS OFF)
-set(SUBHOOK_FORCE_32BIT ON)
 FetchContent_Declare(subhook
         GIT_REPOSITORY https://github.com/Zeex/subhook
         GIT_TAG e935959d2f9cc642bcbb5e7759b2b1e7196b0947

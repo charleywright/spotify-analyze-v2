@@ -1,3 +1,4 @@
+#ifdef _WIN32
 #include <windows.h>
 #include <processthreadsapi.h>
 #include "entry.hpp"
@@ -20,3 +21,4 @@ DllMain(HINSTANCE
   }
   return true;
 }
+#endif
