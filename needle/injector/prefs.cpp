@@ -18,7 +18,7 @@ bool prefs::find_file(const flags::args &args)
   }
 
   std::filesystem::path spotify_dir = executable::path.parent_path();
-  std::filesystem::path p = spotify_dir / "prefs"; // TODO: Can a unicode filesystem::path have a u8 literal appended?
+  std::filesystem::path p = spotify_dir / "prefs";
   if (!std::filesystem::exists(p))
   {
     logg::error("Prefs file not in same directory as spotify executable\n");
@@ -81,21 +81,94 @@ void prefs::write()
     return;
   }
 
-  logg::stringstream ss;
+  logg::string str;
   for (const auto &[key, value]: prefs::prefs)
   {
-    ss << key << '=';
+    str += key;
+    str += '=';
     if (prefs::get<std::int64_t>(key) || value == "true" ||
-        value == "false") // This will fail for numbers above 0x7FFFFFFFFFFFFFFF, but something else is probably wrong
+        value == "false") // This will fail for numbers above 0x7FFFFFFFFFFFFFFF, but something else is probably wrong at that point
     {
-      ss << value << '\n';
+      str += value;
     } else
     {
-      ss << '"' << value << '"' << '\n';
+      str += '"';
+      str += value;
+      str += '"';
+    }
+    str += '\n';
+  }
+  file << str;
+  file.close();
+}
+
+void prefs::set_str(const logg::string &key, const logg::string &value)
+{
+  if (prefs::prefs.count(key) > 0)
+  {
+    prefs::prefs.at(key) = value;
+  } else
+  {
+    prefs::prefs.emplace(key, value);
+  }
+}
+
+void prefs::set_int(const logg::string &key, std::int64_t value)
+{
+  return prefs::set_str(key, std::to_string(value));
+}
+
+void prefs::set_bool(const logg::string &key, bool value)
+{
+  return prefs::set_str(key, value ? "true" : "false");
+}
+
+void prefs::process_args(const flags::args &args)
+{
+  std::optional<logg::string> proxy_type = args.get<logg::string>("proxy-type");
+  if (proxy_type.has_value())
+  {
+    if (proxy_type.value() == "none")
+    {
+      prefs::set_int("network.proxy.mode", 0);
+    } else if (proxy_type.value() == "detect")
+    {
+      prefs::set_int("network.proxy.mode", 1);
+    } else if (proxy_type.value() == "http")
+    {
+      prefs::set_int("network.proxy.mode", 2);
+    } else if (proxy_type.value() == "socks4")
+    {
+      prefs::set_int("network.proxy.mode", 3);
+    } else if (proxy_type.value() == "socks5")
+    {
+      prefs::set_int("network.proxy.mode", 4);
+    } else
+    {
+      logg::error("Invalid proxy-type %s, use none/detect/http/socks4/socks5\n", proxy_type.value().c_str());
     }
   }
-  file << ss.str();
-  file.close();
+
+  std::optional<logg::string> proxy_host = args.get<logg::string>("proxy");
+  if (proxy_host.has_value())
+  {
+    prefs::set_str("network.proxy.addr", proxy_host.value());
+  }
+
+  std::optional<logg::string> proxy_auth = args.get<logg::string>("proxy-auth");
+  if (proxy_auth.has_value())
+  {
+    logg::string::size_type colon_idx = proxy_auth.value().find(':');
+    if (colon_idx == logg::string::npos)
+    {
+      prefs::set_str("network.proxy.user", proxy_auth.value());
+    } else
+    {
+      prefs::set_str("network.proxy.user", proxy_auth.value().substr(0, colon_idx));
+      prefs::set_str("network.proxy.pass",
+                     proxy_auth.value().substr(colon_idx + 1)); // Encrypted on launch. Looks like AES 128, maybe hook calls and look for a key?
+    }
+  }
 }
 
 template<typename T>

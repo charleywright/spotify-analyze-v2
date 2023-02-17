@@ -2,32 +2,61 @@
 #include "executable.hpp"
 #include "prefs.hpp"
 #include "log.hpp"
+#include "process.hpp"
+
+void print_help(const char *argv0)
+{
+  std::filesystem::path executable(argv0);
+  logg::log("Usage: %s [Path to .dll/.so/.dylib]\n\n"
+            ""
+            "Config arguments:\n"
+            "  --username <username/email>                       - Specify a username/email for autologin\n"
+            "  --password <password>                             - Specify a password for autologin\n"
+            "  --spotify-console                                 - Enable Spotify's debug console\n"
+            "  --proxy-type none/detect/http/socks4/socks5       - Type of proxy\n"
+            "  --proxy-host <host>:<ip>                          - Proxy host and IP\n"
+            "  --proxy-auth <username>[:<password>]              - Auth for proxy. Empty passwords can be omitted\n\n"
+            "Program arguments:\n"
+            "  --exec                                            - Manually specify location of Spotify executable\n"
+            "  [Path to .dll/.so/.dylib]                         - The path to the library to inject. Can be omitted to search the current directory\n",
+            LOGG_PATH(executable.filename()));
+}
 
 int main(int argc, char *argv[])
 {
   const flags::args args(argc, argv);
   std::filesystem::path binary_dir = std::filesystem::absolute(argv[0]).parent_path();
 
-  std::filesystem::path dll_path = args.positional().empty() ? "" : args.positional().at(0);
-  if (dll_path.empty() || !std::filesystem::exists(dll_path))
+  if (args.get<bool>("h") || args.get<bool>("help"))
+  {
+    print_help(argv[0]);
+    return 0;
+  }
+
+  std::filesystem::path lib_path = args.positional().empty() ? "" : args.positional().at(0);
+  if (lib_path.empty() || !std::filesystem::exists(lib_path))
   {
     for (const auto &file: std::filesystem::directory_iterator(binary_dir))
     {
-      if (!file.is_regular_file() || file.path().filename() != "needle.dll")
+      if (!file.is_regular_file() || file.path().stem() != "needle")
       {
         continue;
       }
-      dll_path = file.path();
+      if (file.path().extension() != ".dll" && file.path().extension() != ".so" && file.path().extension() != ".dylib")
+      {
+        continue;
+      }
+      lib_path = file.path();
       break;
     }
   }
-  if (dll_path.empty() || !std::filesystem::exists(dll_path))
+  if (lib_path.empty() || !std::filesystem::exists(lib_path))
   {
-    logg::error("No DLL specified/found. Specify manually as first positional argument\n");
+    logg::error("No library specified/found. Specify manually as first positional argument\n");
     return 1;
   }
-  dll_path = std::filesystem::absolute(dll_path);
-  logg::log("Found DLL at %s\n", LOGG_PATH(dll_path));
+  process::lib_to_inject = std::filesystem::absolute(lib_path);
+  logg::log("Found lib at %s\n", LOGG_PATH(process::lib_to_inject));
 
   if (!executable::find(args))
   {
@@ -44,39 +73,14 @@ int main(int argc, char *argv[])
   logg::log("Found spotify prefs file at %s\n", LOGG_PATH(prefs::file_path));
   prefs::read();
   prefs::original_prefs = prefs::prefs;
+  prefs::process_args(args);
+  prefs::write();
 
-//  std::wstring args = L"";
-////  args += L" --show-console";
-//  STARTUPINFOW info = {};
-//  ZeroMemory(&info, sizeof(info));
-//  info.cb = sizeof(info);
-//  PROCESS_INFORMATION pi = {};
-//  CreateProcessW(spotify_executable.generic_wstring().c_str(), const_cast<wchar_t *>(args.c_str()), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &info, &pi);
-//  printf("Created process\n");
-//  std::this_thread::sleep_for(100ms);
-//
-//  LPTHREAD_START_ROUTINE lla_addr = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"));
-//  LPVOID filename_ptr = VirtualAllocEx(pi.hProcess, nullptr, dll_path.generic_string().size(), MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-//  WriteProcessMemory(pi.hProcess, filename_ptr, dll_path.generic_string().c_str(), dll_path.generic_string().size(), 0);
-//  HANDLE dll_thread = CreateRemoteThread(pi.hProcess, nullptr, 0, lla_addr, filename_ptr, 0, nullptr);
-//  WaitForSingleObject(dll_thread, INFINITE);
-//  CloseHandle(dll_thread);
-//  VirtualFreeEx(pi.hProcess, filename_ptr, 0, MEM_RELEASE);
-//  printf("Injected DLL into process %lu\n", pi.dwProcessId);
-//  fflush(stdout);
-//
-//  WaitForSingleObject(pi.hProcess, INFINITE);
-//
-//  std::this_thread::sleep_for(1s);
-//
-//  prefs_file.open(prefs_file_path, std::ios::out | std::ios::trunc);
-//  if (!prefs_file.is_open())
-//  {
-//    fprintf(stderr, "Failed to write original prefs file, dumping...\n\n%s\n", prev_prefs.str().c_str());
-//    return 1;
-//  }
-//  prefs_file << prev_prefs.str();
-//  prefs_file.close();
-//
-//  return 0;
+  process::generate_args(args);
+  process::spawn_and_wait();
+
+  prefs::prefs = prefs::original_prefs;
+  prefs::write();
+
+  return 0;
 }

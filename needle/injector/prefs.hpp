@@ -11,6 +11,11 @@ namespace prefs
     bool find_file(const flags::args &args);
     void read();
     void write();
+    void set_str(const logg::string &key, const logg::string &value);
+    void set_int(const logg::string &key, std::int64_t value);
+    void set_bool(const logg::string &key, bool value);
+
+    void process_args(const flags::args &args);
 
     template<typename T>
     std::optional<T> get(const logg::string &key);
