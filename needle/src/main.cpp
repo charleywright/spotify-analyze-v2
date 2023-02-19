@@ -17,7 +17,7 @@ void entry::entrypoint()
 
   while(true)
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     std::this_thread::yield();
   }
   // TODO: If a persistent thread is added, add a socket to allow communication (add/remove hooks, look at memory, breakpoints etc)

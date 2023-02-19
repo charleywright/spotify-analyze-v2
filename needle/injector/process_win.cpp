@@ -32,7 +32,6 @@ void process::spawn_and_wait()
   CloseHandle(dll_thread);
   VirtualFreeEx(pi.hProcess, filename_ptr, 0, MEM_RELEASE);
   logg::log("Injected DLL into process %lu\n", pi.dwProcessId);
-  fflush(stdout);
 
   WaitForSingleObject(pi.hProcess, INFINITE);
 }

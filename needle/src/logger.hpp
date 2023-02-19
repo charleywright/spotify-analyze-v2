@@ -271,7 +271,7 @@ namespace logger
         if ((opts & i) == i)
         {
           const std::string &code = detail::option_codes.at(i);
-          logger::info(code.c_str());
+          fprintf(detail::our_out, code.c_str());
         }
       }
 #endif
@@ -298,7 +298,7 @@ namespace logger
         if ((opts & i) == i)
         {
           const std::string &code = detail::option_codes.at(i);
-          logger::error(code.c_str());
+          fprintf(detail::our_err, code.c_str());
         }
       }
 #endif

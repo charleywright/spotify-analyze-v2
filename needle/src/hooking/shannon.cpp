@@ -13,9 +13,8 @@ void hooking::detail::hooks::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, i
   if (num_bytes < 2)
   {
     logger::set_option(logger::option::FG_DARK_GREEN);
-    logger::info("%s [SEND] FAILED TO PARSE:\n", util::time_str().c_str());
+    logger::info("\n%s [SEND] FAILED TO PARSE:\n", util::time_str().c_str());
     util::log_hex(buf, num_bytes);
-    logger::info("\n");
     logger::set_option(logger::option::DEFAULT);
     return;
   }
@@ -40,7 +39,7 @@ void hooking::detail::hooks::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, i
 #endif
 
   logger::set_option(logger::option::FG_DARK_GREEN);
-  logger::info("%s [SEND] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
+  logger::info("\n%s [SEND] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(type), (std::uint32_t) length);
   switch (type)
   {
     case util::PacketType::Login:
@@ -56,7 +55,6 @@ void hooking::detail::hooks::shn_encrypt(struct shn_ctx *c, std::uint8_t *buf, i
       break;
     }
   }
-  logger::info("\n");
   logger::set_option(logger::option::DEFAULT);
 
   reinterpret_cast<std::add_pointer_t<decltype(shn_encrypt)>>(subhook_get_trampoline(shn_encrypt_hook))(c, buf, num_bytes);
@@ -99,7 +97,7 @@ void hooking::detail::hooks::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, i
 #endif
 
     logger::set_option(logger::option::FG_LIGHT_RED);
-    logger::info("%s [RECV] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
+    logger::info("\n%s [RECV] type=%s len=%u\n", util::time_str().c_str(), packet_type_str(header.type), (std::uint32_t) header.length);
     switch (header.type)
     {
       case util::PacketType::APWelcome:
@@ -177,7 +175,6 @@ void hooking::detail::hooks::shn_decrypt(struct shn_ctx *c, std::uint8_t *buf, i
         break;
       }
     }
-    logger::info("\n");
     logger::set_option(logger::option::DEFAULT);
     header.type = util::PacketType::Error;
     header.length = 0;

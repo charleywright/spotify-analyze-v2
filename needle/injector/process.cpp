@@ -27,27 +27,30 @@ void process::generate_args(const flags::args &args)
   std::optional<logg::string> username = args.get<logg::string>("username");
   if (username.has_value())
   {
-    process::process_args += " --username ";
-    process::process_args += username.value();
+    logg::string u = "--username=";
+    u += username.value();
+    process::process_args.emplace_back(u);
   }
 
   std::optional<logg::string> password = args.get<logg::string>("password");
   if (password.has_value())
   {
-    process::process_args += " --password ";
-    process::process_args += password.value();
+    logg::string p = "--password=";
+    p += password.value();
+    process::process_args.emplace_back(p);
   }
 
   std::optional<bool> show_console = args.get<bool>("spotify-console");
   if (show_console.has_value() && show_console.value())
   {
-    process::process_args += " --show-console";
+    process::process_args.emplace_back("--show-console");
   }
 
   std::optional<bool> enable_multiple = args.get<bool>("multiple");
   if (enable_multiple.has_value() && enable_multiple.value())
   {
-    process::process_args += " --mu=";
-    process::process_args += random_segment();
+    std::string mu = "--mu=";
+    mu += random_segment();
+    process::process_args.emplace_back(mu);
   }
 }
