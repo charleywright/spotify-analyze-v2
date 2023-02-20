@@ -6,14 +6,14 @@
 
 #if defined(__linux__)
 
-bool prefs::platform_find_file()
+bool prefs::platform_find_file(const logg::string &profile_name)
 {
-  char* env_var = std::getenv("XDG_CONFIG_HOME");
+  char *env_var = std::getenv("XDG_CONFIG_HOME");
   std::filesystem::path xdg_home;
   if (env_var == nullptr)
   {
     env_var = std::getenv("HOME");
-    if(env_var == nullptr)
+    if (env_var == nullptr)
     {
       logg::error("HOME environment variable not set\n");
       return false;
@@ -30,7 +30,25 @@ bool prefs::platform_find_file()
     return false;
   }
 
-  std::filesystem::path spotify_path = xdg_home / "spotify";
+  std::filesystem::path spotify_path = xdg_home;
+  if (profile_name.empty())
+  {
+    spotify_path /= "spotify";
+  } else
+  {
+    logg::string dir_name = "spotify-";
+    dir_name += profile_name;
+    spotify_path /= dir_name;
+    if (!std::filesystem::exists(spotify_path))
+    {
+      std::filesystem::create_directory(spotify_path);
+      std::ofstream prefs_file(spotify_path / "prefs");
+      if (prefs_file.is_open())
+      {
+        prefs_file.close();
+      }
+    }
+  }
 
   if (!std::filesystem::exists(spotify_path))
   {
@@ -81,7 +99,8 @@ bool prefs::find_file(const flags::args &args)
     }
   }
 
-  return prefs::platform_find_file();
+  const std::optional<logg::string> profile = args.get<logg::string>("profile");
+  return profile.has_value() ? prefs::platform_find_file(profile.value()) : prefs::platform_find_file("");
 }
 
 void prefs::read()
@@ -225,8 +244,8 @@ void prefs::process_args(const flags::args &args)
     }
   }
 
-  std::optional<bool> preserve_prefs = args.get<bool>("preserve-prefs");
-  if (preserve_prefs.has_value() && preserve_prefs.value())
+  std::optional<bool> preserve_prefs = args.get<bool>("preserve");
+  if (!preserve_prefs.has_value() || !preserve_prefs.value())
   {
     prefs::preserve_new_prefs = false;
   }

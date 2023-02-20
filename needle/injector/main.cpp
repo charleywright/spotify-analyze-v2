@@ -13,8 +13,9 @@ void print_help(const char *argv0)
             "  --username <username/email>                       - Specify a username/email for autologin\n"
             "  --password <password>                             - Specify a password for autologin\n"
             "  --spotify-console                                 - Enable Spotify's debug console\n"
-            "  --preserve-prefs                                  - Don't reset prefs. Useful to stay logged in\n"
-            "  --multiple                                        - Support running instances of Spotify at once\n"
+            "  --force-login                                     - Don't auto-login\n"
+            "  --preserve                                        - Keep settings / don't delete profile. Use to stay logged in\n"
+            "  --profile <name>                                  - Use a specified profile. Allows multiple instances. Proxy args won't work on Windows\n"
             "  --proxy-type <none/detect/http/socks4/socks5>     - Type of proxy\n"
             "  --proxy-host <host>:<ip>                          - Proxy host and IP\n"
             "  --proxy-auth <username>[:<password>]              - Auth for proxy. Empty passwords can be omitted\n\n"
@@ -23,6 +24,8 @@ void print_help(const char *argv0)
             "  [Path to .dll/.so/.dylib]                         - The path to the library to inject. Can be omitted to search the current directory\n",
             LOGG_PATH(executable.filename()));
 }
+
+// TODO: Storage (~/.cache/spotify, ~/.cache/spotify-<profile>)
 
 int main(int argc, char *argv[])
 {
@@ -77,15 +80,26 @@ int main(int argc, char *argv[])
   prefs::read();
   prefs::original_prefs = prefs::prefs;
   prefs::process_args(args);
-  prefs::write();
+  if (args.get<bool>("force-login").has_value() && args.get<bool>("force-login").value())
+  {
+    prefs::write();
+  }
 
   process::generate_args(args);
   process::spawn_and_wait();
 
   if (!prefs::preserve_new_prefs)
   {
-    prefs::prefs = prefs::original_prefs;
-    prefs::write();
+#ifndef _WIN32 // There is no profile-specific prefs file on Windows (afaik)
+    if (args.get<logg::string>("profile").has_value())
+    {
+      std::filesystem::remove_all(prefs::file_path.parent_path());
+    } else
+#endif
+    {
+      prefs::prefs = prefs::original_prefs;
+      prefs::write();
+    }
   }
 
   return 0;
