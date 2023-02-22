@@ -9,7 +9,7 @@
 bool prefs::platform_find_file(const logg::string &profile_name)
 {
   char *env_var = std::getenv("XDG_CONFIG_HOME");
-  std::filesystem::path xdg_home;
+  std::filesystem::path xdg_config_home;
   if (env_var == nullptr)
   {
     env_var = std::getenv("HOME");
@@ -18,70 +18,97 @@ bool prefs::platform_find_file(const logg::string &profile_name)
       logg::error("HOME environment variable not set\n");
       return false;
     }
-    xdg_home = env_var;
-    xdg_home /= ".config";
+    xdg_config_home = env_var;
+    xdg_config_home /= ".config";
   } else
   {
-    xdg_home = env_var;
+    xdg_config_home = env_var;
   }
 
-  if (!std::filesystem::exists(xdg_home))
+  if (!std::filesystem::exists(xdg_config_home))
   {
     return false;
   }
 
-  std::filesystem::path spotify_path = xdg_home;
+  std::filesystem::path config_path = xdg_config_home;
   if (profile_name.empty())
   {
-    spotify_path /= "spotify";
+    config_path /= "spotify";
   } else
   {
     logg::string dir_name = "spotify-";
     dir_name += profile_name;
-    spotify_path /= dir_name;
-    if (!std::filesystem::exists(spotify_path))
+    config_path /= dir_name;
+    if (!std::filesystem::exists(config_path))
     {
-      std::filesystem::create_directory(spotify_path);
-      std::ofstream prefs_file(spotify_path / "prefs");
-      if (prefs_file.is_open())
-      {
-        prefs_file.close();
-      }
+      std::filesystem::create_directory(config_path);
+      std::ofstream prefs_file(config_path / "prefs");
     }
   }
 
-  if (!std::filesystem::exists(spotify_path))
+  if (!std::filesystem::exists(config_path))
   {
-    logg::error("%s doesn't exist\n", LOGG_PATH(spotify_path));
+    logg::error("%s doesn't exist\n", LOGG_PATH(config_path));
     return false;
   }
 
-  spotify_path /= "prefs";
+  config_path /= "prefs";
 
-  if (!std::filesystem::exists(spotify_path))
+  if (!std::filesystem::exists(config_path))
   {
-    logg::error("Prefs file not found in %s\n", LOGG_PATH(spotify_path));
+    logg::error("Prefs file not found in %s\n", LOGG_PATH(config_path));
     return false;
   }
 
-  prefs::file_path = spotify_path;
+  prefs::file_path = config_path;
   return true;
 }
 
 #else
 
-bool prefs::platform_find_file()
+bool prefs::platform_find_file(const logg::string &profile_name)
 {
-  std::filesystem::path spotify_dir = executable::path.parent_path();
-  std::filesystem::path p = spotify_dir / "prefs";
-  if (!std::filesystem::exists(p))
+  if (!profile_name.empty())
   {
-    logg::error("Prefs file not in same directory as spotify executable\n");
-    return false;
-  }
+    char *appdata = std::getenv("APPDATA");
+    if (appdata == nullptr)
+    {
+      logg::error("APPDATA environment variable not set\n");
+      return false;
+    }
+    std::filesystem::path appdata_path = appdata;
 
-  prefs::file_path = p;
-  return true;
+    logg::string folder_name = "Spotify-" + profile_name;
+
+    std::filesystem::path config_path = appdata_path / folder_name;
+    if (!std::filesystem::exists(config_path))
+    {
+      std::filesystem::create_directory(config_path);
+      std::ofstream prefs_file(config_path / "prefs");
+    }
+
+    std::filesystem::path p = config_path / "prefs";
+    if (!std::filesystem::exists(p))
+    {
+      logg::error("Prefs file not found in %s\n", LOGG_PATH(config_path));
+      return false;
+    }
+
+    prefs::file_path = p;
+    return true;
+  } else
+  {
+    std::filesystem::path spotify_dir = executable::path.parent_path();
+    std::filesystem::path p = spotify_dir / "prefs";
+    if (!std::filesystem::exists(p))
+    {
+      logg::error("Prefs file not in same directory as spotify executable\n");
+      return false;
+    }
+
+    prefs::file_path = p;
+    return true;
+  }
 }
 
 #endif
@@ -248,6 +275,21 @@ void prefs::process_args(const flags::args &args)
   if (!preserve_prefs.has_value() || !preserve_prefs.value())
   {
     prefs::preserve_new_prefs = false;
+  }
+
+  std::optional<bool> force_login = args.get<bool>("force-login");
+  if (force_login.has_value() && force_login.value())
+  {
+    for(auto it = prefs::prefs.begin(); it != prefs::prefs.end();)
+    {
+      if(it->first.length() > 10 && it->first.substr(0, 10) == "autologin.")
+      {
+        it = prefs::prefs.erase(it);
+      } else
+      {
+        it++;
+      }
+    }
   }
 }
 

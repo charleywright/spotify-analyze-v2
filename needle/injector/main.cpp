@@ -80,10 +80,7 @@ int main(int argc, char *argv[])
   prefs::read();
   prefs::original_prefs = prefs::prefs;
   prefs::process_args(args);
-  if (args.get<bool>("force-login").has_value() && args.get<bool>("force-login").value())
-  {
-    prefs::write();
-  }
+  prefs::write();
 
   process::generate_args(args);
   process::spawn_and_wait();
