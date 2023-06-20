@@ -129,9 +129,24 @@ void find_shn(void **shn_encrypt_addr, void **shn_decrypt_addr)
 }
 
 #else
+#include <unistd.h>
+
 std::uint8_t *get_executable_memory(std::uint64_t *len)
 {
   *len = 0;
+
+  char our_executable[256] = {0};
+  bool have_our_executable = readlink("/proc/self/exe", our_executable, sizeof(our_executable) - 1) != -1;
+  if (!have_our_executable)
+  {
+    logger::error("[ERROR] Failed to find our executable using /proc/self/maps");
+    return nullptr;
+  }
+  if (std::strstr(our_executable, "spotify") == nullptr)
+  {
+    logger::error("[ERROR] This is probably not a spotify executable. If so create a symlink with \"spotify\" (lowercase) in the name. Got %s\n", our_executable);
+    return nullptr;
+  }
 
   std::fstream mapfile("/proc/self/maps", std::ios::in);
   if (!mapfile.good())
@@ -146,19 +161,24 @@ std::uint8_t *get_executable_memory(std::uint64_t *len)
     std::uint64_t start = 0, end = 0;
     char permissions[5] = {0};
     std::sscanf(line.data(), "%lx-%lx %4s", &start, &end, permissions);
+    if (have_our_executable && line.find(our_executable) == std::string::npos)
+    {
+      continue;
+    }
     if (std::strncmp(permissions, "r-xp", 4) == 0)
     {
+      logger::info("Found {%s} using exec name {%s}\n", line.c_str(), our_executable);
       *len = end - start;
       return reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(start));
     }
   }
 
-  logger::info("End of /proc/self/maps\n");
+  logger::info("End of /proc/self/maps. Our executable = %s\n", have_our_executable ? our_executable : "<NOT FOUND>");
 
   return nullptr;
 }
 
-template<typename ptr>
+template <typename ptr>
 ptr memrmem(ptr const haystack, std::size_t haystack_len, ptr const needle, const std::size_t needle_len)
 {
   if (haystack_len < needle_len)
