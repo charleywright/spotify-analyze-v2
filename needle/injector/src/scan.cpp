@@ -107,7 +107,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
 
     std::vector<elf::Elf64_Shdr> section_headers(header.e_shnum);
     elf::Elf64_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    binary_file.seekg(static_cast<std::ifstream::off_type>(header.e_shoff), std::ios::beg);
+    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
     binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
     if (binary_file.gcount() != section_header_table_size)
     {
@@ -133,7 +133,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
       fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
       return;
     }
-    binary_file.seekg(static_cast<std::ifstream::off_type>(section_header_string_table_entry.sh_offset), std::ios::beg);
+    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
     binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
     if (binary_file.gcount() != section_header_string_table_entry.sh_size)
     {
@@ -176,7 +176,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
 
     std::vector<elf::Elf32_Shdr> section_headers(header.e_shnum);
     elf::Elf32_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    binary_file.seekg(static_cast<std::ifstream::off_type>(header.e_shoff), std::ios::beg);
+    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
     binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
     if (binary_file.gcount() != section_header_table_size)
     {
@@ -202,7 +202,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
       fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
       return;
     }
-    binary_file.seekg(static_cast<std::ifstream::off_type>(section_header_string_table_entry.sh_offset), std::ios::beg);
+    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
     binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
     if (binary_file.gcount() != section_header_string_table_entry.sh_size)
     {
@@ -274,8 +274,8 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
 
   sigscanner::offset last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
   std::array<elf::byte, 0x2000> shn_bytes{0};
-  int shn_prologue_scan_base = static_cast<int>(last_shannon_constant) - 0x2000;
-  binary_file.seekg(std::max(0, shn_prologue_scan_base), std::ios::beg);
+  std::int64_t shn_prologue_scan_base = static_cast<int>(last_shannon_constant) - 0x2000;
+  binary_file.seekg(std::max(0ll, shn_prologue_scan_base));
   binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
   sigscanner::signature function_prologue = "55 48 89 E5";
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
@@ -359,7 +359,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
 
   std::uint32_t new_header_offset = dos_header.e_lfanew;
-  binary_file.seekg(new_header_offset, std::ios::beg);
+  binary_file.seekg(new_header_offset);
   // Read the magic separately because we don't know the size of the NT header yet
   sigscanner::byte nt_header_magic[4];
   binary_file.read(reinterpret_cast<char *>(nt_header_magic), sizeof(nt_header_magic));
