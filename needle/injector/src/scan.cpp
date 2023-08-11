@@ -4,6 +4,7 @@
 #include "elf.hpp"
 #include <memory>
 #include <cstring>
+#include <array>
 
 const char *SERVER_PUBLIC_KEY_SIG = "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 
@@ -27,7 +28,7 @@ std::uint64_t apply_relocations(std::uint64_t address, const std::vector<relocat
   return address;
 }
 
-void scan_linux(scan_result &offsets, const std::filesystem::path &executable_path)
+void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
 {
   /*
    * On Linux the spotify binary is of course an ELF file. We can use this to determine
@@ -35,39 +36,40 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
    * the whole ELF header however we only need the e_ident array which is the first 16
    * bytes.
    */
-  std::ifstream executable(executable_path, std::ios::binary);
-  if (!executable)
+  const std::string binary_filename = binary_path.filename();
+  std::ifstream binary_file(binary_path, std::ios::binary);
+  if (!binary_file)
   {
-    std::fprintf(stderr, "Error: Failed to open %s\n", executable_path.c_str());
+    std::fprintf(stderr, "Error: Failed to open %s\n", binary_path.c_str());
     return;
   }
   elf::Elf_Ident e_ident{0};
-  executable.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
-  if (executable.gcount() != sizeof(e_ident))
+  binary_file.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
+  if (binary_file.gcount() != sizeof(e_ident))
   {
     std::fprintf(stderr, "Error: Failed to read ELF identifier\n");
     return;
   }
-  executable.close();
 
   const sigscanner::signature elf_header_magic("7F 45 4C 46");
   if (!elf_header_magic.check(e_ident.ei_mag, sizeof(e_ident.ei_mag)))
   {
-    std::fprintf(stderr, "Error: %s is not an ELF file\n", executable_path.c_str());
+    std::fprintf(stderr, "Error: %s is not an ELF file\n", binary_path.c_str());
     return;
   }
 
   bool is_64_bit = e_ident.ei_class == elf::Elf_Ident::ELFCLASS64;
   bool is_little_endian = e_ident.ei_data == elf::Elf_Ident::ELFDATA2LSB;
 
+  // TODO: Add support for big endian. Constant is probably "69 96 C5 3A"
   std::printf("Detected binary as %s %s\n", is_64_bit ? "64-bit" : "32-bit", is_little_endian ? "little endian" : "big endian");
 
-  const sigscanner::signature SHANNON_CONSTANT = "3a c5 96 69";
+  const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
   const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
   sigscanner::multi_scanner scanner;
   scanner.add_signature(SHANNON_CONSTANT);
   scanner.add_signature(SERVER_PUBLIC_KEY);
-  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(executable_path);
+  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
   std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
   std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
   if (server_public_key_offsets.empty())
@@ -80,7 +82,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
     std::fprintf(stderr, "Error: Expected only one server public key, found %lu\n", server_public_key_offsets.size());
     return;
   }
-  std::printf("Found server public key at 0x%010lx\n", server_public_key_offsets[0]);
+  std::printf("Found server public key at %s:0x%010lx\n", binary_filename.c_str(), server_public_key_offsets[0]);
   if (shannon_constant_offsets.empty())
   {
     std::fprintf(stderr, "Error: Failed to find shannon constant\n");
@@ -88,7 +90,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    std::printf("Found shannon constant at 0x%010lx\n", offset);
+    std::printf("Found shannon constant at %s:0x%010lx\n", binary_filename.c_str(), offset);
   }
 
   /*
@@ -110,14 +112,14 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
    * If we take the address of the .text section and subtract the offset in the file we get 0x201000.
   */
 
-  std::vector<relocation_entry> relocations;
   // TODO: Refactor so we don't need to duplicate this code
+  std::vector<relocation_entry> relocations;
   if (is_64_bit)
   {
     elf::Elf64_Ehdr header{0};
-    executable.open(executable_path, std::ios::binary);
-    executable.read(reinterpret_cast<char *>(&header), sizeof(header));
-    if (executable.gcount() != sizeof(header))
+    binary_file.seekg(0, std::ios::beg);
+    binary_file.read(reinterpret_cast<char *>(&header), sizeof(header));
+    if (binary_file.gcount() != sizeof(header))
     {
       std::fprintf(stderr, "Error: Failed to read ELF header\n");
       return;
@@ -132,9 +134,9 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
 
     std::vector<elf::Elf64_Shdr> section_headers(header.e_shnum);
     elf::Elf64_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    executable.seekg(static_cast<std::ifstream::off_type>(header.e_shoff), std::ios::beg);
-    executable.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
-    if (executable.gcount() != section_header_table_size)
+    binary_file.seekg(static_cast<std::ifstream::off_type>(header.e_shoff), std::ios::beg);
+    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
+    if (binary_file.gcount() != section_header_table_size)
     {
       std::fprintf(stderr, "Error: Failed to read section headers\n");
       return;
@@ -158,9 +160,9 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
       std::fprintf(stderr, "Error: Failed to allocate memory for section header string table\n");
       return;
     }
-    executable.seekg(static_cast<std::ifstream::off_type>(section_header_string_table_entry.sh_offset), std::ios::beg);
-    executable.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
-    if (executable.gcount() != section_header_string_table_entry.sh_size)
+    binary_file.seekg(static_cast<std::ifstream::off_type>(section_header_string_table_entry.sh_offset), std::ios::beg);
+    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
+    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
     {
       std::fprintf(stderr, "Error: Failed to read section header string table\n");
       return;
@@ -184,9 +186,9 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
   } else
   {
     elf::Elf32_Ehdr header{0};
-    executable.open(executable_path, std::ios::binary);
-    executable.read(reinterpret_cast<char *>(&header), sizeof(header));
-    if (executable.gcount() != sizeof(header))
+    binary_file.seekg(0, std::ios::beg);
+    binary_file.read(reinterpret_cast<char *>(&header), sizeof(header));
+    if (binary_file.gcount() != sizeof(header))
     {
       std::fprintf(stderr, "Error: Failed to read ELF header\n");
       return;
@@ -201,9 +203,9 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
 
     std::vector<elf::Elf32_Shdr> section_headers(header.e_shnum);
     elf::Elf32_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    executable.seekg(static_cast<std::ifstream::off_type>(header.e_shoff), std::ios::beg);
-    executable.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
-    if (executable.gcount() != section_header_table_size)
+    binary_file.seekg(static_cast<std::ifstream::off_type>(header.e_shoff), std::ios::beg);
+    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
+    if (binary_file.gcount() != section_header_table_size)
     {
       std::fprintf(stderr, "Error: Failed to read section headers\n");
       return;
@@ -227,9 +229,9 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
       std::fprintf(stderr, "Error: Failed to allocate memory for section header string table\n");
       return;
     }
-    executable.seekg(static_cast<std::ifstream::off_type>(section_header_string_table_entry.sh_offset), std::ios::beg);
-    executable.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
-    if (executable.gcount() != section_header_string_table_entry.sh_size)
+    binary_file.seekg(static_cast<std::ifstream::off_type>(section_header_string_table_entry.sh_offset), std::ios::beg);
+    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
+    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
     {
       std::fprintf(stderr, "Error: Failed to read section header string table\n");
       return;
@@ -252,13 +254,56 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &executable_pa
     }
   }
 
-  server_public_key_offsets[0] = apply_relocations(server_public_key_offsets[0], relocations);
-  std::printf("Adjusted server public key, offset = 0x%010lx\n", server_public_key_offsets[0]);
-  for (auto &offset: shannon_constant_offsets)
+  offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
+  std::printf("Adjusted server public key, offset = 0x%010lx\n", offsets.server_public_key);
+
+  /*
+   * shn_encrypt, shn_decrypt and shn_finish all have the same prologue:
+   * shn_encrypt 55 48 89 E5 41 56 53 83 BF CC 00 00 00 00 74 64                  start=0x0000000001C700D0 end=0x0000000001C70C07 size=0xB37
+   * shn_decrypt 55 48 89 E5 41 56 53 83 BF CC 00 00 00 00 74 73                  start=0x0000000001C70C10 end=0x0000000001C7177F size=0xB6F
+   * shn_finish  55 48 89 E5 41 57 41 56 41 54 53 41 89 D7 49 89 F6 48 89 FB 44   start=0x0000000001C71790 end=0x0000000001C719B0 size=0x220
+   *
+   * 55         push    rbp
+   * 48 89 E5   mov     rbp, rsp
+   *
+   * Since this is a very common prologue it should be very reliable. We can discount shn_finish by
+   * checking the distance between the address we hit and the constant due to the encryption/decryption
+   * functions being quite long.
+   */
+
+  sigscanner::offset last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
+  std::array<elf::byte, 0x2000> shn_bytes{0};
+  int shn_prologue_scan_base = static_cast<int>(last_shannon_constant) - 0x2000;
+  binary_file.seekg(std::max(0, shn_prologue_scan_base), std::ios::beg);
+  binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
+  sigscanner::signature function_prologue = "55 48 89 E5";
+  std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
+  if (function_prologues.empty())
   {
-    offset = apply_relocations(offset, relocations);
-    std::printf("Adjusted shannon constant, offset = 0x%010lx\n", offset);
+    std::fprintf(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
+    return;
   }
+  // We hit shn_finish
+  if (last_shannon_constant - function_prologues[0] < 0x200)
+  {
+    std::printf("Found shn_finish at %s:0x%010lx (0x%010lx)\n", binary_filename.c_str(), function_prologues[0],
+                apply_relocations(function_prologues[0], relocations));
+    function_prologues.erase(function_prologues.begin());
+  }
+  for (const auto &prologue: function_prologues)
+  {
+    std::printf("Found function prologue at %s:0x%010lx (0x%010lx)\n", binary_filename.c_str(), prologue,
+                apply_relocations(prologue, relocations));
+  }
+  if (function_prologues.size() < 2)
+  {
+    std::fprintf(stderr, "Error: Found too few prologues\n");
+    return;
+  }
+
+  offsets.shn_addr1 = apply_relocations(function_prologues[0], relocations);
+  offsets.shn_addr2 = apply_relocations(function_prologues[1], relocations);
+  offsets.success = true;
 }
 
 scan_result scan_binary(platform target, const std::filesystem::path &binary_path)

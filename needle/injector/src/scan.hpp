@@ -6,8 +6,8 @@
 
 struct scan_result
 {
-    sigscanner::offset shn_encrypt = 0;
-    sigscanner::offset shn_decrypt = 0;
+    sigscanner::offset shn_addr1 = 0;
+    sigscanner::offset shn_addr2 = 0;
     sigscanner::offset server_public_key = 0;
     bool success = false;
 };

@@ -98,7 +98,8 @@ int main(int argc, char **argv)
   }
 
   const std::string binary_filename = binary_path.filename().string();
-  std::printf("shn_encrypt: %s:%012lx\n", binary_filename.c_str(), offsets.shn_encrypt);
-  std::printf("shn_decrypt: %s:%012lx\n", binary_filename.c_str(), offsets.shn_decrypt);
-  std::printf("server_key: %s:%012lx\n", binary_filename.c_str(), offsets.server_public_key);
+  std::printf("Using offsets:\n");
+  std::printf("- shn_addr1:  0x%012lx\n", offsets.shn_addr1);
+  std::printf("- shn_addr2:  0x%012lx\n", offsets.shn_addr2);
+  std::printf("- server_key: 0x%012lx\n", offsets.server_public_key);
 }
