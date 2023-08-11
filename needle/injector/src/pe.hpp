@@ -11,6 +11,11 @@
  * https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-image_optional_header64
  * https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-image_section_header
  * https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-image_nt_headers64
+ * https://0xrick.github.io/win-internals/pe1/
+ * https://0xrick.github.io/win-internals/pe2/
+ * https://0xrick.github.io/win-internals/pe3/
+ * https://0xrick.github.io/win-internals/pe4/
+ * https://0xrick.github.io/win-internals/pe5/
  */
 
 namespace pe

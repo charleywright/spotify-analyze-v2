@@ -14,7 +14,7 @@ struct relocation_entry
 {
     std::uint64_t start = 0;
     std::uint64_t end = 0;
-    std::int64_t offset = 0;
+    std::int64_t virtual_address = 0;
     std::string name;
 };
 
@@ -24,7 +24,7 @@ std::uint64_t apply_relocations(std::uint64_t address, const std::vector<relocat
   {
     if (address >= entry.start && address < entry.end)
     {
-      return address + entry.offset;
+      return address + entry.virtual_address - entry.start;
     }
   }
   return address;
@@ -65,35 +65,6 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
 
   // TODO: Add support for big endian. Constant is probably "69 96 C5 3A"
   fmt::print("Detected binary as {} {}\n", is_64_bit ? "64-bit" : "32-bit", is_little_endian ? "little endian" : "big endian");
-
-  const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
-  const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
-  sigscanner::multi_scanner scanner;
-  scanner.add_signature(SHANNON_CONSTANT);
-  scanner.add_signature(SERVER_PUBLIC_KEY);
-  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
-  std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
-  std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
-  if (server_public_key_offsets.empty())
-  {
-    fmt::print(stderr, "Error: Failed to find server public key\n");
-    return;
-  }
-  if (server_public_key_offsets.size() != 1)
-  {
-    fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
-    return;
-  }
-  fmt::print("Found server public key at {}:{:#012x}\n", binary_filename, server_public_key_offsets[0]);
-  if (shannon_constant_offsets.empty())
-  {
-    fmt::print(stderr, "Error: Failed to find shannon constant\n");
-    return;
-  }
-  for (const auto &offset: shannon_constant_offsets)
-  {
-    fmt::print("Found shannon constant at {}:{:#012x}\n", binary_filename, offset);
-  }
 
   /*
    * These are offsets of the shannon constant using a binary file scan:
@@ -180,7 +151,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
         relocation_entry entry;
         entry.start = section_header.sh_offset;
         entry.end = section_header.sh_offset + section_header.sh_size;
-        entry.offset = static_cast<std::int64_t>(section_header.sh_addr) - static_cast<std::int64_t>(section_header.sh_offset);
+        entry.virtual_address = static_cast<std::int64_t>(section_header.sh_addr) - static_cast<std::int64_t>(section_header.sh_offset);
         entry.name = resolve_str(section_header.sh_name);
         relocations.emplace_back(std::move(entry));
       }
@@ -249,15 +220,43 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
         relocation_entry entry;
         entry.start = section_header.sh_offset;
         entry.end = section_header.sh_offset + section_header.sh_size;
-        entry.offset = section_header.sh_addr - section_header.sh_offset;
+        entry.virtual_address = section_header.sh_addr - section_header.sh_offset;
         entry.name = resolve_str(section_header.sh_name);
         relocations.emplace_back(std::move(entry));
       }
     }
   }
 
+  const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
+  const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
+  sigscanner::multi_scanner scanner;
+  scanner.add_signature(SHANNON_CONSTANT);
+  scanner.add_signature(SERVER_PUBLIC_KEY);
+  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
+  std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
+  std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
+  if (server_public_key_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find server public key\n");
+    return;
+  }
+  if (server_public_key_offsets.size() != 1)
+  {
+    fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
+    return;
+  }
   offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
-  fmt::print("Adjusted server public key, offset = {:#012x}\n", offsets.server_public_key);
+  fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  if (shannon_constant_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find shannon constant\n");
+    return;
+  }
+  for (const auto &offset: shannon_constant_offsets)
+  {
+    sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
+  }
 
   /*
    * shn_encrypt, shn_decrypt and shn_finish all have the same prologue:
@@ -323,6 +322,18 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
    *      parse the entire PE file.
    * For these reasons we will define some structs and if something breaks we'll
    * print an error and quit.
+   *
+   * A PE file looks like this:
+   *   IMAGE_DOS_HEADER{}
+   *   DOS_STUB
+   *   RICH_HEADER
+   *   IMAGE_NT_HEADERS {
+   *     Magic
+   *     IMAGE_FILE_HEADER
+   *     IMAGE_OPTIONAL_HEADER[32/64]
+   *   }
+   *   IMAGE_SECTION_HEADER[] (contains relocation info)
+   *   <sections>
    */
 
   const std::string binary_filename = binary_path.filename().string();
@@ -434,9 +445,40 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     relocation_entry relocation;
     relocation.start = section_header.PointerToRawData;
     relocation.end = section_header.PointerToRawData + section_header.SizeOfRawData;
-    relocation.offset = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
+    relocation.virtual_address = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
     relocation.name = std::string(section_header.Name, strnlen(section_header.Name, sizeof(section_header.Name)));
     relocations.emplace_back(std::move(relocation));
+  }
+
+  const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
+  const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
+  sigscanner::multi_scanner scanner;
+  scanner.add_signature(SHANNON_CONSTANT);
+  scanner.add_signature(SERVER_PUBLIC_KEY);
+  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
+  std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
+  std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
+  if (server_public_key_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find server public key\n");
+    return;
+  }
+  if (server_public_key_offsets.size() != 1)
+  {
+    fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
+    return;
+  }
+  offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
+  fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  if (shannon_constant_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find shannon constant\n");
+    return;
+  }
+  for (const auto &offset: shannon_constant_offsets)
+  {
+    sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
   }
 }
 
