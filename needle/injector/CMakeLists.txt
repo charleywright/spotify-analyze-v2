@@ -4,7 +4,8 @@ include(FetchContent)
 set(CMAKE_CXX_STANDARD 17)
 
 add_executable(needle-injector
-    src/main.cpp
+        src/main.cpp
+        src/scan.cpp
 )
 target_include_directories(needle-injector PRIVATE src)
 

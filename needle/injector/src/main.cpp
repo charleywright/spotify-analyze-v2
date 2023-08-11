@@ -3,8 +3,7 @@
 #include <filesystem>
 #include <string>
 #include "platform.hpp"
-
-#include "sigscanner/sigscanner.hpp"
+#include "scan.hpp"
 
 std::string executable_name;
 
@@ -42,7 +41,7 @@ int main(int argc, char **argv)
   const auto target_str = args.get<std::string>("target");
   if (!target_str)
   {
-    std::fprintf(stderr, "Missing --target\n\n");
+    std::fprintf(stderr, "Error: Missing --target\n\n");
     print_help();
     return 1;
   }
@@ -50,7 +49,7 @@ int main(int argc, char **argv)
   platform target = get_platform(*target_str);
   if (target == platform::UNKNOWN)
   {
-    std::fprintf(stderr, "%.*s is not a valid target\n\n", static_cast<int>(target_str->size()), target_str->data());
+    std::fprintf(stderr, "Error: %.*s is not a valid target\n\n", static_cast<int>(target_str->size()), target_str->data());
     print_help();
     return 1;
   }
@@ -58,14 +57,14 @@ int main(int argc, char **argv)
   const auto exec = args.get<std::string>("exec");
   if (!exec)
   {
-    std::fprintf(stderr, "Missing --exec\n\n");
+    std::fprintf(stderr, "Error: Missing --exec\n\n");
     print_help();
     return 1;
   }
   const std::filesystem::path exec_path = *exec;
   if (!std::filesystem::exists(exec_path))
   {
-    std::fprintf(stderr, "Executable %s does not exist\n\n", exec_path.string().c_str());
+    std::fprintf(stderr, "Error: Executable %s does not exist\n\n", exec_path.string().c_str());
     print_help();
     return 1;
   }
@@ -76,14 +75,13 @@ int main(int argc, char **argv)
   {
     if (!binary)
     {
-      std::fprintf(stderr, "Missing --binary\n\n");
+      std::fprintf(stderr, "Error: Missing --binary\n\n");
       print_help();
       return 1;
     }
     if (!std::filesystem::exists(binary_path))
     {
-      std::fprintf(stderr, "Binary %s does not exist\n\n", binary_path.string().c_str());
-      print_help();
+      std::fprintf(stderr, "Error: Binary %s does not exist\n\n", binary_path.string().c_str());
       return 1;
     }
   }
@@ -92,21 +90,15 @@ int main(int argc, char **argv)
   std::printf("Executable: %s\n", exec_path.string().c_str());
   std::printf("Binary: %s\n", binary_path.string().c_str());
 
-  const sigscanner::signature shannon_constant("3a c5 96 69");
-  const sigscanner::scanner scanner(shannon_constant);
-  const std::vector<sigscanner::offset> offsets = scanner.scan_file(binary_path.string());
-  for(const auto &offset : offsets)
+  scan_result offsets = scan_binary(target, binary_path);
+  if (!offsets.success)
   {
-    std::printf("Found offset 0x%08lx\n", offset);
+    std::fprintf(stderr, "Error: Failed to find offsets\n");
+    return 1;
   }
 
-  /*
-    needle-injector --target linux --exec /usr/bin/spotify
-    Target: linux
-    Executable: /usr/bin/spotify
-    Binary: /usr/bin/spotify
-    Found offset 0x01a6ed47
-    Found offset 0x01a6f0aa
-    Found offset 0x01a70887
-   */
+  const std::string binary_filename = binary_path.filename().string();
+  std::printf("shn_encrypt: %s:%012lx\n", binary_filename.c_str(), offsets.shn_encrypt);
+  std::printf("shn_decrypt: %s:%012lx\n", binary_filename.c_str(), offsets.shn_decrypt);
+  std::printf("server_key: %s:%012lx\n", binary_filename.c_str(), offsets.server_public_key);
 }
