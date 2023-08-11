@@ -480,6 +480,65 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
     fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
   }
+
+  /*
+   * On Windows I noticed that sometimes shn_diffuse would be found in-between
+   * the encryption/decryption functions. This doesn't appear to cause issues
+   * though as the function prologue is quite different:
+   *
+   * shn_encrypt:
+   *   48 89 5C 24 08      mov     [rsp+arg_0], rbx
+   *   48 89 6C 24 10      mov     [rsp+arg_8], rbp
+   *   48 89 74 24 18      mov     [rsp+arg_10], rsi
+   *
+   * shn_decrypt:
+   *   48 89 5C 24 08      mov     [rsp+arg_0], rbx
+   *   48 89 6C 24 10      mov     [rsp+arg_8], rbp
+   *   48 89 74 24 18      mov     [rsp+arg_10], rsi
+   *
+   * shn_diffuse:
+   *   48 89 4C 24 08      mov     [rsp+arg_0], rcx
+   *   53                  push    rbx
+   *
+   *  The other difference on Windows is shn_finish contains the first instance
+   *  of the constant instead of the last. If this changes in the future, we can
+   *  always try scanning backwards from each occurrence of the constant however
+   *  that is not ideal. shn_finish also has a different prologue to the other
+   *  functions so no need to deal with hitting that.
+   */
+
+  sigscanner::offset first_shannon_constant = shannon_constant_offsets[0];
+  std::array<std::uint8_t, 0x4000> shn_bytes{0};
+  std::int64_t shn_prologue_scan_base = static_cast<std::int64_t>(first_shannon_constant - shn_bytes.size());
+  binary_file.seekg(shn_prologue_scan_base);
+  binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
+  if (binary_file.gcount() != shn_bytes.size())
+  {
+    fmt::print(stderr, "Error: Failed to read bytes to scan for shannon prologue\n");
+    return;
+  }
+  sigscanner::signature function_prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18";
+  std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
+  if(function_prologues.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
+    return;
+  }
+  for(auto &prologue: function_prologues)
+  {
+    sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
+    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
+    prologue = relocated_prologue;
+  }
+  if(function_prologues.size() < 2)
+  {
+    fmt::print(stderr, "Error: Found too few prologues\n");
+    return;
+  }
+
+  offsets.shn_addr1 = function_prologues[0];
+  offsets.shn_addr2 = function_prologues[1];
+  offsets.success = true;
 }
 
 scan_result scan_binary(platform target, const std::filesystem::path &binary_path)
