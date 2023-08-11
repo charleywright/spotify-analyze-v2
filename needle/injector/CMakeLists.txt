@@ -16,9 +16,9 @@ target_include_directories(needle-injector PRIVATE ${flags_SOURCE_DIR})
 
 # Faster than git clone. There are issues with GIT_SHALLOW too on some versions of cmake
 FetchContent_Declare(sigscanner URL https://github.com/charleywright/sigscanner/archive/refs/heads/master.zip DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
-set(SIGSCANNER_SHARED_LIB OFF)
-set(SIGSCANNER_STATIC_LIB ON)
-set(SIGSCANNER_BUILD_EXEC OFF)
+set(SIGSCANNER_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
+set(SIGSCANNER_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(SIGSCANNER_BUILD_EXEC OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(sigscanner)
 target_include_directories(needle-injector PRIVATE ${SIGSCANNER_INCLUDE_DIRS})
 target_link_libraries(needle-injector PRIVATE ${SIGSCANNER_STATIC_LIB})
