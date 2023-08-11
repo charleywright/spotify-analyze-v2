@@ -20,5 +20,10 @@ set(SIGSCANNER_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
 set(SIGSCANNER_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
 set(SIGSCANNER_BUILD_EXEC OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(sigscanner)
-target_include_directories(needle-injector PRIVATE ${SIGSCANNER_INCLUDE_DIRS})
 target_link_libraries(needle-injector PRIVATE ${SIGSCANNER_STATIC_LIB})
+
+# Same as above
+FetchContent_Declare(fmt URL https://github.com/fmtlib/fmt/releases/download/10.0.0/fmt-10.0.0.zip DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(fmt)
+target_link_libraries(needle-injector PRIVATE fmt::fmt)

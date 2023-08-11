@@ -1,30 +1,28 @@
 #include "flags.h"
-#include <cstdio>
 #include <filesystem>
-#include <string>
 #include "platform.hpp"
 #include "scan.hpp"
+#include "fmt/core.h"
 
 std::string executable_name;
 
 void print_help()
 {
-  std::printf("Usage: %s --target <target> --exec <path or name> [--binary <path>]\n"
-              "\n"
-              "--target: linux/windows/android/ios\n"
-              "\n"
-              "--exec: path or name of the executable to inject frida into\n"
-              "  Linux: Probably '/opt/spotify/spotify'\n"
-              "  Windows: Probably '%%APPDATA%%/Spotify/Spotify.exe'\n"
-              "  Android: Probably 'com.spotify.music'\n"
-              "  iOS: Probably 'Spotify'\n"
-              "\n"
-              "--binary: path to the binary to scan for offsets\n"
-              "  Linux: Optional, should be the same as --exec\n"
-              "  Windows: Optional, should be the same as --exec\n"
-              "  Android: Required, path to liborbit-jni-spotify.so. Must be correct architecture and version\n"
-              "  iOS: Required, path to Spotify in Spotify.app\n",
-              executable_name.c_str());
+  fmt::print("Usage: {} --target <target> --exec <path or name> [--binary <path>]\n"
+             "\n"
+             "--target: linux/windows/android/ios\n"
+             "\n"
+             "--exec: path or name of the executable to inject frida into\n"
+             "  Linux: Probably '/opt/spotify/spotify'\n"
+             "  Windows: Probably '%%APPDATA%%/Spotify/Spotify.exe'\n"
+             "  Android: Probably 'com.spotify.music'\n"
+             "  iOS: Probably 'Spotify'\n"
+             "\n"
+             "--binary: path to the binary to scan for offsets\n"
+             "  Linux: Optional, should be the same as --exec\n"
+             "  Windows: Optional, should be the same as --exec\n"
+             "  Android: Required, path to liborbit-jni-spotify.so. Must be correct architecture and version\n"
+             "  iOS: Required, path to Spotify in Spotify.app\n", executable_name);
 }
 
 int main(int argc, char **argv)
@@ -41,7 +39,7 @@ int main(int argc, char **argv)
   const auto target_str = args.get<std::string>("target");
   if (!target_str)
   {
-    std::fprintf(stderr, "Error: Missing --target\n\n");
+    fmt::print(stderr, "Error: Missing --target\n");
     print_help();
     return 1;
   }
@@ -49,7 +47,7 @@ int main(int argc, char **argv)
   platform target = get_platform(*target_str);
   if (target == platform::UNKNOWN)
   {
-    std::fprintf(stderr, "Error: %.*s is not a valid target\n\n", static_cast<int>(target_str->size()), target_str->data());
+    fmt::print(stderr, "Error: {} is not a valid target\n", *target_str);
     print_help();
     return 1;
   }
@@ -57,14 +55,14 @@ int main(int argc, char **argv)
   const auto exec = args.get<std::string>("exec");
   if (!exec)
   {
-    std::fprintf(stderr, "Error: Missing --exec\n\n");
+    fmt::print(stderr, "Error: Missing --exec\n");
     print_help();
     return 1;
   }
   const std::filesystem::path exec_path = *exec;
   if (!std::filesystem::exists(exec_path))
   {
-    std::fprintf(stderr, "Error: Executable %s does not exist\n\n", exec_path.string().c_str());
+    fmt::print(stderr, "Error: Executable {} does not exist\n", exec_path.string());
     print_help();
     return 1;
   }
@@ -75,31 +73,31 @@ int main(int argc, char **argv)
   {
     if (!binary)
     {
-      std::fprintf(stderr, "Error: Missing --binary\n\n");
+      fmt::print(stderr, "Error: Missing --binary\n");
       print_help();
       return 1;
     }
     if (!std::filesystem::exists(binary_path))
     {
-      std::fprintf(stderr, "Error: Binary %s does not exist\n\n", binary_path.string().c_str());
+      fmt::print(stderr, "Error: Binary {} does not exist\n", binary_path.string());
       return 1;
     }
   }
 
-  std::printf("Target: %s\n", target_str->c_str());
-  std::printf("Executable: %s\n", exec_path.string().c_str());
-  std::printf("Binary: %s\n", binary_path.string().c_str());
+  fmt::print("Target: {}\n", *target_str);
+  fmt::print("Executable: {}\n", exec_path.string());
+  fmt::print("Binary: {}\n", binary_path.string());
 
   scan_result offsets = scan_binary(target, binary_path);
   if (!offsets.success)
   {
-    std::fprintf(stderr, "Error: Failed to find offsets\n");
+    fmt::print(stderr, "Error: Failed to find offsets\n");
     return 1;
   }
 
   const std::string binary_filename = binary_path.filename().string();
-  std::printf("Using offsets:\n");
-  std::printf("- shn_addr1:  0x%012lx\n", offsets.shn_addr1);
-  std::printf("- shn_addr2:  0x%012lx\n", offsets.shn_addr2);
-  std::printf("- server_key: 0x%012lx\n", offsets.server_public_key);
+  fmt::print("Using offsets:\n");
+  fmt::print("- shn_addr1:  {:#012x}\n", offsets.shn_addr1);
+  fmt::print("- shn_addr2:  {:#012x}\n", offsets.shn_addr2);
+  fmt::print("- server_key: {:#012x}\n", offsets.server_public_key);
 }
