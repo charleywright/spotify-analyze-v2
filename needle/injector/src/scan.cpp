@@ -2,9 +2,11 @@
 #include <fstream>
 #include "sigscanner/sigscanner.hpp"
 #include "elf.hpp"
+#include "pe.hpp"
 #include <memory>
 #include <array>
 #include "fmt/core.h"
+#include <cstring>
 
 const char *SERVER_PUBLIC_KEY_SIG = "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 
@@ -51,7 +53,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
     return;
   }
 
-  const sigscanner::signature elf_header_magic("7F 45 4C 46");
+  const sigscanner::signature elf_header_magic = "7F 45 4C 46";
   if (!elf_header_magic.check(e_ident.ei_mag, sizeof(e_ident.ei_mag)))
   {
     fmt::print(stderr, "Error: {} is not an ELF file\n", binary_path.string());
@@ -307,6 +309,137 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   offsets.success = true;
 }
 
+void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path)
+{
+  /*
+   * Executables on Windows use the PE format. There is an amazing tool we can use
+   * to look at PE files called PE-Bear (https://github.com/hasherezade/pe-bear).
+   * We are interested in the image base which is in the optional header and the
+   * section headers so we can compute the correct relocations for the addresses
+   * we find. We could use Win32 APIs for this however
+   *   A) They are a pain to use
+   *   B) We want to keep platform-dependent code to a minimum
+   *   C) We are only interested in a very small amount of data and don't need to
+   *      parse the entire PE file.
+   * For these reasons we will define some structs and if something breaks we'll
+   * print an error and quit.
+   */
+
+  const std::string binary_filename = binary_path.filename().string();
+  std::ifstream binary_file(binary_path, std::ios::binary);
+  if (!binary_file)
+  {
+    fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
+    return;
+  }
+  pe::IMAGE_DOS_HEADER dos_header{0};
+  binary_file.read(reinterpret_cast<char *>(&dos_header), sizeof(dos_header));
+  if (binary_file.gcount() != sizeof(dos_header))
+  {
+    fmt::print(stderr, "Error: Failed to read DOS header\n");
+    return;
+  }
+
+  const sigscanner::signature dos_header_magic = "4D 5A";
+  if (!dos_header_magic.check(reinterpret_cast<sigscanner::byte *>(&dos_header.e_magic), sizeof(dos_header.e_magic)))
+  {
+    fmt::print(stderr, "Error: Invalid DOS header magic\n");
+    return;
+  }
+
+  std::uint32_t new_header_offset = dos_header.e_lfanew;
+  binary_file.seekg(new_header_offset, std::ios::beg);
+  // Read the magic separately because we don't know the size of the NT header yet
+  sigscanner::byte nt_header_magic[4];
+  binary_file.read(reinterpret_cast<char *>(nt_header_magic), sizeof(nt_header_magic));
+  if (binary_file.gcount() != sizeof(nt_header_magic))
+  {
+    fmt::print(stderr, "Error: Failed to read NT header magic\n");
+    return;
+  }
+  if (
+          nt_header_magic[0] != 'P' ||
+          nt_header_magic[1] != 'E' ||
+          nt_header_magic[2] != '\0' ||
+          nt_header_magic[3] != '\0'
+          )
+  {
+    fmt::print(stderr, "Error: Invalid NT header magic\n");
+    return;
+  }
+
+  pe::IMAGE_FILE_HEADER file_header{0};
+  binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
+  if (binary_file.gcount() != sizeof(file_header))
+  {
+    fmt::print(stderr, "Error: Failed to read file header\n");
+    return;
+  }
+
+  std::uint64_t image_base;
+  if (file_header.SizeOfOptionalHeader == sizeof(pe::IMAGE_OPTIONAL_HEADER64))
+  {
+    pe::IMAGE_OPTIONAL_HEADER64 optional_header{0};
+    binary_file.read(reinterpret_cast<char *>(&optional_header), sizeof(optional_header));
+    if (binary_file.gcount() != sizeof(optional_header))
+    {
+      fmt::print(stderr, "Error: Failed to read optional header\n");
+      return;
+    }
+    if (
+            optional_header.Magic != pe::IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+            optional_header.Magic != pe::IMAGE_NT_OPTIONAL_HDR32_MAGIC
+            )
+    {
+      fmt::print(stderr, "Error: Invalid optional header magic\n");
+      return;
+    }
+    image_base = optional_header.ImageBase;
+  } else if (file_header.SizeOfOptionalHeader == sizeof(pe::IMAGE_OPTIONAL_HEADER32))
+  {
+    pe::IMAGE_OPTIONAL_HEADER32 optional_header{0};
+    binary_file.read(reinterpret_cast<char *>(&optional_header), sizeof(optional_header));
+    if (binary_file.gcount() != sizeof(optional_header))
+    {
+      fmt::print(stderr, "Error: Failed to read optional header\n");
+      return;
+    }
+    if (
+            optional_header.Magic != pe::IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+            optional_header.Magic != pe::IMAGE_NT_OPTIONAL_HDR32_MAGIC
+            )
+    {
+      fmt::print(stderr, "Error: Invalid optional header magic\n");
+      return;
+    }
+    image_base = optional_header.ImageBase;
+  } else
+  {
+    fmt::print(stderr, "Error: Invalid optional header size\n");
+    return;
+  }
+
+  std::vector<pe::IMAGE_SECTION_HEADER> section_headers(file_header.NumberOfSections);
+  const auto section_headers_size = static_cast<std::streamsize>(file_header.NumberOfSections * sizeof(pe::IMAGE_SECTION_HEADER));
+  binary_file.read(reinterpret_cast<char *>(section_headers.data()), section_headers_size);
+  if (binary_file.gcount() != section_headers_size)
+  {
+    fmt::print(stderr, "Error: Failed to read section headers\n");
+    return;
+  }
+
+  std::vector<relocation_entry> relocations;
+  for (const auto &section_header: section_headers)
+  {
+    relocation_entry relocation;
+    relocation.start = section_header.PointerToRawData;
+    relocation.end = section_header.PointerToRawData + section_header.SizeOfRawData;
+    relocation.offset = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
+    relocation.name = std::string(section_header.Name, strnlen(section_header.Name, sizeof(section_header.Name)));
+    relocations.emplace_back(std::move(relocation));
+  }
+}
+
 scan_result scan_binary(platform target, const std::filesystem::path &binary_path)
 {
   scan_result offsets;
@@ -364,6 +497,11 @@ scan_result scan_binary(platform target, const std::filesystem::path &binary_pat
     case platform::LINUX:
     {
       scan_linux(offsets, binary_path);
+      return offsets;
+    }
+    case platform::WINDOWS:
+    {
+      scan_windows(offsets, binary_path);
       return offsets;
     }
     default:
