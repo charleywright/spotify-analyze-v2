@@ -70,10 +70,10 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
   } else
   {
     binary_details.header = elf::Elf32_Ehdr{0};
-    auto  &elf_header = std::get<elf::Elf32_Ehdr>(binary_details.header);
+    auto &elf_header = std::get<elf::Elf32_Ehdr>(binary_details.header);
     elf_header.e_ident = e_ident;
-    binary_file.read(reinterpret_cast<char*>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
-    if(binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
+    binary_file.read(reinterpret_cast<char *>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
+    if (binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
     {
       fmt::print(stderr, "Error: Failed to read ELF header\n");
       return binary_details;
@@ -86,6 +86,29 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
 
 std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, const elf::elf_file_details &binary_details)
 {
+  /*
+   * These are offsets of the shannon constant using a binary file scan:
+   *   0x0001a6ed47
+   *   0x0001a6f0aa
+   *   0x0001a70887
+   * These are the offsets when the binary is loaded into memory:
+   *   0x0001c6fd47
+   *   0x0001c700aa
+   *   0x0001c71887
+   * The difference is 0x201000, this is due to relocations. Since the constant is used in assembly it will be in the .text
+   * section. To find the offset this section is loaded at we need to parse the Elf header and section table.
+   *
+   * If we run 'readelf --sections --wide /opt/spotify/spotify' we find the following entry:
+   *   [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+   *   [15] .text             PROGBITS        0000000000adbb80 8dab80 13339e5 00  AX  0   0 32
+   *
+   * If we take the address of the .text section and subtract the offset in the file we get 0x201000.
+   *
+   * To find and apply these offsets ourselves we need to parse the section header table. To do that we need to parse the
+   * ELF header to find the offset of the section header table however we are already doing so to find the machine type.
+   * The ELF format is very well documented and there are some resources linked at the top of elf.hpp
+  */
+
   std::vector<relocation_entry> relocations;
 
   if (binary_details.is_64_bit)
@@ -231,29 +254,12 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   }
 
   elf::elf_file_details binary_details = parse_elf(binary_file);
-  if(binary_details.machine == 0)
+  if (binary_details.machine == 0)
   {
     return;
   }
 
-  /*
-   * These are offsets of the shannon constant using a binary file scan:
-   *   0x0001a6ed47
-   *   0x0001a6f0aa
-   *   0x0001a70887
-   * These are the offsets when the binary is loaded into memory:
-   *   0x0001c6fd47
-   *   0x0001c700aa
-   *   0x0001c71887
-   * The difference is 0x201000, this is due to relocations. Since the constant is used in assembly it will be in the .text
-   * section. To find the offset this section is loaded at we need to parse the Elf header and section table.
-   *
-   * If we run 'readelf --sections --wide /opt/spotify/spotify' we find the following entry:
-   *   [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
-   *   [15] .text             PROGBITS        0000000000adbb80 8dab80 13339e5 00  AX  0   0 32
-   *
-   * If we take the address of the .text section and subtract the offset in the file we get 0x201000.
-  */
+  // Symbols move around when loaded into memory. See the comment at the top of the implementation
   std::vector<relocation_entry> relocations = parse_elf_relocations(binary_file, binary_details);
 
   const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
@@ -302,8 +308,8 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
    */
 
   sigscanner::offset last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
-  std::array<elf::byte, 0x2000> shn_bytes{0};
-  std::int64_t shn_prologue_scan_base = static_cast<int>(last_shannon_constant) - 0x2000;
+  std::array<std::uint8_t, 0x2000> shn_bytes{0};
+  std::int64_t shn_prologue_scan_base = static_cast<std::int64_t>(last_shannon_constant - shn_bytes.size());
   binary_file.seekg(std::max(std::int64_t{0}, shn_prologue_scan_base));
   binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
   sigscanner::signature function_prologue = "55 48 89 E5";
@@ -323,7 +329,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   for (auto &prologue: function_prologues)
   {
     sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
-    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename.c_str(), prologue, relocated_prologue);
+    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
   if (function_prologues.size() < 2)
@@ -570,6 +576,227 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   offsets.success = true;
 }
 
+void scan_android(scan_result &offsets, const std::filesystem::path &binary_path)
+{
+  /*
+   * Android apps are packaged as APKs. APKs are just zip files with a different
+   * extension. When the APK is extracted there is a libs folder which contains
+   * JNI libraries (Java Native Interface). These are libraries written in a
+   * compiled language such as C, C++ or Rust that can be called from Java. Since
+   * phones can have different architectures, Spotify ships multiple builds of the
+   * library: x86, x86_64, armeabi-v7a, arm64-v8a. These are different binaries
+   * with different instruction sets therefore have different signatures and
+   * offsets. We could ask the user to specify however since they are all shared
+   * libraries (.so files) we can read the ELF header to find the architecture.
+   */
+
+  // These are the values I found on my phone. They should be constant
+  static constexpr std::uint16_t JNI_X86 = 3;
+  static constexpr std::uint16_t JNI_X86_64 = 62;
+  static constexpr std::uint16_t JNI_ARMEABI_V7A = 40;
+  static constexpr std::uint16_t JNI_ARM64_V8A = 183;
+  static const std::unordered_map<std::uint16_t, std::string_view> JNI_ARCHITECTURES =
+          {
+                  {JNI_X86,         "x86"},
+                  {JNI_X86_64,      "x86_64"},
+                  {JNI_ARMEABI_V7A, "armeabi-v7a"},
+                  {JNI_ARM64_V8A,   "arm64-v8a"}
+          };
+  /*
+   * Tested all signatures on 8.8.12.545 on all architectures
+   */
+  static const std::unordered_map<std::uint16_t, sigscanner::signature> JNI_SHANNON_CONSTANTS =
+          {
+                  /*
+                   *
+                   */
+                  {JNI_X86,         "3A C5 96 69"},
+                  {JNI_X86_64,      "3A C5 96 69"},
+                  /*
+                   * Constant is embedded after function, and is loaded using offset from PC
+                   * .text:00C7B410                 LDR             R2, [PC, #0xAC]
+                   * ...
+                   * .text:00C7B4C4 dword_C7B4C4    DCD 0x6996C53A
+                   */
+                  {JNI_ARMEABI_V7A, "3A C5 96 69"},
+                  /*
+                   * Registers can change, so 4B and CB are wildcards
+                   * 4B A7 98 52    movz w11, #0xc53a
+                   * CB 32 AD 72    movk w11, #0x6996, lsl #16
+                   */
+                  {JNI_ARM64_V8A,   "?? A7 98 52 ?? 32 AD 72"}
+          };
+  static const std::unordered_map<std::uint16_t, sigscanner::signature> JNI_SHANNON_PROLOGUES =
+          {
+                  /*
+                   * 55                push ebp
+                   * 89 E5             mov  ebp, esp
+                   * 53                push ebx
+                   * 57                push edi
+                   * 56                push esi
+                   * 83 E4 F0          and  esp, 0xfffffff0
+                   * 83 EC ??          sub  esp, ??
+                   * E8 00 00 00 00    call 0x5
+                   */
+                  {JNI_X86,         "55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00"},
+                  /*
+                   * 55                push rbp
+                   * 48 89 E5          mov  rbp, rsp
+                   */
+                  {JNI_X86_64,      "55 48 89 E5"},
+                  /*
+                   * F0 4D 2D E9       push {r4, r5, r6, r7, r8, sl, fp, lr}
+                   * 18 B0 8D E2       add  fp, sp, #0x18
+                   */
+                  {JNI_ARMEABI_V7A, "F0 4D 2D E9 18 B0 8D E2"},
+                  /*
+                   * F7 0F 1C F8    str x23, [sp, #-0x40]!
+                   * F6 57 01 A9    stp x22, x21, [sp, #0x10]
+                   * F4 4F 02 A9    stp x20, x19, [sp, #0x20]
+                   * FD 7B 03 A9    stp x29, x30, [sp, #0x30]
+                   */
+                  {JNI_ARM64_V8A,   "F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9"}
+          };
+
+  const std::string binary_filename = binary_path.filename().string();
+  std::ifstream binary_file(binary_path, std::ios::binary);
+  if (!binary_file)
+  {
+    fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
+    return;
+  }
+
+  elf::elf_file_details binary_details = parse_elf(binary_file);
+  if (binary_details.machine == 0)
+  {
+    return;
+  }
+
+  // Same as Linux. See the comment at the top of the implementation
+  std::vector<relocation_entry> relocations = parse_elf_relocations(binary_file, binary_details);
+
+  switch (binary_details.machine)
+  {
+    case JNI_X86:
+    {
+      if (binary_details.is_64_bit || !binary_details.is_little_endian)
+      {
+        fmt::print(stderr, "Error: Expected x86 to be 32-bit and little endian\n");
+        return;
+      }
+      fmt::print("Detected JNI for x86\n");
+      break;
+    }
+    case JNI_X86_64:
+    {
+      if (!binary_details.is_64_bit || !binary_details.is_little_endian)
+      {
+        fmt::print(stderr, "Error: Expected x86_64 to be 64-bit and little endian\n");
+        return;
+      }
+      fmt::print("Detected JNI for x86_64\n");
+      break;
+    }
+    case JNI_ARMEABI_V7A:
+    {
+      if (binary_details.is_64_bit || !binary_details.is_little_endian)
+      {
+        fmt::print(stderr, "Error: Expected armeabi-v7a to be 32-bit and little endian\n");
+        return;
+      }
+      fmt::print("Detected JNI for armeabi-v7a\n");
+      break;
+    }
+    case JNI_ARM64_V8A:
+    {
+      if (!binary_details.is_64_bit || !binary_details.is_little_endian)
+      {
+        fmt::print(stderr, "Error: Expected arm64-v8a to be 64-bit and little endian\n");
+        return;
+      }
+      fmt::print("Detected JNI for arm64-v8a\n");
+      break;
+    }
+    default:
+    {
+      fmt::print(stderr, "Error: Unknown JNI target %u. See 'scan_android' implementation\n", binary_details.machine);
+      return;
+    }
+  }
+
+  const auto &SHANNON_CONSTANT = JNI_SHANNON_CONSTANTS.at(binary_details.machine);
+  const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
+  sigscanner::multi_scanner scanner;
+  scanner.add_signature(SHANNON_CONSTANT);
+  scanner.add_signature(SERVER_PUBLIC_KEY);
+  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
+  std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
+  std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
+  if (server_public_key_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find server public key\n");
+    return;
+  }
+  if (server_public_key_offsets.size() != 1)
+  {
+    fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
+    return;
+  }
+  offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
+  fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  if (shannon_constant_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find shannon constant\n");
+    return;
+  }
+  for (const auto &offset: shannon_constant_offsets)
+  {
+    sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
+  }
+
+  /*
+   * On all architectures, shn_finish contains the last instance of the constant.
+   * The encryption/decryption functions are then directly above, so we can have
+   * shorter function prologues.
+   */
+
+  sigscanner::offset last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
+  std::array<std::uint8_t, 0x2000> shn_bytes{0};
+  std::int64_t shn_prologue_scan_base = static_cast<std::int64_t>(last_shannon_constant - shn_bytes.size());
+  binary_file.seekg(std::max(std::int64_t{0}, shn_prologue_scan_base));
+  binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
+  const sigscanner::signature &function_prologue = JNI_SHANNON_PROLOGUES.at(binary_details.machine);
+  std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
+  if (function_prologues.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
+    return;
+  }
+  // We hit shn_finish
+  if (last_shannon_constant - function_prologues[0] < 0x200)
+  {
+    sigscanner::offset relocated_shn_finish = apply_relocations(function_prologues[0], relocations);
+    fmt::print("Found shn_finish at {}:{:#012x} ({:#012x})\n", binary_filename, function_prologues[0], relocated_shn_finish);
+    function_prologues.erase(function_prologues.begin());
+  }
+  for (auto &prologue: function_prologues)
+  {
+    sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
+    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
+    prologue = relocated_prologue;
+  }
+  if(function_prologues.size() < 2)
+  {
+    fmt::print(stderr, "Error: Found too few prologues\n");
+    return;
+  }
+
+  offsets.shn_addr1 = function_prologues[0];
+  offsets.shn_addr2 = function_prologues[1];
+  offsets.success = true;
+}
+
 scan_result scan_binary(platform target, const std::filesystem::path &binary_path)
 {
   scan_result offsets;
@@ -632,6 +859,11 @@ scan_result scan_binary(platform target, const std::filesystem::path &binary_pat
     case platform::WINDOWS:
     {
       scan_windows(offsets, binary_path);
+      return offsets;
+    }
+    case platform::ANDROID:
+    {
+      scan_android(offsets, binary_path);
       return offsets;
     }
     default:

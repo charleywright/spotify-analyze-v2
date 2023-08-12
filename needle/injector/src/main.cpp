@@ -60,7 +60,8 @@ int main(int argc, char **argv)
     return 1;
   }
   const std::filesystem::path exec_path = *exec;
-  if (!std::filesystem::exists(exec_path))
+  if ((target != platform::ANDROID && target != platform::IOS) &&
+      !std::filesystem::exists(exec_path))
   {
     fmt::print(stderr, "Error: Executable {} does not exist\n", exec_path.string());
     print_help();
@@ -85,7 +86,7 @@ int main(int argc, char **argv)
   }
 
   fmt::print("Target: {}\n", *target_str);
-  fmt::print("Executable: {}\n", exec_path.string());
+  fmt::print("Executable: {}\n", *exec);
   fmt::print("Binary: {}\n", binary_path.string());
 
   scan_result offsets = scan_binary(target, binary_path);
