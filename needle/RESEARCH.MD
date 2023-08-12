@@ -2,6 +2,18 @@
 
 ## iOS
 
+iOS apps use .ipa files which are encrypted by default. They can be decrypted using a mac or jailbroken device or the unencrypted version can be dumped using frida-ios-dump. Once a decrypted IPA has been obtained it can be extracted (standard zip archive like an APK) and the main binary can be analyzed. The main binary should be at `./Payload/Spotify.app/Spotify`.
+
+### Obtaining a decrypted IPA using a rootless jailbreak
+
+I'm using an iPhone SE 1st Gen running iOS 15.7.8 and palera1n rootless. These are the steps for my setup:
+1. Install frida-server by either following [miticollo's guide for building Frida](https://gist.github.com/miticollo/6e65b59d83b17bacc00523a0f9d41c11) or adding [their repository for Sileo/Zebra](https://miticollo.github.io/repos/) and installing from there
+2. Clone [miticollo's fork of frida-ios-dump](https://github.com/miticollo/frida-ios-dump) and follow the instructions to install dependencies
+3. Start the spotify app and run `./dump.py --list`. There should be a process called "Spotify"
+4. Dump the app: `python ./dump.py -H <local ip> -u mobile -P <password> Spotify`
+
+### Web archive
+
 There are some old versions of the app available here - https://archive.org/details/iOSObscura  
 These are decrypted IPA files which is the apple version of an APK. Unzipping them, there are two binaries that look interesting:
 
@@ -11,6 +23,12 @@ These are decrypted IPA files which is the apple version of an APK. Unzipping th
 `SpotifyShared` contains some Login5 code and seems to be UI related. Since it isn't present in old versions lets just ignore it for now.
 
 The main `Spotify` binary is a Mach-O file which supports multi-architecture. To properly analyze it, it needs splitting into architecture specific files which can be done using [Lipo](https://keith.github.io/xcode-man-pages/lipo.1.html). A linux port is available at [tpoechtrager/cctools-port/](https://github.com/tpoechtrager/cctools-port/) for non-mac users. The oldest version on archive.org supports iOS 4 and has `armv6` and `armv7` architectures.
+
+### Theory
+
+The injector will need to find offsets for all architectures that the binary supports. All offsets should be sent to the frida script which will then detect the architecture it is running on and use the correct set of offsets accordingly. I need to learn more about Mach-O and iOS in general before I'll be able to write this part however a pull request is always welcome.
+
+### Versions
 
 #### 0.4.26.1.g01466bb9 (eb9b670a3255961df5f0e7257e5922cb)
 
@@ -416,6 +434,3 @@ __text:00000001009851BC 08 03 00 34                 CBZ             W8, loc_1009
 __text:00000001009851C0 55 1E 00 34                 CBZ             W21, loc_100985588
 
 ```
-
-### Theory
-The injector will need to find offsets for all architectures that the binary supports. All offsets should be sent to the frida script which will then detect the architecture it is running on and use the correct set of offsets accordingly. I need to learn more about Mach-O and iOS in general before I'll be able to write this part however a pull request is always welcome.
