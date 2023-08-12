@@ -7,6 +7,7 @@
 #include <array>
 #include "fmt/core.h"
 #include <cstring>
+#include <variant>
 
 const char *SERVER_PUBLIC_KEY_SIG = "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 
@@ -14,7 +15,7 @@ struct relocation_entry
 {
     std::uint64_t start = 0;
     std::uint64_t end = 0;
-    std::int64_t virtual_address = 0;
+    std::int64_t offset = 0;
     std::string name;
 };
 
@@ -24,10 +25,193 @@ std::uint64_t apply_relocations(std::uint64_t address, const std::vector<relocat
   {
     if (address >= entry.start && address < entry.end)
     {
-      return address + entry.virtual_address - entry.start;
+      return address + entry.offset;
     }
   }
   return address;
+}
+
+elf::elf_file_details parse_elf(std::ifstream &binary_file)
+{
+  elf::elf_file_details binary_details;
+
+  elf::Elf_Ident e_ident{0};
+  binary_file.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
+  if (binary_file.gcount() != sizeof(e_ident))
+  {
+    fmt::print(stderr, "Error: Failed to read ELF identifier\n");
+    return binary_details;
+  }
+
+  const sigscanner::signature elf_header_magic = "7F 45 4C 46";
+  if (!elf_header_magic.check(e_ident.ei_mag, sizeof(e_ident.ei_mag)))
+  {
+    fmt::print(stderr, "Error: Binary is not an ELF file\n");
+    return binary_details;
+  }
+
+  binary_details.is_64_bit = e_ident.ei_class == elf::Elf_Ident::ELFCLASS64;
+  binary_details.is_little_endian = e_ident.ei_data == elf::Elf_Ident::ELFDATA2LSB;
+
+  fmt::print("Detected binary as {} {}\n", binary_details.is_64_bit ? "64-bit" : "32-bit", binary_details.is_little_endian ? "little endian" : "big endian");
+
+  if (binary_details.is_64_bit)
+  {
+    binary_details.header = elf::Elf64_Ehdr{0};
+    auto &elf_header = std::get<elf::Elf64_Ehdr>(binary_details.header);
+    elf_header.e_ident = e_ident;
+    binary_file.read(reinterpret_cast<char *>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
+    if (binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
+    {
+      fmt::print(stderr, "Error: Failed to read ELF header\n");
+      return binary_details;
+    }
+    binary_details.machine = elf_header.e_machine;
+  } else
+  {
+    binary_details.header = elf::Elf32_Ehdr{0};
+    auto  &elf_header = std::get<elf::Elf32_Ehdr>(binary_details.header);
+    elf_header.e_ident = e_ident;
+    binary_file.read(reinterpret_cast<char*>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
+    if(binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
+    {
+      fmt::print(stderr, "Error: Failed to read ELF header\n");
+      return binary_details;
+    }
+    binary_details.machine = elf_header.e_machine;
+  }
+
+  return binary_details;
+}
+
+std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, const elf::elf_file_details &binary_details)
+{
+  std::vector<relocation_entry> relocations;
+
+  if (binary_details.is_64_bit)
+  {
+    const auto &header = std::get<elf::Elf64_Ehdr>(binary_details.header);
+    elf::Elf64_Half section_header_table_entry_size = header.e_shentsize;
+    if (section_header_table_entry_size != sizeof(elf::Elf64_Shdr))
+    {
+      fmt::print(stderr, "Error: Invalid section header table entry size\n");
+      return relocations;
+    }
+
+    std::vector<elf::Elf64_Shdr> section_headers(header.e_shnum);
+    elf::Elf64_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
+    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
+    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
+    if (binary_file.gcount() != section_header_table_size)
+    {
+      fmt::print(stderr, "Error: Failed to read section headers\n");
+      return relocations;
+    }
+
+    elf::Elf64_Half section_header_string_table_index = header.e_shstrndx;
+    if (section_header_string_table_index == elf::Elf64_Ehdr::SHN_UNDEF)
+    {
+      fmt::print(stderr, "Error: Section header string table index is undefined\n");
+      return relocations;
+    }
+    if (section_header_string_table_index == elf::Elf64_Ehdr::SHN_XINDEX)
+    {
+      section_header_string_table_index = section_headers[0].sh_link;
+    }
+
+    const elf::Elf64_Shdr &section_header_string_table_entry = section_headers[section_header_string_table_index];
+    std::unique_ptr<void, void (*)(void *)> section_header_string_table(std::malloc(section_header_string_table_entry.sh_size), std::free);
+    if (!section_header_string_table)
+    {
+      fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
+      return relocations;
+    }
+    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
+    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
+    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
+    {
+      fmt::print(stderr, "Error: Failed to read section header string table\n");
+      return relocations;
+    }
+    const auto resolve_str = [&section_header_string_table](elf::Elf64_Word offset) {
+        return reinterpret_cast<const char *>(section_header_string_table.get()) + offset;
+    };
+
+    for (const auto &section_header: section_headers)
+    {
+      if (section_header.sh_type == elf::Elf64_Shdr::SHT_PROGBITS)
+      {
+        relocation_entry entry;
+        entry.start = section_header.sh_offset;
+        entry.end = section_header.sh_offset + section_header.sh_size;
+        entry.offset = static_cast<std::int64_t>(section_header.sh_addr) - static_cast<std::int64_t>(section_header.sh_offset);
+        entry.name = resolve_str(section_header.sh_name);
+        relocations.emplace_back(std::move(entry));
+      }
+    }
+  } else
+  {
+    const auto &header = std::get<elf::Elf32_Ehdr>(binary_details.header);
+    elf::Elf32_Half section_header_table_entry_size = header.e_shentsize;
+    if (section_header_table_entry_size != sizeof(elf::Elf32_Shdr))
+    {
+      fmt::print(stderr, "Error: Invalid section header table entry size\n");
+      return relocations;
+    }
+
+    std::vector<elf::Elf32_Shdr> section_headers(header.e_shnum);
+    elf::Elf32_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
+    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
+    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
+    if (binary_file.gcount() != section_header_table_size)
+    {
+      fmt::print(stderr, "Error: Failed to read section headers\n");
+      return relocations;
+    }
+
+    elf::Elf32_Half section_header_string_table_index = header.e_shstrndx;
+    if (section_header_string_table_index == elf::Elf32_Ehdr::SHN_UNDEF)
+    {
+      fmt::print(stderr, "Error: Section header string table index is undefined\n");
+      return relocations;
+    }
+    if (section_header_string_table_index == elf::Elf32_Ehdr::SHN_XINDEX)
+    {
+      section_header_string_table_index = section_headers[0].sh_link;
+    }
+
+    const elf::Elf32_Shdr &section_header_string_table_entry = section_headers[section_header_string_table_index];
+    std::unique_ptr<void, void (*)(void *)> section_header_string_table(std::malloc(section_header_string_table_entry.sh_size), std::free);
+    if (!section_header_string_table)
+    {
+      fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
+      return relocations;
+    }
+    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
+    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
+    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
+    {
+      fmt::print(stderr, "Error: Failed to read section header string table\n");
+      return relocations;
+    }
+    const auto resolve_str = [&section_header_string_table](elf::Elf32_Word offset) {
+        return reinterpret_cast<const char *>(section_header_string_table.get()) + offset;
+    };
+
+    for (const auto &section_header: section_headers)
+    {
+      if (section_header.sh_type == elf::Elf32_Shdr::SHT_PROGBITS)
+      {
+        relocation_entry entry;
+        entry.start = section_header.sh_offset;
+        entry.end = section_header.sh_offset + section_header.sh_size;
+        entry.offset = section_header.sh_addr - section_header.sh_offset;
+        entry.name = resolve_str(section_header.sh_name);
+        relocations.emplace_back(std::move(entry));
+      }
+    }
+  }
+  return relocations;
 }
 
 void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
@@ -45,26 +229,12 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
     fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
     return;
   }
-  elf::Elf_Ident e_ident{0};
-  binary_file.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
-  if (binary_file.gcount() != sizeof(e_ident))
+
+  elf::elf_file_details binary_details = parse_elf(binary_file);
+  if(binary_details.machine == 0)
   {
-    fmt::print(stderr, "Error: Failed to read ELF identifier\n");
     return;
   }
-
-  const sigscanner::signature elf_header_magic = "7F 45 4C 46";
-  if (!elf_header_magic.check(e_ident.ei_mag, sizeof(e_ident.ei_mag)))
-  {
-    fmt::print(stderr, "Error: {} is not an ELF file\n", binary_path.string());
-    return;
-  }
-
-  bool is_64_bit = e_ident.ei_class == elf::Elf_Ident::ELFCLASS64;
-  bool is_little_endian = e_ident.ei_data == elf::Elf_Ident::ELFDATA2LSB;
-
-  // TODO: Add support for big endian. Constant is probably "69 96 C5 3A"
-  fmt::print("Detected binary as {} {}\n", is_64_bit ? "64-bit" : "32-bit", is_little_endian ? "little endian" : "big endian");
 
   /*
    * These are offsets of the shannon constant using a binary file scan:
@@ -84,148 +254,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
    *
    * If we take the address of the .text section and subtract the offset in the file we get 0x201000.
   */
-
-  // TODO: Refactor so we don't need to duplicate this code
-  std::vector<relocation_entry> relocations;
-  if (is_64_bit)
-  {
-    elf::Elf64_Ehdr header{0};
-    binary_file.seekg(0, std::ios::beg);
-    binary_file.read(reinterpret_cast<char *>(&header), sizeof(header));
-    if (binary_file.gcount() != sizeof(header))
-    {
-      fmt::print(stderr, "Error: Failed to read ELF header\n");
-      return;
-    }
-
-    elf::Elf64_Half section_header_table_entry_size = header.e_shentsize;
-    if (section_header_table_entry_size != sizeof(elf::Elf64_Shdr))
-    {
-      fmt::print(stderr, "Error: Invalid section header table entry size\n");
-      return;
-    }
-
-    std::vector<elf::Elf64_Shdr> section_headers(header.e_shnum);
-    elf::Elf64_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
-    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
-    if (binary_file.gcount() != section_header_table_size)
-    {
-      fmt::print(stderr, "Error: Failed to read section headers\n");
-      return;
-    }
-
-    elf::Elf64_Half section_header_string_table_index = header.e_shstrndx;
-    if (section_header_string_table_index == elf::Elf64_Ehdr::SHN_UNDEF)
-    {
-      fmt::print(stderr, "Error: Section header string table index is undefined\n");
-      return;
-    }
-    if (section_header_string_table_index == elf::Elf64_Ehdr::SHN_XINDEX)
-    {
-      section_header_string_table_index = section_headers[0].sh_link;
-    }
-
-    const elf::Elf64_Shdr &section_header_string_table_entry = section_headers[section_header_string_table_index];
-    std::unique_ptr<void, void (*)(void *)> section_header_string_table(std::malloc(section_header_string_table_entry.sh_size), std::free);
-    if (!section_header_string_table)
-    {
-      fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
-      return;
-    }
-    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
-    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
-    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
-    {
-      fmt::print(stderr, "Error: Failed to read section header string table\n");
-      return;
-    }
-    const auto resolve_str = [&section_header_string_table](elf::Elf64_Word offset) {
-        return reinterpret_cast<const char *>(section_header_string_table.get()) + offset;
-    };
-
-    for (const auto &section_header: section_headers)
-    {
-      if (section_header.sh_type == elf::Elf64_Shdr::SHT_PROGBITS)
-      {
-        relocation_entry entry;
-        entry.start = section_header.sh_offset;
-        entry.end = section_header.sh_offset + section_header.sh_size;
-        entry.virtual_address = static_cast<std::int64_t>(section_header.sh_addr) - static_cast<std::int64_t>(section_header.sh_offset);
-        entry.name = resolve_str(section_header.sh_name);
-        relocations.emplace_back(std::move(entry));
-      }
-    }
-  } else
-  {
-    elf::Elf32_Ehdr header{0};
-    binary_file.seekg(0, std::ios::beg);
-    binary_file.read(reinterpret_cast<char *>(&header), sizeof(header));
-    if (binary_file.gcount() != sizeof(header))
-    {
-      fmt::print(stderr, "Error: Failed to read ELF header\n");
-      return;
-    }
-
-    elf::Elf32_Half section_header_table_entry_size = header.e_shentsize;
-    if (section_header_table_entry_size != sizeof(elf::Elf32_Shdr))
-    {
-      fmt::print(stderr, "Error: Invalid section header table entry size\n");
-      return;
-    }
-
-    std::vector<elf::Elf32_Shdr> section_headers(header.e_shnum);
-    elf::Elf32_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
-    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
-    if (binary_file.gcount() != section_header_table_size)
-    {
-      fmt::print(stderr, "Error: Failed to read section headers\n");
-      return;
-    }
-
-    elf::Elf32_Half section_header_string_table_index = header.e_shstrndx;
-    if (section_header_string_table_index == elf::Elf32_Ehdr::SHN_UNDEF)
-    {
-      fmt::print(stderr, "Error: Section header string table index is undefined\n");
-      return;
-    }
-    if (section_header_string_table_index == elf::Elf32_Ehdr::SHN_XINDEX)
-    {
-      section_header_string_table_index = section_headers[0].sh_link;
-    }
-
-    const elf::Elf32_Shdr &section_header_string_table_entry = section_headers[section_header_string_table_index];
-    std::unique_ptr<void, void (*)(void *)> section_header_string_table(std::malloc(section_header_string_table_entry.sh_size), std::free);
-    if (!section_header_string_table)
-    {
-      fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
-      return;
-    }
-    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
-    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
-    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
-    {
-      fmt::print(stderr, "Error: Failed to read section header string table\n");
-      return;
-    }
-    const auto resolve_str = [&section_header_string_table](elf::Elf32_Word offset) {
-        return reinterpret_cast<const char *>(section_header_string_table.get()) + offset;
-    };
-
-    for (const auto &section_header: section_headers)
-    {
-      if (section_header.sh_type == elf::Elf32_Shdr::SHT_PROGBITS)
-      {
-        relocation_entry entry;
-        entry.start = section_header.sh_offset;
-        entry.end = section_header.sh_offset + section_header.sh_size;
-        entry.virtual_address = section_header.sh_addr - section_header.sh_offset;
-        entry.name = resolve_str(section_header.sh_name);
-        relocations.emplace_back(std::move(entry));
-      }
-    }
-  }
+  std::vector<relocation_entry> relocations = parse_elf_relocations(binary_file, binary_details);
 
   const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
   const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
@@ -275,7 +304,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   sigscanner::offset last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
   std::array<elf::byte, 0x2000> shn_bytes{0};
   std::int64_t shn_prologue_scan_base = static_cast<int>(last_shannon_constant) - 0x2000;
-  binary_file.seekg(std::max(0ll, shn_prologue_scan_base));
+  binary_file.seekg(std::max(std::int64_t{0}, shn_prologue_scan_base));
   binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
   sigscanner::signature function_prologue = "55 48 89 E5";
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
@@ -445,7 +474,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     relocation_entry relocation;
     relocation.start = section_header.PointerToRawData;
     relocation.end = section_header.PointerToRawData + section_header.SizeOfRawData;
-    relocation.virtual_address = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
+    relocation.offset = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress - section_header.PointerToRawData;
     relocation.name = std::string(section_header.Name, strnlen(section_header.Name, sizeof(section_header.Name)));
     relocations.emplace_back(std::move(relocation));
   }
@@ -519,18 +548,18 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
   sigscanner::signature function_prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18";
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
-  if(function_prologues.empty())
+  if (function_prologues.empty())
   {
     fmt::print(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
     return;
   }
-  for(auto &prologue: function_prologues)
+  for (auto &prologue: function_prologues)
   {
     sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
     fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
-  if(function_prologues.size() < 2)
+  if (function_prologues.size() < 2)
   {
     fmt::print(stderr, "Error: Found too few prologues\n");
     return;

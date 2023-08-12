@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <variant>
+#include "platform.hpp"
 
 /*
  * References:
@@ -87,6 +89,8 @@ namespace elf
         static constexpr Elf64_Half SHN_XINDEX = 0xFFFF;
     } Elf64_Ehdr;
 
+    typedef std::variant<Elf32_Ehdr, Elf64_Ehdr> Elf_Ehdr;
+
     typedef struct Elf32_Shdr
     {
         Elf32_Word sh_name;
@@ -118,4 +122,12 @@ namespace elf
 
         static constexpr Elf64_Word SHT_PROGBITS = 1;
     } Elf64_Shdr;
+
+    typedef struct elf_file_details
+    {
+        bool is_64_bit = false;
+        bool is_little_endian = false;
+        std::uint16_t machine = 0;
+        Elf_Ehdr header;
+    } elf_file_details;
 }
