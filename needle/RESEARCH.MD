@@ -16,7 +16,7 @@ The main `Spotify` binary is a Mach-O file which supports multi-architecture. To
 
 This is the iOS 4 version mentioned above. On armv7 there is only one occurrence of the constant and encryption functions aren't nearby. On armv6 there are 3 occurrences, shn_finish contains the last one and the encryption functions are directly before. These are the important bits:
 
-```
+```asm
 shn_addr2
 __text:000FC51C F0 40 2D E9                 PUSH    {R4-R7,LR}
 __text:000FC520 0C 70 8D E2                 ADD     R7, SP, #0xC
@@ -70,7 +70,7 @@ __text:000FE750 C4 10 9F E5                 LDR     R1, =0x6996C53A
 
 Only supports armv7. This version doesn't have function names stripped:
 
-```
+```asm
 sp::ApConnectionImpl::powSolveHashcash
 spotify::protocol::ap::PoWHashCashResponse::PoWHashCashResponse
 spotify::protocol::ap::PoWHashCashChallenge::PoWHashCashChallenge
@@ -78,7 +78,7 @@ spotify::protocol::ap::FingerprintGrainChallenge::kek
 boink::ProtobufOutputStream::ok
 ```
 
-```
+```asm
 shn_addr2 (shn_encrypt)
 __text:002EF480 F0 B5                       PUSH            {R4-R7,LR}
 __text:002EF482 03 AF                       ADD             R7, SP, #0xC
@@ -125,7 +125,7 @@ The symbols give us the internal names for many SPIRC protobuf definitions altho
 #### 0.7.2.26.g5c684ef7 (72e7d6963d659c3b8493e1c4d887ca7a)
 Only supports armv7. Again no symbols stripped.
 
-```
+```asm
 shn_addr2 (shn_encrypt)
 __text:003E896C F0 B5                       PUSH            {R4-R7,LR}
 __text:003E896E 03 AF                       ADD             R7, SP, #0xC
@@ -183,7 +183,7 @@ Same sha256sum as bcf2b51545d4716998b5fdaa0f83eb9d
 
 This version only supports armv7. There are 2 occurrences of the constant, and shn_finish contains the last one:
 
-```
+```asm
 shn_addr2
 __text:0030D434 F0 B5                       PUSH            {R4-R7,LR}
 __text:0030D436 03 AF                       ADD             R7, SP, #0xC
@@ -233,7 +233,7 @@ __text:0030F116 C6 F6 96 11
 
 Only supports armv7. No symbols this time. There are 2 occurrences of the constant, the second is in shn_finish. The encryption functions are directly before shn_finish.
 
-```
+```asm
 shn_addr2
 __text:00F0AE08 F0 B5                       PUSH            {R4-R7,LR}
 __text:00F0AE0A 03 AF                       ADD             R7, SP, #0xC
@@ -283,7 +283,7 @@ __text:00F0CAFE C6 F6 96 11
 
 Only supports armv7. There are 2 occurrences of the constant, second is in shn_finish. The encryption functions are directly before
 
-```
+```asm
 shn_addr2
 __text:00F0AE08 F0 B5                       PUSH            {R4-R7,LR}
 __text:00F0AE0A 03 AF                       ADD             R7, SP, #0xC
@@ -333,7 +333,7 @@ __text:00F0CAFE C6 F6 96 11
 
 Only supports armv7. There are 2 instances of the constant, the second is in shn_finish. shn_finish is directly after the encryption functions.
 
-```
+```asm
 shn_addr2
 __text:01ABF01C F0 B5                       PUSH            {R4-R7,LR}
 __text:01ABF01E 03 AF                       ADD             R7, SP, #0xC
@@ -376,7 +376,46 @@ __text:01AC0D52 C6 F6 96 11
 
 #### 8.8.58-4.95.0.0082.gbfb5444b60
 
-IDA is taking a while.
+There are 6 occurrences of the constant. shn_finish contains the second occurrence. One of the encryption functions is before shn_finish, the other is a few subroutines later
+
+```asm
+shn_addr1
+__text:0000000100984A7C FA 67 BB A9                 STP             X26, X25, [SP,#-0x10+var_40]!
+__text:0000000100984A80 F8 5F 01 A9                 STP             X24, X23, [SP,#0x40+var_30]
+__text:0000000100984A84 F6 57 02 A9                 STP             X22, X21, [SP,#0x40+var_20]
+__text:0000000100984A88 F4 4F 03 A9                 STP             X20, X19, [SP,#0x40+var_10]
+__text:0000000100984A8C FD 7B 04 A9                 STP             X29, X30, [SP,#0x40+var_s0]
+__text:0000000100984A90 FD 03 01 91                 ADD             X29, SP, #0x40
+__text:0000000100984A94 CA 0D 08 95                 BL              sub_104B881BC
+__text:0000000100984A98 C8 02 00 34                 CBZ             W8, loc_100984AF0
+__text:0000000100984A9C D5 1C 00 34                 CBZ             W21, loc_100984E34
+
+shn_finish
+__text:0000000100984E3C F8 5F BC A9                 STP             X24, X23, [SP,#-0x10+var_30]!
+__text:0000000100984E40 F6 57 01 A9                 STP             X22, X21, [SP,#0x30+var_20]
+__text:0000000100984E44 F4 4F 02 A9                 STP             X20, X19, [SP,#0x30+var_10]
+__text:0000000100984E48 FD 7B 03 A9                 STP             X29, X30, [SP,#0x30+var_s0]
+__text:0000000100984E4C FD C3 00 91                 ADD             X29, SP, #0x30
+__text:0000000100984E50 DB 0C 08 95                 BL              sub_104B881BC
+__text:0000000100984E54 68 00 00 34                 CBZ             W8, loc_100984E60
+__text:0000000100984E58 23 0E 08 95                 BL              sub_104B886E4
+__text:0000000100984E5C D3 0C 08 95                 BL              sub_104B881A8
+
+__text:0000000100984E74 4A A7 98 52+                MOV             W10, #0x6996C53A
+__text:0000000100984E74 CA 32 AD 72
+
+shn_addr2
+__text:00000001009851A0 FA 67 BB A9                 STP             X26, X25, [SP,#-0x10+var_40]!
+__text:00000001009851A4 F8 5F 01 A9                 STP             X24, X23, [SP,#0x40+var_30]
+__text:00000001009851A8 F6 57 02 A9                 STP             X22, X21, [SP,#0x40+var_20]
+__text:00000001009851AC F4 4F 03 A9                 STP             X20, X19, [SP,#0x40+var_10]
+__text:00000001009851B0 FD 7B 04 A9                 STP             X29, X30, [SP,#0x40+var_s0]
+__text:00000001009851B4 FD 03 01 91                 ADD             X29, SP, #0x40
+__text:00000001009851B8 01 0C 08 95                 BL              sub_104B881BC
+__text:00000001009851BC 08 03 00 34                 CBZ             W8, loc_10098521C
+__text:00000001009851C0 55 1E 00 34                 CBZ             W21, loc_100985588
+
+```
 
 ### Theory
 The injector will need to find offsets for all architectures that the binary supports. All offsets should be sent to the frida script which will then detect the architecture it is running on and use the correct set of offsets accordingly. I need to learn more about Mach-O and iOS in general before I'll be able to write this part however a pull request is always welcome.
