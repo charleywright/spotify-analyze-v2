@@ -434,3 +434,44 @@ __text:00000001009851BC 08 03 00 34                 CBZ             W8, loc_1009
 __text:00000001009851C0 55 1E 00 34                 CBZ             W21, loc_100985588
 
 ```
+
+#### 8.8.60-4.96.0.0098.g9bd6a6b0af
+Only supports arm64. There are 6 occurrences of the constant, with shn_finish containing the second. There is one encryption function directly before shn_finish, and one about 1kB after
+
+```asm
+shn_addr1
+__text:00000001009B7CB8 FA 67 BB A9                 STP             X26, X25, [SP,#-0x10+var_40]!
+__text:00000001009B7CBC F8 5F 01 A9                 STP             X24, X23, [SP,#0x40+var_30]
+__text:00000001009B7CC0 F6 57 02 A9                 STP             X22, X21, [SP,#0x40+var_20]
+__text:00000001009B7CC4 F4 4F 03 A9                 STP             X20, X19, [SP,#0x40+var_10]
+__text:00000001009B7CC8 FD 7B 04 A9                 STP             X29, X30, [SP,#0x40+var_s0]
+__text:00000001009B7CCC FD 03 01 91                 ADD             X29, SP, #0x40
+__text:00000001009B7CD0 C3 89 08 95                 BL              sub_104BDA3DC
+__text:00000001009B7CD4 C8 02 00 34                 CBZ             W8, loc_1009B7D2C
+__text:00000001009B7CD8 D5 1C 00 34                 CBZ             W21, loc_1009B8070
+
+shn_finish
+__text:00000001009B8078 F8 5F BC A9                 STP             X24, X23, [SP,#-0x10+var_30]!
+__text:00000001009B807C F6 57 01 A9                 STP             X22, X21, [SP,#0x30+var_20]
+__text:00000001009B8080 F4 4F 02 A9                 STP             X20, X19, [SP,#0x30+var_10]
+__text:00000001009B8084 FD 7B 03 A9                 STP             X29, X30, [SP,#0x30+var_s0]
+__text:00000001009B8088 FD C3 00 91                 ADD             X29, SP, #0x30
+__text:00000001009B808C D4 88 08 95                 BL              sub_104BDA3DC
+__text:00000001009B8090 68 00 00 34                 CBZ             W8, loc_1009B809C
+__text:00000001009B8094 1C 8A 08 95                 BL              sub_104BDA904
+__text:00000001009B8098 CC 88 08 95                 BL              sub_104BDA3C8
+
+__text:00000001009B80B0 4A A7 98 52+                MOV             W10, #0x6996C53A
+__text:00000001009B80B0 CA 32 AD 72
+
+shn_addr2
+__text:00000001009B83DC FA 67 BB A9                 STP             X26, X25, [SP,#-0x10+var_40]!
+__text:00000001009B83E0 F8 5F 01 A9                 STP             X24, X23, [SP,#0x40+var_30]
+__text:00000001009B83E4 F6 57 02 A9                 STP             X22, X21, [SP,#0x40+var_20]
+__text:00000001009B83E8 F4 4F 03 A9                 STP             X20, X19, [SP,#0x40+var_10]
+__text:00000001009B83EC FD 7B 04 A9                 STP             X29, X30, [SP,#0x40+var_s0]
+__text:00000001009B83F0 FD 03 01 91                 ADD             X29, SP, #0x40
+__text:00000001009B83F4 FA 87 08 95                 BL              sub_104BDA3DC
+__text:00000001009B83F8 08 03 00 34                 CBZ             W8, loc_1009B8458
+__text:00000001009B83FC 55 1E 00 34                 CBZ             W21, loc_1009B87C4
+```
