@@ -1,4 +1,4 @@
-enum Color {
+export enum Color {
   BLACK = 30,
   RED = 31,
   GREEN = 32,
@@ -8,10 +8,12 @@ enum Color {
   CYAN = 36,
   WHITE = 37,
 }
-function color_code(c: Color, bright: boolean): string {
-  return `\x1b[${c};0${bright ? 1 : 2}m`;
+export function color_code(c: Color, bright?: boolean): string {
+  return `\x1b[${c};${bright === undefined ? 1 : 0}${
+    bright === undefined ? 0 : bright ? 1 : 2
+  }m`;
 }
-const RST_COL_CODE = "\x1b[m";
+export const RST_COL_CODE = "\x1b[m";
 
 function padding(message: string) {
   return new Array(Math.max(128 - message.length, 0)).join(" ");

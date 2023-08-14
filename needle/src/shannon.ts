@@ -1,5 +1,6 @@
 import { status, error, info } from "./log";
 import type { Offsets } from "./types/offsets";
+import SPIRCParser from "./spirc";
 
 type ShannonFunctions = {
   shn_encrypt: NativePointer;
@@ -103,53 +104,20 @@ function determine(
   return functions;
 }
 
-type ShnCtx = {
-  args: {
-    c: NativePointer;
-    buf: NativePointer;
-    nbytes: number;
-  };
+type ShnFuncCtx = {
+  c: NativePointer;
+  buf: NativePointer;
+  nbytes: number;
 };
-
-type ShnEncryptCtx = {} & ShnCtx;
-
-function shn_encrypt_onEnter(
-  this: InvocationContext & ShnEncryptCtx,
-  args: InvocationArguments
-): void {
-  this.args.c = args[0];
-  this.args.buf = args[1];
-  this.args.nbytes = args[2].toUInt32();
-
-  info(`ENTER shn_encrypt`);
+class SafeCallers {
+  static shn_encrypt: NativePointer = NULL;
+  // static shn_decrypt: NativePointer = NULL;
+  static shn_decrypt: NativePointer = ptr(0x19805df);
 }
-
-function shn_encrypt_onLeave(
-  this: InvocationContext & ShnEncryptCtx,
-  retval: InvocationReturnValue
-): void {
-  info(`LEAVE shn_encrypt`);
-}
-
-type ShnDecryptCtx = {} & ShnCtx;
-
-function shn_decrypt_onEnter(
-  this: InvocationContext & ShnDecryptCtx,
-  args: InvocationArguments
-): void {
-  this.args.c = args[0];
-  this.args.buf = args[1];
-  this.args.nbytes = args[2].toUInt32();
-
-  info(`ENTER shn_decrypt()`);
-}
-
-function shn_decrypt_onLeave(
-  this: InvocationContext & ShnDecryptCtx,
-  retval: InvocationReturnValue
-): void {
-  info(`LEAVE shn_decrypt()`);
-}
+/*
+Log invalid calls with their return address
+*/
+const LOG_INVALID_CALLS = false;
 
 export function hook(offsets: Offsets) {
   status("Hooking shannon functions");
@@ -161,18 +129,66 @@ export function hook(offsets: Offsets) {
 
   Interceptor.attach(shannon.shn_encrypt, {
     onEnter: function (args) {
-      shn_encrypt_onEnter.call(this as any, args);
+      if (!SafeCallers.shn_encrypt.isNull()) {
+        if (
+          this.returnAddress < SafeCallers.shn_encrypt.sub(0x10) ||
+          this.returnAddress > SafeCallers.shn_encrypt.add(0x10)
+        ) {
+          LOG_INVALID_CALLS &&
+            info(
+              `\nSPIRC: (send) Ignoring call from invalid return address {${DebugSymbol.fromAddress(
+                this.returnAddress
+              )}}\n${hexdump(args[1], {
+                length: args[2].toUInt32(),
+                header: false,
+              })}`
+            );
+          return;
+        }
+      } else {
+        SafeCallers.shn_encrypt = this.returnAddress;
+      }
+
+      const ctx = this as unknown as ShnFuncCtx;
+      ctx.c = args[0];
+      ctx.buf = args[1];
+      ctx.nbytes = args[2].toUInt32();
+      const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
+      SPIRCParser.send(data);
     },
-    onLeave: function (retval) {
-      shn_encrypt_onLeave.call(this as any, retval);
-    },
+    onLeave: function () {},
   });
   Interceptor.attach(shannon.shn_decrypt, {
     onEnter: function (args) {
-      shn_decrypt_onEnter.call(this as any, args);
+      if (!SafeCallers.shn_decrypt.isNull()) {
+        if (
+          this.returnAddress < SafeCallers.shn_decrypt.sub(0x100) ||
+          this.returnAddress > SafeCallers.shn_decrypt.add(0x100)
+        ) {
+          LOG_INVALID_CALLS &&
+            info(
+              `\nSPIRC: (recv) Ignoring call from invalid return address {${DebugSymbol.fromAddress(
+                this.returnAddress
+              )}}\n${hexdump(args[1], {
+                length: args[2].toUInt32(),
+                header: false,
+              })}`
+            );
+          return;
+        }
+      } else {
+        SafeCallers.shn_decrypt = this.returnAddress;
+      }
+
+      const ctx = this as unknown as ShnFuncCtx;
+      ctx.c = args[0];
+      ctx.buf = args[1];
+      ctx.nbytes = args[2].toUInt32();
     },
-    onLeave: function (retval) {
-      shn_decrypt_onLeave.call(this as any, retval);
+    onLeave: function () {
+      const ctx = this as unknown as ShnFuncCtx;
+      const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
+      SPIRCParser.recv(data);
     },
   });
 
