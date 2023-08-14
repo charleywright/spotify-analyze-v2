@@ -23,3 +23,22 @@ inline platform get_platform(const std::string_view target)
     return platform::IOS;
   return platform::UNKNOWN;
 }
+
+inline const char *platform_str(const platform target)
+{
+  switch (target)
+  {
+    case platform::UNKNOWN:
+      return "unknown";
+    case platform::LINUX:
+      return "linux";
+    case platform::WINDOWS:
+      return "windows";
+    case platform::ANDROID:
+      return "android";
+    case platform::IOS:
+      return "ios";
+    default:
+      return "unknown";
+  }
+}

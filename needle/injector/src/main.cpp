@@ -2,13 +2,14 @@
 #include <filesystem>
 #include "platform.hpp"
 #include "scan.hpp"
+#include "bootstrap.hpp"
 #include "fmt/core.h"
 
 std::string executable_name;
 
 void print_help()
 {
-  fmt::print("Usage: {} --target <target> --exec <path or name> [--binary <path>]\n"
+  fmt::print("Usage: {} --target <target> --exec <path or name> [--binary <path>] [-- <bootstrap options>]\n"
              "\n"
              "--target: linux/windows/android/ios\n"
              "\n"
@@ -22,7 +23,11 @@ void print_help()
              "  Linux: Optional, should be the same as --exec\n"
              "  Windows: Optional, should be the same as --exec\n"
              "  Android: Required, path to liborbit-jni-spotify.so. Must be correct architecture and version\n"
-             "  iOS: Required, path to Spotify in Spotify.app\n", executable_name);
+             "  iOS: Required, path to Spotify in Spotify.app\n"
+             "\n"
+             "Arguments can be terminated with -- then arguments for the bootstrap script may follow.\n"
+             "These arguments influence how and what frida will inject into. See bootstrap.mjs for\n"
+             "a list of options.\n", executable_name);
 }
 
 int main(int argc, char **argv)
@@ -59,13 +64,16 @@ int main(int argc, char **argv)
     print_help();
     return 1;
   }
-  const std::filesystem::path exec_path = *exec;
+  std::string executable = *exec;
   if ((target != platform::ANDROID && target != platform::IOS) &&
-      !std::filesystem::exists(exec_path))
+      !std::filesystem::exists(*exec))
   {
-    fmt::print(stderr, "Error: Executable {} does not exist\n", exec_path.string());
+    fmt::print(stderr, "Error: Executable {} does not exist\n", *exec);
     print_help();
     return 1;
+  } else
+  {
+    executable = std::filesystem::canonical(executable);
   }
 
   const auto binary = args.get<std::string>("binary");
@@ -96,9 +104,10 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  const std::string binary_filename = binary_path.filename().string();
   fmt::print("Using offsets:\n");
   fmt::print("- shn_addr1:  {:#012x}\n", offsets.shn_addr1);
   fmt::print("- shn_addr2:  {:#012x}\n", offsets.shn_addr2);
   fmt::print("- server_key: {:#012x}\n", offsets.server_public_key);
+
+  bootstrap::bootstrap(target, executable, args.skipped(), offsets);
 }
