@@ -21,7 +21,14 @@ enum LL_FLAGS {
 
 function hookLoadLibrary() {
   // LoadLibrary is called over and over again with these
-  const WHITELIST = ["crypt32.dll", "rsaenh.dll", "cryptnet.dll", "System32"];
+  const WHITELIST = [
+    "crypt32.dll",
+    "rsaenh.dll",
+    "cryptnet.dll",
+    "dsound.dll",
+    "kernel32.dll",
+    "System32",
+  ];
   function checkWhitelist(str: string | null) {
     return (
       WHITELIST.filter((s) => str?.toLowerCase().includes(s.toLowerCase()))

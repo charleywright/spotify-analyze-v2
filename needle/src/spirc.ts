@@ -1,5 +1,6 @@
 import { warn, info, Color, RST_COL_CODE, color_code } from "./log";
 import * as Authentication from "./proto/authentication/authentication.old";
+import Mercury from "./mercury";
 
 export enum PacketType {
   // SecretBlock = 0x02,
@@ -108,12 +109,7 @@ function send(data: ArrayBuffer) {
     case PacketType.MercuryReq:
     case PacketType.MercurySub:
     case PacketType.MercuryUnsub: {
-      info(
-        `SPIRC: (send) Got mercury packet:\n${hexdump(data, {
-          header: false,
-        })}`
-      );
-      // Mercury.send(packet.type, packet.data);
+      Mercury.send(header.type, data.slice(3));
       break;
     }
     default: {
@@ -247,8 +243,7 @@ function recv(data: ArrayBuffer) {
     case PacketType.MercuryReq:
     case PacketType.MercurySub:
     case PacketType.MercuryUnsub: {
-      info(`SPIRC: (recv) Mercury packet\n${hexdump(data, { header: false })}`);
-      // Mercury.recv(packet.type, packet.data);
+      Mercury.recv(header.type, data);
       break;
     }
     default: {
