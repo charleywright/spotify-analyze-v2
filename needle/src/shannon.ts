@@ -1,5 +1,5 @@
 import { status, error, info } from "./log";
-import type { LaunchArgs } from "./types/launchArgs";
+import LaunchArguments from "./launchArguments";
 import SPIRCParser from "./spirc";
 
 type ShannonFunctions = {
@@ -104,24 +104,6 @@ function determine(
   return functions;
 }
 
-export class ShannonOptions {
-  static logInvalidCalls = false;
-  static logCallStacks = false;
-  static disableSafeCallers = false;
-}
-
-function loadOptions(args: LaunchArgs) {
-  if (args.shannonLogInvalidCalls) {
-    ShannonOptions.logInvalidCalls = args.shannonLogInvalidCalls;
-  }
-  if (args.shannonLogCallStacks) {
-    ShannonOptions.logCallStacks = args.shannonLogCallStacks;
-  }
-  if (args.shannonDisableSafeCallers) {
-    ShannonOptions.disableSafeCallers = args.shannonDisableSafeCallers;
-  }
-}
-
 type ShnFuncCtx = {
   c: NativePointer;
   buf: NativePointer;
@@ -141,10 +123,12 @@ function callStack(context: CpuContext) {
   );
 }
 
-export function hook(launchArgs: LaunchArgs) {
-  loadOptions(launchArgs);
+export function hook() {
   status("Hooking shannon functions");
-  const shannon = determine(ptr(launchArgs.shnAddr1), ptr(launchArgs.shnAddr2));
+  const shannon = determine(
+    ptr(LaunchArguments.shnAddr1),
+    ptr(LaunchArguments.shnAddr2)
+  );
   if (shannon.shn_encrypt.isNull() || shannon.shn_decrypt.isNull()) {
     error("Failed to determine one or more shannon functions");
     return;
@@ -153,14 +137,14 @@ export function hook(launchArgs: LaunchArgs) {
   Interceptor.attach(shannon.shn_encrypt, {
     onEnter: function (args) {
       if (
-        !ShannonOptions.disableSafeCallers &&
+        !LaunchArguments.shannonDisableSafeCallers &&
         !SafeCallers.shn_encrypt.isNull()
       ) {
         if (
           this.returnAddress < SafeCallers.shn_encrypt.sub(0x10) ||
           this.returnAddress > SafeCallers.shn_encrypt.add(0x10)
         ) {
-          if (ShannonOptions.logInvalidCalls) {
+          if (LaunchArguments.shannonLogInvalidCalls) {
             info(
               `\nSPIRC: (send) Ignoring call from invalid return address {${DebugSymbol.fromAddress(
                 this.returnAddress
@@ -182,7 +166,7 @@ export function hook(launchArgs: LaunchArgs) {
       ctx.nbytes = args[2].toUInt32();
       const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
       SPIRCParser.send(data);
-      if (ShannonOptions.logCallStacks) {
+      if (LaunchArguments.shannonLogCallStacks) {
         console.log(callStack(this.context));
       }
     },
@@ -200,14 +184,14 @@ export function hook(launchArgs: LaunchArgs) {
       const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
 
       if (
-        !ShannonOptions.disableSafeCallers &&
+        !LaunchArguments.shannonDisableSafeCallers &&
         !SafeCallers.shn_decrypt.isNull()
       ) {
         if (
           this.returnAddress < SafeCallers.shn_decrypt.sub(0x100) ||
           this.returnAddress > SafeCallers.shn_decrypt.add(0x100)
         ) {
-          if (ShannonOptions.logInvalidCalls) {
+          if (LaunchArguments.shannonLogInvalidCalls) {
             info(
               `\nSPIRC: (recv) Ignoring call from invalid return address {${DebugSymbol.fromAddress(
                 this.returnAddress
@@ -223,7 +207,7 @@ export function hook(launchArgs: LaunchArgs) {
       }
 
       SPIRCParser.recv(data);
-      if (ShannonOptions.logCallStacks) {
+      if (LaunchArguments.shannonLogCallStacks) {
         console.log(callStack(this.context));
       }
     },

@@ -1,4 +1,4 @@
-import { LaunchArgs } from "../types/launchArgs";
+import LaunchArguments from "../launchArguments";
 import { status, info } from "../log";
 import { hook as hookShannonFunctions } from "../shannon";
 import "../base64-polyfill";
@@ -35,7 +35,8 @@ function hookDlopen() {
   });
 }
 
-function init(launchArgs: LaunchArgs) {
+function init(launchArgs: any) {
+  Object.assign(LaunchArguments, launchArgs);
   (globalThis as any).Buffer = undefined;
   (global as any).Buffer = undefined;
 
@@ -48,7 +49,7 @@ function init(launchArgs: LaunchArgs) {
   );
   hookDlopen();
   status(`Hooked dlopen`);
-  hookShannonFunctions(launchArgs);
+  hookShannonFunctions();
 }
 
 rpc.exports.init = init;

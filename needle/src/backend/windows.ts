@@ -1,4 +1,4 @@
-import { LaunchArgs } from "../types/launchArgs";
+import LaunchArguments from "../launchArguments";
 import { status, info } from "../log";
 import { hook as hookShannonFunctions } from "../shannon";
 import "../base64-polyfill";
@@ -86,7 +86,8 @@ function hookLoadLibrary() {
   });
 }
 
-function init(launchArgs: LaunchArgs) {
+function init(launchArgs: any) {
+  Object.assign(LaunchArguments, launchArgs);
   (globalThis as any).Buffer = undefined;
   (global as any).Buffer = undefined;
 
@@ -99,7 +100,7 @@ function init(launchArgs: LaunchArgs) {
   );
   hookLoadLibrary();
   status(`Hooked LoadLibraryA/LoadLibraryW`);
-  hookShannonFunctions(launchArgs);
+  hookShannonFunctions();
 }
 
 rpc.exports.init = init;

@@ -127,10 +127,14 @@ export function send(type: PacketType, data: ArrayBuffer) {
     }
 
     warn(
-      `Mercury: (send) No handler for ${url}\n${parts
-        .slice(1)
-        .map((p) => hexdump(p))
-        .join("\n")}`
+      `Mercury: (send) No handler for ${url}\n${
+        parts.length === 1
+          ? "<No parts>"
+          : parts
+              .slice(1)
+              .map((p) => hexdump(p))
+              .join("\n")
+      }`
     );
   } catch {
     warn(
@@ -185,10 +189,14 @@ export function recv(type: PacketType, data: ArrayBuffer) {
     }
 
     warn(
-      `Mercury: (recv) No handler for ${url}\n${parts
-        .slice(1)
-        .map((p) => hexdump(p))
-        .join("\n")}`
+      `Mercury: (recv) No handler for ${url}\n${
+        parts.length === 1
+          ? "<No parts>"
+          : parts
+              .slice(1)
+              .map((p) => hexdump(p))
+              .join("\n")
+      }`
     );
   } catch {
     warn(
