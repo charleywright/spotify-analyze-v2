@@ -76,7 +76,7 @@ int main(int argc, char **argv)
     return 1;
   } else
   {
-    executable = std::filesystem::canonical(executable);
+    executable = std::filesystem::canonical(executable).string();
   }
 
   const auto binary = args.get<std::string>("binary");

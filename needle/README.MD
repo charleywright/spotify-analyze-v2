@@ -4,9 +4,15 @@ The basic idea of needle is to hook useful functions and add logging. While reve
 
 ## Building
 
-* Build injector
-* Build scripts for all platforms
-* Install wrapper dependencies
+#### Injector
+
+The injector uses CMake and FetchContent, so should "just work". To build:
+```bash
+cd injector
+mkdir build
+cmake -B build/
+cmake --build build/
+```
 
 ## Usage
 

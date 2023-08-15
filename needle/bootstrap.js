@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /*
 This is a small script that uses the Frida Node.js bindings to spawn a Spotify
 process, inject our script then pass the offsets found by the injector to the
@@ -45,8 +43,12 @@ function sleep(milli) {
 
   const scriptDir = join(dirname(fileURLToPath(import.meta.url)), "build");
   switch (platform) {
-    case "linux": {
-      const scriptSrc = fs.readFileSync(join(scriptDir, "linux.js"), "utf-8");
+    case "linux":
+    case "windows": {
+      const scriptSrc = fs.readFileSync(
+        join(scriptDir, `${platform}.js`),
+        "utf-8"
+      );
       const pid = await frida.spawn(exec);
       const session = await frida.attach(pid);
       const script = await session.createScript(scriptSrc);
@@ -56,13 +58,12 @@ function sleep(milli) {
       await frida.resume(pid);
       break;
     }
-    case "windows": {
-      break;
-    }
     case "android": {
+      console.error(`Android injection not supported yet`);
       break;
     }
     case "ios": {
+      console.error(`iOS injection not supported yet`);
       break;
     }
   }
