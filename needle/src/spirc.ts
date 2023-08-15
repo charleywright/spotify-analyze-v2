@@ -2,7 +2,7 @@ import { warn, info, Color, RST_COL_CODE, color_code } from "./log";
 import * as Authentication from "./proto/authentication/authentication.old";
 
 export enum PacketType {
-  SecretBlock = 0x02,
+  // SecretBlock = 0x02,
   Ping = 0x04,
   StreamChunk = 0x08,
   StreamChunkRes = 0x09,
@@ -27,12 +27,7 @@ export enum PacketType {
   MercuryUnsub = 0xb4,
   MercuryEvent = 0xb5,
   TrackEndedTime = 0x82,
-  UnknownDataAllZeros = 0x1f,
   PreferredLocale = 0x74,
-  Unknown0x0f = 0x0f,
-  Unknown0x10 = 0x10,
-  Unknown0x4f = 0x4f,
-  Unknown0xb6 = 0xb6,
   Error = 0xff,
 }
 
@@ -105,6 +100,10 @@ function send(data: ArrayBuffer) {
       logSend(`[SEND] type=${typeStr}\n${loginJson}`);
       break;
     }
+    case PacketType.Pong: {
+      logSend(`[SEND] type=${typeStr}\nPong`);
+      break;
+    }
     case PacketType.MercuryEvent:
     case PacketType.MercuryReq:
     case PacketType.MercurySub:
@@ -118,7 +117,7 @@ function send(data: ArrayBuffer) {
       break;
     }
     default: {
-      info(
+      warn(
         `SPIRC: (send) No handler for packet ${typeStr}\n${hexdump(data, {
           header: false,
         })}`
@@ -195,6 +194,37 @@ function recv(data: ArrayBuffer) {
       logRecv(`[RECV] type=${typeStr}\nPing Acknowledged`);
       break;
     }
+    // case PacketType.SecretBlock: {
+    //   logRecv(`[RECV] type=${typeStr}\n${arrayToHex(data)}`);
+    //   break;
+    // }
+    case PacketType.LicenseVersion: {
+      if (data.byteLength !== 2) {
+        warn(
+          `SPIRC: (recv) Expected license version to be 2, got ${
+            data.byteLength
+          }\n${hexdump(data, { header: false })}`
+        );
+        return;
+      }
+      const dv = new DataView(data);
+      const type = dv.getUint16(0, false);
+      switch (type) {
+        case 0: {
+          logRecv(`[RECV] type=${typeStr}\nPremium`);
+          break;
+        }
+        default: {
+          logRecv(`[RECV] type=${typeStr}\nUnknown license type: ${type}`);
+          break;
+        }
+      }
+      break;
+    }
+    case PacketType.LegacyWelcome: {
+      logRecv(`[RECV] type=${typeStr} Welcome :)`);
+      break;
+    }
     case PacketType.CountryCode: {
       const dv = new DataView(data);
       let str = "";
@@ -222,7 +252,7 @@ function recv(data: ArrayBuffer) {
       break;
     }
     default: {
-      info(
+      warn(
         `SPIRC: (recv) No handler for packet ${typeStr}\n${hexdump(data, {
           header: false,
         })}`
