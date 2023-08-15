@@ -17,6 +17,8 @@ offsets are specified as "--key value" and will all be sent to the frida script
 import parser from "yargs-parser";
 import frida from "frida";
 import fs from "node:fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "node:path";
 
 function sleep(milli) {
   return new Promise((resolve) => setTimeout(resolve, milli));
@@ -30,7 +32,7 @@ function sleep(milli) {
     },
   });
 
-  const offsets = Object.fromEntries(
+  const launchArgs = Object.fromEntries(
     args._.slice(2).map((str) => str.toString().split("="))
   );
 
@@ -41,14 +43,15 @@ function sleep(milli) {
     process.exit(1);
   }
 
+  const scriptDir = join(dirname(fileURLToPath(import.meta.url)), "build");
   switch (platform) {
     case "linux": {
-      const scriptSrc = fs.readFileSync("./build/linux.js", "utf-8");
+      const scriptSrc = fs.readFileSync(join(scriptDir, "linux.js"), "utf-8");
       const pid = await frida.spawn(exec);
       const session = await frida.attach(pid);
       const script = await session.createScript(scriptSrc);
       await script.load();
-      await script.exports.init(offsets);
+      await script.exports.init(launchArgs);
       await sleep(1000);
       await frida.resume(pid);
       break;

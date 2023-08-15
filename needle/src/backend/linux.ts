@@ -1,6 +1,7 @@
-import { Offsets } from "../types/offsets";
+import { LaunchArgs } from "../types/launchArgs";
 import { status, info } from "../log";
 import { hook as hookShannonFunctions } from "../shannon";
+import "../base64-polyfill";
 
 // https://github.com/lattera/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/bits/dlfcn.h#L24-L41
 enum RTLD {
@@ -34,13 +35,20 @@ function hookDlopen() {
   });
 }
 
-function init(offsets: Offsets) {
+function init(launchArgs: LaunchArgs) {
+  (globalThis as any).Buffer = undefined;
+  (global as any).Buffer = undefined;
+
   status(
-    `Injected into process. Got offsets:\n${JSON.stringify(offsets, null, 2)}`
+    `Injected into process. Got arguments:\n${JSON.stringify(
+      launchArgs,
+      null,
+      2
+    )}`
   );
   hookDlopen();
   status(`Hooked dlopen`);
-  hookShannonFunctions(offsets);
+  hookShannonFunctions(launchArgs);
 }
 
 rpc.exports.init = init;

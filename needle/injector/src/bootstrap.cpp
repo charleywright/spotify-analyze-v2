@@ -40,11 +40,11 @@ void bootstrap::bootstrap(platform target, const std::string &exec, const std::v
   command << "node " << bootstrap_script \
   << " --platform " << platform_str(target) \
   << " --exec \"" << exec << '"';
+  command << " -- " << fmt::format("serverKey={:#x} shnAddr1={:#x} shnAddr2={:#x}", offsets.server_public_key, offsets.shn_addr1, offsets.shn_addr2);
   for (const auto &bootstrapper_arg : bootstrapper_args)
   {
     command << ' ' << bootstrapper_arg;
   }
-  command << " -- " << fmt::format("server_key={:#x} shn_addr1={:#x} shn_addr2={:#x}", offsets.server_public_key, offsets.shn_addr1, offsets.shn_addr2);
   const std::string command_str = command.str();
   fmt::print("Running command `{}`\n", command_str);
   std::fflush(stderr);

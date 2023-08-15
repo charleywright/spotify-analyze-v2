@@ -26,8 +26,11 @@ void print_help()
              "  iOS: Required, path to Spotify in Spotify.app\n"
              "\n"
              "Arguments can be terminated with -- then arguments for the bootstrap script may follow.\n"
-             "These arguments influence how and what frida will inject into. See bootstrap.mjs for\n"
-             "a list of options.\n", executable_name);
+             "These arguments influence how and what frida will inject into. They follow a key-value\n"
+             "format and should use valid JSON values. These are the allowed options, all optional:\n"
+             "  shannonLogCallStacks=true       - Log a call stack for SPIRC packet encryption\n"
+             "  shannonLogInvalidCalls=true     - Log calls deemed to not be SPIRC related with return address\n"
+             "  shannonDisableSafeCallers=true  - Disable safe callers detection. Parsing will probably break\n", executable_name);
 }
 
 int main(int argc, char **argv)

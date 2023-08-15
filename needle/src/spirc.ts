@@ -1,4 +1,6 @@
 import { warn, info, Color, RST_COL_CODE, color_code } from "./log";
+import * as Authentication from "./proto/authentication/authentication.old";
+import { protoToJson } from "./proto";
 
 export enum PacketType {
   SecretBlock = 0x02,
@@ -92,16 +94,18 @@ function send(data: ArrayBuffer) {
 
   const typeStr = packetTypeToStr(header.type);
   switch (header.type) {
-    // case PacketType.Login: {
-    // const login = Authentication.ClientResponseEncrypted.decode(packet.data);
-    // const login_json = JSON.stringify(
-    //   Authentication.ClientResponseEncrypted.toJSON(login),
-    //   null,
-    //   2
-    // );
-    // logSend(`ClientResponseEncrypted`);
-    // break;
-    // }
+    case PacketType.Login: {
+      const login = Authentication.ClientResponseEncrypted.decode(
+        new Uint8Array(data.slice(3))
+      );
+      const loginJson = JSON.stringify(
+        Authentication.ClientResponseEncrypted.toJSON(login),
+        null,
+        2
+      );
+      logSend(`[SEND] type=${typeStr}\n${loginJson}`);
+      break;
+    }
     case PacketType.MercuryEvent:
     case PacketType.MercuryReq:
     case PacketType.MercurySub:
@@ -169,16 +173,16 @@ function recv(data: ArrayBuffer) {
 
   const typeStr = packetTypeToStr(header.type);
   switch (header.type) {
-    // case PacketType.APWelcome: {
-    // const ap_welcome = Authentication.APWelcome.decode(packet.data);
-    // const ap_welcome_json = JSON.stringify(
-    //   Authentication.APWelcome.toJSON(ap_welcome),
-    //   null,
-    //   2
-    // );
-    //   logRecv("APWelcome");
-    //   break;
-    // }
+    case PacketType.APWelcome: {
+      const apWelcome = Authentication.APWelcome.decode(new Uint8Array(data));
+      const apWelcomeJson = JSON.stringify(
+        Authentication.APWelcome.toJSON(apWelcome),
+        null,
+        2
+      );
+      logRecv(`[RECV] type=${typeStr}\n${apWelcomeJson}`);
+      break;
+    }
     case PacketType.Ping: {
       const dv = new DataView(data);
       const server_ts = dv.getUint32(0) * 1000;
@@ -219,7 +223,7 @@ function recv(data: ArrayBuffer) {
       break;
     }
     default: {
-      warn(
+      info(
         `SPIRC: (recv) No handler for packet ${typeStr}\n${hexdump(data, {
           header: false,
         })}`
