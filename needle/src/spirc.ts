@@ -1,6 +1,5 @@
 import { warn, info, Color, RST_COL_CODE, color_code } from "./log";
 import * as Authentication from "./proto/authentication/authentication.old";
-import { protoToJson } from "./proto";
 
 export enum PacketType {
   SecretBlock = 0x02,
