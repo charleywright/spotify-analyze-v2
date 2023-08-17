@@ -7,6 +7,7 @@ The basic idea of needle is to hook useful functions and add logging. While reve
 #### Injector
 
 The injector uses CMake and FetchContent, so should "just work". To build:
+
 ```bash
 cd injector
 mkdir build
@@ -14,9 +15,29 @@ cmake -B build/
 cmake --build build/
 ```
 
+#### Bootstrap script and Frida script
+
+```bash
+# Install dependencies
+npm install
+# Or
+yarn install
+
+# Compile Frida script
+npm run compile-all
+# Or
+yarn run compile-all
+```
+
 ## Usage
 
-TODO
+#### Linux
+
+The injector requires the path to the `spotify` binary. This can be found using `which spotify` and is likely a symlink. The bootstrap script will launch this process, so make sure it is closed first (`pkill -9 spotify`) then run
+
+```bash
+./needle-injector --target linux --exec <path/to/spotify>
+```
 
 ## Architecture
 
