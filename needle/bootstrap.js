@@ -50,6 +50,7 @@ function sleep(milli) {
         "utf-8"
       );
       const pid = await frida.spawn(exec, { argv: ["--show-console"] });
+      console.log(`Spawned process ${pid}`);
       const session = await frida.attach(pid);
       const script = await session.createScript(scriptSrc);
       await script.load();

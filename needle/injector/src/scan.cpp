@@ -31,7 +31,6 @@ struct relocation_entry
  */
 std::uint64_t calculate_relocated_offset(std::uint64_t position, const std::vector<relocation_entry> &relocations)
 {
-  assert(!relocations.empty());
   for (const auto &entry: relocations)
   {
     if (position >= entry.offset_in_file && position < entry.offset_in_file + entry.size_in_file)
@@ -317,8 +316,15 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
-  offsets.server_public_key = calculate_relocated_offset(server_public_key_offsets[0], relocations);
-  fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  std::uint64_t server_key_offset = calculate_relocated_offset(server_public_key_offsets[0], relocations);
+  std::uint64_t server_key_addr = calculate_relocated_address(server_public_key_offsets[0], relocations);
+  fmt::print("Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+             binary_filename,
+             server_public_key_offsets[0],
+             server_key_offset,
+             server_key_addr
+  );
+  offsets.server_public_key = server_key_offset;
   if (shannon_constant_offsets.empty())
   {
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
@@ -326,8 +332,14 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = calculate_relocated_offset(offset, relocations);
-    fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
+    std::uint64_t relocated_offset = calculate_relocated_offset(offset, relocations);
+    std::uint64_t relocated_addr = calculate_relocated_address(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+               binary_filename,
+               offset,
+               relocated_offset,
+               relocated_addr
+    );
   }
 
   /*
@@ -359,15 +371,27 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   // We hit shn_finish
   if (last_shannon_constant - function_prologues[0] < 0x200)
   {
-    sigscanner::offset relocated_shn_finish = calculate_relocated_offset(function_prologues[0], relocations);
-    fmt::print("Found shn_finish at {}:{:#012x} ({:#012x})\n", binary_filename, function_prologues[0], relocated_shn_finish);
+    std::uint64_t relocated_shn_finish_offset = calculate_relocated_offset(function_prologues[0], relocations);
+    std::uint64_t relocated_shn_finish_addr = calculate_relocated_address(function_prologues[0], relocations);
+    fmt::print("Found shn_finish at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+               binary_filename,
+               function_prologues[0],
+               relocated_shn_finish_offset,
+               relocated_shn_finish_addr
+    );
     function_prologues.erase(function_prologues.begin());
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = calculate_relocated_offset(prologue, relocations);
-    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
-    prologue = relocated_prologue;
+    std::uint64_t relocated_prologue_offset = calculate_relocated_offset(prologue, relocations);
+    std::uint64_t relocated_prologue_addr = calculate_relocated_address(prologue, relocations);
+    fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+               binary_filename,
+               prologue,
+               relocated_prologue_offset,
+               relocated_prologue_addr
+    );
+    prologue = relocated_prologue_offset;
   }
   if (function_prologues.size() < 2)
   {
@@ -433,8 +457,8 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   std::uint32_t new_header_offset = dos_header.e_lfanew;
   binary_file.seekg(new_header_offset);
   // Read the magic separately because we don't know the size of the NT header yet
-  sigscanner::byte nt_header_magic[4];
-  binary_file.read(reinterpret_cast<char *>(nt_header_magic), sizeof(nt_header_magic));
+  char nt_header_magic[4];
+  binary_file.read(nt_header_magic, sizeof(nt_header_magic));
   if (binary_file.gcount() != sizeof(nt_header_magic))
   {
     fmt::print(stderr, "Error: Failed to read NT header magic\n");
@@ -459,7 +483,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     return;
   }
 
-  std::uint64_t image_base;
+  std::uint64_t image_base, section_alignment;
   if (file_header.SizeOfOptionalHeader == sizeof(pe::IMAGE_OPTIONAL_HEADER64))
   {
     pe::IMAGE_OPTIONAL_HEADER64 optional_header{0};
@@ -478,6 +502,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
       return;
     }
     image_base = optional_header.ImageBase;
+    section_alignment = optional_header.SectionAlignment;
   } else if (file_header.SizeOfOptionalHeader == sizeof(pe::IMAGE_OPTIONAL_HEADER32))
   {
     pe::IMAGE_OPTIONAL_HEADER32 optional_header{0};
@@ -496,6 +521,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
       return;
     }
     image_base = optional_header.ImageBase;
+    section_alignment = optional_header.SectionAlignment;
   } else
   {
     fmt::print(stderr, "Error: Invalid optional header size\n");
@@ -512,13 +538,50 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
 
   std::vector<relocation_entry> relocations;
+  /*
+   * calculate_relocated_offset uses the first relocation entry to determine the base address that will be used. Since
+   * this is subtracted the actual value doesn't matter as long as it is the correct offset from the other relocation
+   * entries' addresses. Using VMMap from SysInternals we can see that the first part of memory-mapped data is the DOS
+   * header with a size of 0x1000 bytes due to padding. When we get the address of the Spotify.exe module in Frida we
+   * get the address of the header, so our offsets need to be relative to the header, not the first relocation entry.
+   * This means we need to add the header to the start of the relocation entries even though it isn't one. Alternatively
+   * we could subtract the padded size of the header but this is a cleaner solution.
+   */
+  {
+    relocation_entry entry;
+    entry.offset_in_file = 0;
+    entry.size_in_file = sizeof(pe::IMAGE_DOS_HEADER);
+    entry.offset_in_memory = image_base;
+    entry.size_in_memory = sizeof(pe::IMAGE_DOS_HEADER);
+    relocations.emplace_back(entry);
+    std::uint64_t aligned_vaddr_start = entry.offset_in_memory / section_alignment * section_alignment;
+    std::uint64_t aligned_vaddr_end = (entry.offset_in_memory + entry.size_in_memory + section_alignment - 1) / section_alignment * section_alignment;
+    fmt::print("Found PE relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
+               entry.offset_in_file,
+               entry.offset_in_file + entry.size_in_file,
+               entry.offset_in_memory,
+               entry.offset_in_memory + entry.size_in_memory,
+               aligned_vaddr_start,
+               aligned_vaddr_end
+    );
+  }
   for (const auto &section_header: section_headers)
   {
     relocation_entry entry;
     entry.offset_in_file = section_header.PointerToRawData;
     entry.size_in_file = section_header.SizeOfRawData;
-    entry.offset_in_memory = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
+    entry.offset_in_memory = image_base + section_header.VirtualAddress;
     entry.size_in_memory = section_header.Misc.VirtualSize;
+    std::uint64_t aligned_vaddr_start = entry.offset_in_memory / section_alignment * section_alignment;
+    std::uint64_t aligned_vaddr_end = (entry.offset_in_memory + entry.size_in_memory + section_alignment - 1) / section_alignment * section_alignment;
+    fmt::print("Found PE relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
+               section_header.PointerToRawData,
+               section_header.PointerToRawData + section_header.SizeOfRawData,
+               entry.offset_in_memory,
+               entry.offset_in_memory + entry.size_in_memory,
+               aligned_vaddr_start,
+               aligned_vaddr_end
+    );
     relocations.emplace_back(entry);
   }
 
@@ -540,8 +603,15 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
-  offsets.server_public_key = calculate_relocated_address(server_public_key_offsets[0], relocations);
-  fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  std::uint64_t server_key_offset = calculate_relocated_offset(server_public_key_offsets[0], relocations);
+  std::uint64_t server_key_addr = calculate_relocated_address(server_public_key_offsets[0], relocations);
+  fmt::print("Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+             binary_filename,
+             server_public_key_offsets[0],
+             server_key_offset,
+             server_key_addr
+  );
+  offsets.server_public_key = server_key_offset;
   if (shannon_constant_offsets.empty())
   {
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
@@ -549,8 +619,14 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = calculate_relocated_address(offset, relocations);
-    fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
+    std::uint64_t relocated_offset = calculate_relocated_offset(offset, relocations);
+    std::uint64_t relocated_addr = calculate_relocated_address(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+               binary_filename,
+               offset,
+               relocated_offset,
+               relocated_addr
+    );
   }
 
   /*
@@ -579,7 +655,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
    *  functions so no need to deal with hitting that.
    */
 
-  sigscanner::offset first_shannon_constant = shannon_constant_offsets[0];
+  std::uint64_t first_shannon_constant = shannon_constant_offsets[0];
   std::array<std::uint8_t, 0x4000> shn_bytes{0};
   std::int64_t shn_prologue_scan_base = static_cast<std::int64_t>(first_shannon_constant - shn_bytes.size());
   binary_file.seekg(shn_prologue_scan_base);
@@ -598,9 +674,15 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = calculate_relocated_address(prologue, relocations);
-    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
-    prologue = relocated_prologue;
+    std::uint64_t relocated_prologue_offset = calculate_relocated_offset(prologue, relocations);
+    std::uint64_t relocated_prologue_addr = calculate_relocated_address(prologue, relocations);
+    fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}\n",
+               binary_filename,
+               prologue,
+               relocated_prologue_offset,
+               relocated_prologue_addr
+    );
+    prologue = relocated_prologue_offset;
   }
   if (function_prologues.size() < 2)
   {
@@ -780,7 +862,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     return;
   }
   offsets.server_public_key = calculate_relocated_offset(server_public_key_offsets[0], relocations);
-  fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  fmt::print("Found server public key at {}:{:#012x} Offset: {:#012x}\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
@@ -788,8 +870,8 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = calculate_relocated_offset(offset, relocations);
-    fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
+    std::uint64_t relocated_offset = calculate_relocated_offset(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} Offset: {:#012x}\n", binary_filename, offset, relocated_offset);
   }
 
   /*
@@ -798,7 +880,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
    * shorter function prologues.
    */
 
-  sigscanner::offset last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
+  std::uint64_t last_shannon_constant = shannon_constant_offsets[shannon_constant_offsets.size() - 1];
   std::array<std::uint8_t, 0x2000> shn_bytes{0};
   std::int64_t shn_prologue_scan_base = static_cast<std::int64_t>(last_shannon_constant - shn_bytes.size());
   binary_file.seekg(std::max(std::int64_t{0}, shn_prologue_scan_base));
@@ -813,14 +895,14 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   // We hit shn_finish
   if (last_shannon_constant - function_prologues[0] < 0x200)
   {
-    sigscanner::offset relocated_shn_finish = calculate_relocated_offset(function_prologues[0], relocations);
-    fmt::print("Found shn_finish at {}:{:#012x} ({:#012x})\n", binary_filename, function_prologues[0], relocated_shn_finish);
+    std::uint64_t relocated_shn_finish = calculate_relocated_offset(function_prologues[0], relocations);
+    fmt::print("Found shn_finish at {}:{:#012x} Offset: {:#012x}\n", binary_filename, function_prologues[0], relocated_shn_finish);
     function_prologues.erase(function_prologues.begin());
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = calculate_relocated_offset(prologue, relocations);
-    fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
+    std::uint64_t relocated_prologue = calculate_relocated_offset(prologue, relocations);
+    fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x}\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
   if (function_prologues.size() < 2)
