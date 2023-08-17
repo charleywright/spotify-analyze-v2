@@ -182,7 +182,7 @@ function recv(data: ArrayBuffer) {
       const server_ts = dv.getUint32(0) * 1000;
       const our_ts = Date.now();
       logRecv(
-        `[RECV] type=${typeStr}\nServer TS: ${server_ts}\nOur TS: ${our_ts}`
+        `[RECV] type=${typeStr}\nServer TS: ${server_ts}\nClient TS: ${our_ts}`
       );
       break;
     }

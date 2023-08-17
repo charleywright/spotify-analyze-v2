@@ -16,8 +16,8 @@ struct relocation_entry
 {
     std::uint64_t offset_in_file = 0;
     std::uint64_t size_in_file = 0;
-    std::uint64_t aligned_offset_in_memory = 0;
-    std::uint64_t aligned_size_in_memory = 0;
+    std::uint64_t offset_in_memory = 0;
+    std::uint64_t size_in_memory = 0;
 };
 
 /*
@@ -37,7 +37,7 @@ std::uint64_t calculate_relocated_offset(std::uint64_t position, const std::vect
     if (position >= entry.offset_in_file && position < entry.offset_in_file + entry.size_in_file)
     {
       const std::uint64_t offset = position - entry.offset_in_file;
-      const std::uint64_t offset_from_base = entry.aligned_offset_in_memory - relocations[0].aligned_offset_in_memory;
+      const std::uint64_t offset_from_base = entry.offset_in_memory - relocations[0].offset_in_memory;
       return offset_from_base + offset;
     }
   }
@@ -56,7 +56,7 @@ std::uint64_t calculate_relocated_address(std::uint64_t position, const std::vec
     if (position >= entry.offset_in_file && position < entry.offset_in_file + entry.size_in_file)
     {
       const std::uint64_t offset = position - entry.offset_in_file;
-      return entry.aligned_offset_in_memory + offset;
+      return entry.offset_in_memory + offset;
     }
   }
   return position;
@@ -168,8 +168,13 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
    *   01e1e000-0234b000 rwxp 01c1b000 103:07 933388      /opt/spotify/spotify
    *
    * The addresses used for loading don't exactly match the program headers, but after taking alignment into consideration
-   * they match. On my system any padding bytes are read from the file and if the padding passes the end of the file, null
-   * bytes are used. There are some resources about the ELF format linked at the top of elf.hpp
+   * they match. If the segment start and/or end don't lie on page boundaries the linker looks backwards in the file and
+   * reads the bytes behind the current position to pad the segment. The same occurs after the segment, and if no data is
+   * available (EOF) the segment is padded with zeroes. This allows the segment to be mapped with only a single continuous
+   * read from the file and the segment's data is mapped to the correct location. This causes the segments in
+   * /proc/pid/maps to not be the same size nor have the same base address as the program headers but the data is in the
+   * expected location. There are some resources about the ELF format linked at the top of elf.hpp and for learning about
+   * linkers there are a few very good videos in a playlist called "CS 361 Systems Programming" on YouTube.
   */
 
   std::vector<relocation_entry> relocations;
@@ -208,9 +213,9 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
         elf::Elf64_Addr aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
         elf::Elf64_Addr aligned_vaddr_end =
                 (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
-        entry.aligned_size_in_memory = aligned_vaddr_end - aligned_vaddr_start;
-        entry.aligned_offset_in_memory = program_header.p_vaddr / program_header.p_align * program_header.p_align;
-        entry.aligned_size_in_memory = program_header.p_memsz;
+        entry.size_in_memory = program_header.p_memsz;
+        entry.offset_in_memory = program_header.p_vaddr;
+        entry.size_in_memory = program_header.p_memsz;
         fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
                    program_header.p_offset,
                    program_header.p_filesz,
@@ -252,9 +257,9 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
         elf::Elf32_Addr aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
         elf::Elf32_Addr aligned_vaddr_end =
                 (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
-        entry.aligned_size_in_memory = aligned_vaddr_end - aligned_vaddr_start;
-        entry.aligned_offset_in_memory = program_header.p_vaddr / program_header.p_align * program_header.p_align;
-        entry.aligned_size_in_memory = program_header.p_memsz;
+        entry.size_in_memory = program_header.p_memsz;
+        entry.offset_in_memory = program_header.p_vaddr;
+        entry.size_in_memory = program_header.p_memsz;
         fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
                    program_header.p_offset,
                    program_header.p_filesz,
@@ -274,10 +279,8 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
 void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
 {
   /*
-   * On Linux the spotify binary is of course an ELF file. We can use this to determine
-   * the architecture of the binary and then use the correct signatures. We could read
-   * the whole ELF header however we only need the e_ident array which is the first 16
-   * bytes.
+   * On Linux the spotify binary is an ELF file. We can use this to determine the architecture of the binary and then
+   * use the correct signatures. We also need to parse the ELF file to find relocations.
    */
   const std::string binary_filename = binary_path.filename().string();
   std::ifstream binary_file(binary_path, std::ios::binary);
@@ -314,7 +317,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
-  offsets.server_public_key = calculate_relocated_address(server_public_key_offsets[0], relocations);
+  offsets.server_public_key = calculate_relocated_offset(server_public_key_offsets[0], relocations);
   fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
@@ -323,7 +326,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = calculate_relocated_address(offset, relocations);
+    sigscanner::offset relocated_offset = calculate_relocated_offset(offset, relocations);
     fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
   }
 
@@ -356,13 +359,13 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   // We hit shn_finish
   if (last_shannon_constant - function_prologues[0] < 0x200)
   {
-    sigscanner::offset relocated_shn_finish = calculate_relocated_address(function_prologues[0], relocations);
+    sigscanner::offset relocated_shn_finish = calculate_relocated_offset(function_prologues[0], relocations);
     fmt::print("Found shn_finish at {}:{:#012x} ({:#012x})\n", binary_filename, function_prologues[0], relocated_shn_finish);
     function_prologues.erase(function_prologues.begin());
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = calculate_relocated_address(prologue, relocations);
+    sigscanner::offset relocated_prologue = calculate_relocated_offset(prologue, relocations);
     fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
@@ -514,8 +517,8 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     relocation_entry entry;
     entry.offset_in_file = section_header.PointerToRawData;
     entry.size_in_file = section_header.SizeOfRawData;
-    entry.aligned_offset_in_memory = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
-    entry.aligned_size_in_memory = section_header.Misc.VirtualSize;
+    entry.offset_in_memory = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
+    entry.size_in_memory = section_header.Misc.VirtualSize;
     relocations.emplace_back(entry);
   }
 
