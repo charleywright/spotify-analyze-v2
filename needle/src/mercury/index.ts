@@ -1,12 +1,14 @@
-import * as Mercury from "./proto/mercury/mercury.old";
-import { warn, info, Color, RST_COL_CODE, color_code } from "./log";
-import { PacketType } from "./spirc";
+import * as Mercury from "../proto/mercury/mercury.old";
+import { warn, info, Color, RST_COL_CODE, color_code } from "../log";
+import { PacketType } from "../spirc";
 
-function logSend(message: string) {
+import { ConnectionIdHandler } from "./connection_id";
+
+export function logSend(message: string) {
   console.log(`${color_code(Color.GREEN)}${message}${RST_COL_CODE}`);
 }
 
-function logRecv(message: string) {
+export function logRecv(message: string) {
   console.log(`${color_code(Color.CYAN)}${message}${RST_COL_CODE}`);
 }
 
@@ -76,12 +78,12 @@ function parsePacket(data: ArrayBuffer): [string, number] {
   return [sequenceStr, flags];
 }
 
-interface Handler {
+export type MercuryHandler = {
   template: string;
-  handler: Function;
-}
-const SEND_HANDLERS = [] as Handler[];
-const RECV_HANDLERS = [] as Handler[];
+  handler: { (header: Mercury.Header, parts: ArrayBuffer[]): void };
+};
+const SEND_HANDLERS: MercuryHandler[] = [];
+const RECV_HANDLERS: MercuryHandler[] = [ConnectionIdHandler];
 
 export function send(type: PacketType, data: ArrayBuffer) {
   const typeStr = PacketType[type];
@@ -97,7 +99,7 @@ export function send(type: PacketType, data: ArrayBuffer) {
   if ((flags & 1) != 1) {
     return; // Not end of packet
   }
-  const parts = MercuryStorage.inProgress[seqStr];
+  let parts = MercuryStorage.inProgress[seqStr];
   delete MercuryStorage.inProgress[seqStr];
 
   if (parts.length === 0) {
@@ -111,11 +113,10 @@ export function send(type: PacketType, data: ArrayBuffer) {
 
   try {
     const header = Mercury.Header.decode(new Uint8Array(parts[0]));
+    parts.shift();
     const url = header.uri;
     logSend(
-      `[SEND] [M] type=${typeStr} seq=${seqStr} parts=${
-        parts.length - 1
-      } url=${url}`
+      `[SEND] [M] type=${typeStr} seq=${seqStr} parts=${parts.length} url=${url}`
     );
     logSend(JSON.stringify(Mercury.Header.toJSON(header), null, 2));
 
@@ -128,12 +129,9 @@ export function send(type: PacketType, data: ArrayBuffer) {
 
     warn(
       `Mercury: (send) No handler for ${url}\n${
-        parts.length === 1
+        parts.length === 0
           ? "<No parts>"
-          : parts
-              .slice(1)
-              .map((p) => hexdump(p))
-              .join("\n")
+          : parts.map((p) => hexdump(p)).join("\n")
       }`
     );
   } catch {
@@ -159,7 +157,7 @@ export function recv(type: PacketType, data: ArrayBuffer) {
   if ((flags & 1) != 1) {
     return; // Not end of packet
   }
-  const parts = MercuryStorage.inProgress[seqStr];
+  let parts = MercuryStorage.inProgress[seqStr];
   delete MercuryStorage.inProgress[seqStr];
 
   if (parts.length === 0) {
@@ -173,13 +171,12 @@ export function recv(type: PacketType, data: ArrayBuffer) {
 
   try {
     const header = Mercury.Header.decode(new Uint8Array(parts[0]));
+    parts.shift();
     const url = header.uri;
-    logSend(
-      `[RECV] [M] type=${typeStr} seq=${seqStr} parts=${
-        parts.length - 1
-      } url=${url}`
+    logRecv(
+      `[RECV] [M] type=${typeStr} seq=${seqStr} parts=${parts.length} url=${url}`
     );
-    logSend(JSON.stringify(Mercury.Header.toJSON(header), null, 2));
+    logRecv(JSON.stringify(Mercury.Header.toJSON(header), null, 2));
 
     for (let i = 0; i < RECV_HANDLERS.length; i++) {
       if (urlMatch(url, RECV_HANDLERS[i].template)) {
@@ -190,12 +187,9 @@ export function recv(type: PacketType, data: ArrayBuffer) {
 
     warn(
       `Mercury: (recv) No handler for ${url}\n${
-        parts.length === 1
+        parts.length === 0
           ? "<No parts>"
-          : parts
-              .slice(1)
-              .map((p) => hexdump(p))
-              .join("\n")
+          : parts.map((p) => hexdump(p)).join("\n")
       }`
     );
   } catch {

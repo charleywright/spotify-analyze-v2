@@ -207,7 +207,7 @@ function recv(data: ArrayBuffer) {
       const type = dv.getUint16(0, false);
       switch (type) {
         case 0: {
-          logRecv(`[RECV] type=${typeStr}\nPremium`);
+          logRecv(`[RECV] type=${typeStr}\nFree/Premium`);
           break;
         }
         default: {
