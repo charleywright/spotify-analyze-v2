@@ -3,6 +3,7 @@ import { warn, info, Color, RST_COL_CODE, color_code } from "../log";
 import { PacketType } from "../spirc";
 
 import { ConnectionIdHandler } from "./connection_id";
+import { SendEventHandler, RecvEventHandler } from "./events";
 
 export function logSend(message: string) {
   console.log(`${color_code(Color.GREEN)}${message}${RST_COL_CODE}`);
@@ -82,8 +83,8 @@ export type MercuryHandler = {
   template: string;
   handler: { (header: Mercury.Header, parts: ArrayBuffer[]): void };
 };
-const SEND_HANDLERS: MercuryHandler[] = [];
-const RECV_HANDLERS: MercuryHandler[] = [ConnectionIdHandler];
+const SEND_HANDLERS: MercuryHandler[] = [SendEventHandler];
+const RECV_HANDLERS: MercuryHandler[] = [ConnectionIdHandler, RecvEventHandler];
 
 export function send(type: PacketType, data: ArrayBuffer) {
   const typeStr = PacketType[type];
