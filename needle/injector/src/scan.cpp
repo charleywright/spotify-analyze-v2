@@ -8,27 +8,58 @@
 #include "fmt/core.h"
 #include <cstring>
 #include <variant>
+#include <cassert>
 
 const char *SERVER_PUBLIC_KEY_SIG = "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 
 struct relocation_entry
 {
-    std::uint64_t start = 0;
-    std::uint64_t end = 0;
-    std::int64_t offset = 0;
-    std::string name;
+    std::uint64_t offset_in_file = 0;
+    std::uint64_t size_in_file = 0;
+    std::uint64_t aligned_offset_in_memory = 0;
+    std::uint64_t aligned_size_in_memory = 0;
 };
 
-std::uint64_t apply_relocations(std::uint64_t address, const std::vector<relocation_entry> &relocations)
+/*
+ * Take a position in a file and calculate the offset from the module base address to that data.
+ * Frida's modules (Process.getModuleByName etc.) do not have a concept of segments so the offset
+ * must be calculated relative to the first segment in the file that is loaded. For example if the
+ * position is in the third loadable segment, the offset will be s1.len + s2.len + s3_offset. It
+ * would be nice if it was that simple however some sections such as .bss will not occupy space in
+ * the file but will occupy space in memory. We need to take all of this into account when calculating
+ * the relocated offset.
+ */
+std::uint64_t calculate_relocated_offset(std::uint64_t position, const std::vector<relocation_entry> &relocations)
 {
-  for (const relocation_entry &entry: relocations)
+  assert(!relocations.empty());
+  for (const auto &entry: relocations)
   {
-    if (address >= entry.start && address < entry.end)
+    if (position >= entry.offset_in_file && position < entry.offset_in_file + entry.size_in_file)
     {
-      return address + entry.offset;
+      const std::uint64_t offset = position - entry.offset_in_file;
+      const std::uint64_t offset_from_base = entry.aligned_offset_in_memory - relocations[0].aligned_offset_in_memory;
+      return offset_from_base + offset;
     }
   }
-  return address;
+  return position;
+}
+
+/*
+ * Take a position in a file and calculate the offset in virtual memory where the data at that
+ * position will be placed. This is only reliable for executables as position independent dynamic
+ * libraries can be loaded at any base address.
+ */
+std::uint64_t calculate_relocated_address(std::uint64_t position, const std::vector<relocation_entry> &relocations)
+{
+  for (const auto &entry: relocations)
+  {
+    if (position >= entry.offset_in_file && position < entry.offset_in_file + entry.size_in_file)
+    {
+      const std::uint64_t offset = position - entry.offset_in_file;
+      return entry.aligned_offset_in_memory + offset;
+    }
+  }
+  return position;
 }
 
 elf::elf_file_details parse_elf(std::ifstream &binary_file)
@@ -95,145 +126,148 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
    *   0x0001c6fd47
    *   0x0001c700aa
    *   0x0001c71887
-   * The difference is 0x201000, this is due to relocations. Since the constant is used in assembly it will be in the .text
-   * section. To find the offset this section is loaded at we need to parse the Elf header and section table.
+   * The difference is 0x201000, this is due to relocations. When an executable is loaded from disk it is memory-mapped
+   * into virtual memory according to the segments defined in the file. In an ELF file the segments to be loaded are
+   * defined in the program header table with p_type being PT_LOAD. We can look at these headers using readelf:
    *
-   * If we run 'readelf --sections --wide /opt/spotify/spotify' we find the following entry:
-   *   [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
-   *   [15] .text             PROGBITS        0000000000adbb80 8dab80 13339e5 00  AX  0   0 32
+   *   readelf --segments /opt/spotify/spotify
+   *     Type           Offset             VirtAddr           PhysAddr
+   *                    FileSiz            MemSiz              Flags  Align
+   *     PHDR           0x0000000000000040 0x0000000000200040 0x0000000000200040
+   *                    0x00000000000002a0 0x00000000000002a0  R      0x8
+   *     INTERP         0x00000000000002e0 0x00000000002002e0 0x00000000002002e0
+   *                    0x000000000000001c 0x000000000000001c  R      0x1
+   *         [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+   *     LOAD           0x0000000000000000 0x0000000000200000 0x0000000000200000
+   *                    0x00000000008dab74 0x00000000008dab74  R      0x1000
+   *     LOAD           0x00000000008dab80 0x0000000000adbb80 0x0000000000adbb80
+   *                    0x0000000001336070 0x0000000001336070  R E    0x1000
+   *     LOAD           0x0000000001c10c00 0x0000000001e12c00 0x0000000001e12c00
+   *                    0x000000000000a8e8 0x000000000000a8e8  RW     0x1000
+   *     LOAD           0x0000000001c1b4f0 0x0000000001e1e4f0 0x0000000001e1e4f0
+   *                    0x000000000052bfb0 0x000000000055a468  RWE    0x1000
+   *     TLS            0x0000000001c10c00 0x0000000001e12c00 0x0000000001e12c00
+   *                    0x0000000000000040 0x0000000000001431  R      0x40
+   *     DYNAMIC        0x0000000001c1b198 0x0000000001e1d198 0x0000000001e1d198
+   *                    0x0000000000000330 0x0000000000000330  RW     0x8
+   *     GNU_RELRO      0x0000000001c10c00 0x0000000001e12c00 0x0000000001e12c00
+   *                    0x000000000000a8e8 0x000000000000b400  R      0x1
+   *     GNU_EH_FRAME   0x000000000041b2b0 0x000000000061b2b0 0x000000000061b2b0
+   *                    0x00000000000c895c 0x00000000000c895c  R      0x4
+   *     GNU_STACK      0x0000000000000000 0x0000000000000000 0x0000000000000000
+   *                    0x0000000000000000 0x0000000000000000  RW     0x0
+   *     NOTE           0x00000000000002fc 0x00000000002002fc 0x00000000002002fc
+   *                    0x0000000000000020 0x0000000000000020  R      0x4
    *
-   * If we take the address of the .text section and subtract the offset in the file we get 0x201000.
+   * There are 4 LOAD segments and use an alignment of 0x1000 bytes. Looking at /proc/<pid>/maps it appears to match:
    *
-   * To find and apply these offsets ourselves we need to parse the section header table. To do that we need to parse the
-   * ELF header to find the offset of the section header table however we are already doing so to find the machine type.
-   * The ELF format is very well documented and there are some resources linked at the top of elf.hpp
+   *   address           perms offset  dev    inode       pathname
+   *   00200000-00adb000 r--p 00000000 103:07 933388      /opt/spotify/spotify
+   *   00adb000-01e12000 r-xp 008da000 103:07 933388      /opt/spotify/spotify
+   *   01e12000-01e1e000 r--p 01c10000 103:07 933388      /opt/spotify/spotify
+   *   01e1e000-0234b000 rwxp 01c1b000 103:07 933388      /opt/spotify/spotify
+   *
+   * The addresses used for loading don't exactly match the program headers, but after taking alignment into consideration
+   * they match. On my system any padding bytes are read from the file and if the padding passes the end of the file, null
+   * bytes are used. There are some resources about the ELF format linked at the top of elf.hpp
   */
 
   std::vector<relocation_entry> relocations;
 
+  /*
+   * TODO: Migrate to an elf_file class. This will allow us to use the same code for both 32-bit
+   * and 64-bit binaries and abstract away the implementation.
+   */
   if (binary_details.is_64_bit)
   {
     const auto &header = std::get<elf::Elf64_Ehdr>(binary_details.header);
-    elf::Elf64_Half section_header_table_entry_size = header.e_shentsize;
-    if (section_header_table_entry_size != sizeof(elf::Elf64_Shdr))
+    elf::Elf64_Half program_header_table_entry_size = header.e_phentsize;
+    if (program_header_table_entry_size != sizeof(elf::Elf64_Phdr))
     {
-      fmt::print(stderr, "Error: Invalid section header table entry size\n");
+      fmt::print(stderr, "Error: Invalid program header table entry size\n");
       return relocations;
     }
 
-    std::vector<elf::Elf64_Shdr> section_headers(header.e_shnum);
-    elf::Elf64_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
-    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
-    if (binary_file.gcount() != section_header_table_size)
+    std::vector<elf::Elf64_Phdr> program_headers(header.e_phnum);
+    elf::Elf64_Half program_header_table_size = header.e_phnum * program_header_table_entry_size;
+    binary_file.seekg(static_cast<std::streamoff>(header.e_phoff));
+    binary_file.read(reinterpret_cast<char *>(program_headers.data()), static_cast<std::streamsize>(program_header_table_size));
+    if (binary_file.gcount() != program_header_table_size)
     {
-      fmt::print(stderr, "Error: Failed to read section headers\n");
+      fmt::print(stderr, "Error: Failed to read program headers\n");
       return relocations;
     }
 
-    elf::Elf64_Half section_header_string_table_index = header.e_shstrndx;
-    if (section_header_string_table_index == elf::Elf64_Ehdr::SHN_UNDEF)
+    for (const auto &program_header: program_headers)
     {
-      fmt::print(stderr, "Error: Section header string table index is undefined\n");
-      return relocations;
-    }
-    if (section_header_string_table_index == elf::Elf64_Ehdr::SHN_XINDEX)
-    {
-      section_header_string_table_index = section_headers[0].sh_link;
-    }
-
-    const elf::Elf64_Shdr &section_header_string_table_entry = section_headers[section_header_string_table_index];
-    std::unique_ptr<void, void (*)(void *)> section_header_string_table(std::malloc(section_header_string_table_entry.sh_size), std::free);
-    if (!section_header_string_table)
-    {
-      fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
-      return relocations;
-    }
-    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
-    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
-    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
-    {
-      fmt::print(stderr, "Error: Failed to read section header string table\n");
-      return relocations;
-    }
-    const auto resolve_str = [&section_header_string_table](elf::Elf64_Word offset) {
-        return reinterpret_cast<const char *>(section_header_string_table.get()) + offset;
-    };
-
-    for (const auto &section_header: section_headers)
-    {
-      if (section_header.sh_type == elf::Elf64_Shdr::SHT_PROGBITS)
+      if (program_header.p_type == elf::Elf64_Phdr::PT_LOAD)
       {
         relocation_entry entry;
-        entry.start = section_header.sh_offset;
-        entry.end = section_header.sh_offset + section_header.sh_size;
-        entry.offset = static_cast<std::int64_t>(section_header.sh_addr) - static_cast<std::int64_t>(section_header.sh_offset);
-        entry.name = resolve_str(section_header.sh_name);
-        relocations.emplace_back(std::move(entry));
+        entry.offset_in_file = program_header.p_offset;
+        entry.size_in_file = program_header.p_filesz;
+        elf::Elf64_Addr aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
+        elf::Elf64_Addr aligned_vaddr_end =
+                (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
+        entry.aligned_size_in_memory = aligned_vaddr_end - aligned_vaddr_start;
+        entry.aligned_offset_in_memory = program_header.p_vaddr / program_header.p_align * program_header.p_align;
+        entry.aligned_size_in_memory = program_header.p_memsz;
+        fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
+                   program_header.p_offset,
+                   program_header.p_filesz,
+                   program_header.p_vaddr,
+                   program_header.p_vaddr + program_header.p_memsz,
+                   aligned_vaddr_start,
+                   aligned_vaddr_end
+        );
+        relocations.emplace_back(entry);
       }
     }
   } else
   {
     const auto &header = std::get<elf::Elf32_Ehdr>(binary_details.header);
-    elf::Elf32_Half section_header_table_entry_size = header.e_shentsize;
-    if (section_header_table_entry_size != sizeof(elf::Elf32_Shdr))
+    elf::Elf32_Half program_header_table_entry_size = header.e_phentsize;
+    if (program_header_table_entry_size != sizeof(elf::Elf32_Shdr))
     {
       fmt::print(stderr, "Error: Invalid section header table entry size\n");
       return relocations;
     }
 
-    std::vector<elf::Elf32_Shdr> section_headers(header.e_shnum);
-    elf::Elf32_Half section_header_table_size = header.e_shnum * section_header_table_entry_size;
-    binary_file.seekg(static_cast<std::streamoff>(header.e_shoff));
-    binary_file.read(reinterpret_cast<char *>(section_headers.data()), static_cast<std::streamsize>(section_header_table_size));
-    if (binary_file.gcount() != section_header_table_size)
+    std::vector<elf::Elf32_Phdr> program_headers(header.e_phnum);
+    elf::Elf32_Half program_header_table_size = header.e_phnum * program_header_table_entry_size;
+    binary_file.seekg(static_cast<std::streamoff>(header.e_phoff));
+    binary_file.read(reinterpret_cast<char *>(program_headers.data()), static_cast<std::streamsize>(program_header_table_size));
+    if (binary_file.gcount() != program_header_table_size)
     {
-      fmt::print(stderr, "Error: Failed to read section headers\n");
+      fmt::print(stderr, "Error: Failed to read program headers\n");
       return relocations;
     }
 
-    elf::Elf32_Half section_header_string_table_index = header.e_shstrndx;
-    if (section_header_string_table_index == elf::Elf32_Ehdr::SHN_UNDEF)
+    for (const auto &program_header: program_headers)
     {
-      fmt::print(stderr, "Error: Section header string table index is undefined\n");
-      return relocations;
-    }
-    if (section_header_string_table_index == elf::Elf32_Ehdr::SHN_XINDEX)
-    {
-      section_header_string_table_index = section_headers[0].sh_link;
-    }
-
-    const elf::Elf32_Shdr &section_header_string_table_entry = section_headers[section_header_string_table_index];
-    std::unique_ptr<void, void (*)(void *)> section_header_string_table(std::malloc(section_header_string_table_entry.sh_size), std::free);
-    if (!section_header_string_table)
-    {
-      fmt::print(stderr, "Error: Failed to allocate memory for section header string table\n");
-      return relocations;
-    }
-    binary_file.seekg(static_cast<std::streamoff>(section_header_string_table_entry.sh_offset));
-    binary_file.read(reinterpret_cast<char *>(section_header_string_table.get()), static_cast<std::streamsize>(section_header_string_table_entry.sh_size));
-    if (binary_file.gcount() != section_header_string_table_entry.sh_size)
-    {
-      fmt::print(stderr, "Error: Failed to read section header string table\n");
-      return relocations;
-    }
-    const auto resolve_str = [&section_header_string_table](elf::Elf32_Word offset) {
-        return reinterpret_cast<const char *>(section_header_string_table.get()) + offset;
-    };
-
-    for (const auto &section_header: section_headers)
-    {
-      if (section_header.sh_type == elf::Elf32_Shdr::SHT_PROGBITS)
+      if (program_header.p_type == elf::Elf32_Phdr::PT_LOAD)
       {
         relocation_entry entry;
-        entry.start = section_header.sh_offset;
-        entry.end = section_header.sh_offset + section_header.sh_size;
-        entry.offset = section_header.sh_addr - section_header.sh_offset;
-        entry.name = resolve_str(section_header.sh_name);
-        relocations.emplace_back(std::move(entry));
+        entry.offset_in_file = program_header.p_offset;
+        entry.size_in_file = program_header.p_filesz;
+        elf::Elf32_Addr aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
+        elf::Elf32_Addr aligned_vaddr_end =
+                (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
+        entry.aligned_size_in_memory = aligned_vaddr_end - aligned_vaddr_start;
+        entry.aligned_offset_in_memory = program_header.p_vaddr / program_header.p_align * program_header.p_align;
+        entry.aligned_size_in_memory = program_header.p_memsz;
+        fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
+                   program_header.p_offset,
+                   program_header.p_filesz,
+                   program_header.p_vaddr,
+                   program_header.p_vaddr + program_header.p_memsz,
+                   aligned_vaddr_start,
+                   aligned_vaddr_end
+        );
+        relocations.emplace_back(entry);
       }
     }
   }
+
   return relocations;
 }
 
@@ -280,7 +314,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
-  offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
+  offsets.server_public_key = calculate_relocated_address(server_public_key_offsets[0], relocations);
   fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
@@ -289,7 +323,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
+    sigscanner::offset relocated_offset = calculate_relocated_address(offset, relocations);
     fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
   }
 
@@ -322,13 +356,13 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   // We hit shn_finish
   if (last_shannon_constant - function_prologues[0] < 0x200)
   {
-    sigscanner::offset relocated_shn_finish = apply_relocations(function_prologues[0], relocations);
+    sigscanner::offset relocated_shn_finish = calculate_relocated_address(function_prologues[0], relocations);
     fmt::print("Found shn_finish at {}:{:#012x} ({:#012x})\n", binary_filename, function_prologues[0], relocated_shn_finish);
     function_prologues.erase(function_prologues.begin());
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
+    sigscanner::offset relocated_prologue = calculate_relocated_address(prologue, relocations);
     fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
@@ -477,12 +511,12 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   std::vector<relocation_entry> relocations;
   for (const auto &section_header: section_headers)
   {
-    relocation_entry relocation;
-    relocation.start = section_header.PointerToRawData;
-    relocation.end = section_header.PointerToRawData + section_header.SizeOfRawData;
-    relocation.offset = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress - section_header.PointerToRawData;
-    relocation.name = std::string(section_header.Name, strnlen(section_header.Name, sizeof(section_header.Name)));
-    relocations.emplace_back(std::move(relocation));
+    relocation_entry entry;
+    entry.offset_in_file = section_header.PointerToRawData;
+    entry.size_in_file = section_header.SizeOfRawData;
+    entry.aligned_offset_in_memory = static_cast<std::int64_t>(image_base) + section_header.VirtualAddress;
+    entry.aligned_size_in_memory = section_header.Misc.VirtualSize;
+    relocations.emplace_back(entry);
   }
 
   const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
@@ -503,7 +537,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
-  offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
+  offsets.server_public_key = calculate_relocated_address(server_public_key_offsets[0], relocations);
   fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
@@ -512,7 +546,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
+    sigscanner::offset relocated_offset = calculate_relocated_address(offset, relocations);
     fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
   }
 
@@ -561,7 +595,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
+    sigscanner::offset relocated_prologue = calculate_relocated_address(prologue, relocations);
     fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
@@ -742,7 +776,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
-  offsets.server_public_key = apply_relocations(server_public_key_offsets[0], relocations);
+  offsets.server_public_key = calculate_relocated_offset(server_public_key_offsets[0], relocations);
   fmt::print("Found server public key at {}:{:#012x} ({:#012x})\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
@@ -751,7 +785,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   }
   for (const auto &offset: shannon_constant_offsets)
   {
-    sigscanner::offset relocated_offset = apply_relocations(offset, relocations);
+    sigscanner::offset relocated_offset = calculate_relocated_offset(offset, relocations);
     fmt::print("Found shannon constant at {}:{:#012x} ({:#012x})\n", binary_filename, offset, relocated_offset);
   }
 
@@ -776,17 +810,17 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   // We hit shn_finish
   if (last_shannon_constant - function_prologues[0] < 0x200)
   {
-    sigscanner::offset relocated_shn_finish = apply_relocations(function_prologues[0], relocations);
+    sigscanner::offset relocated_shn_finish = calculate_relocated_offset(function_prologues[0], relocations);
     fmt::print("Found shn_finish at {}:{:#012x} ({:#012x})\n", binary_filename, function_prologues[0], relocated_shn_finish);
     function_prologues.erase(function_prologues.begin());
   }
   for (auto &prologue: function_prologues)
   {
-    sigscanner::offset relocated_prologue = apply_relocations(prologue, relocations);
+    sigscanner::offset relocated_prologue = calculate_relocated_offset(prologue, relocations);
     fmt::print("Found function prologue at {}:{:#012x} ({:#012x})\n", binary_filename, prologue, relocated_prologue);
     prologue = relocated_prologue;
   }
-  if(function_prologues.size() < 2)
+  if (function_prologues.size() < 2)
   {
     fmt::print(stderr, "Error: Found too few prologues\n");
     return;

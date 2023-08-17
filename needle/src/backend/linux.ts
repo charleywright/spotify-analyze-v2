@@ -1,7 +1,6 @@
 import LaunchArguments from "../launchArguments";
 import { status, info } from "../log";
-import { hook as hookShannonFunctions } from "../shannon";
-import "../base64-polyfill";
+import { postInit, preInit } from "./any";
 
 // https://github.com/lattera/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/bits/dlfcn.h#L24-L41
 enum RTLD {
@@ -36,20 +35,15 @@ function hookDlopen() {
 }
 
 function init(launchArgs: any) {
-  Object.assign(LaunchArguments, launchArgs);
-  (globalThis as any).Buffer = undefined;
-  (global as any).Buffer = undefined;
+  preInit(launchArgs);
 
-  status(
-    `Injected into process. Got arguments:\n${JSON.stringify(
-      launchArgs,
-      null,
-      2
-    )}`
-  );
+  const moduleBase = Process.getModuleByName("spotify").base;
+  LaunchArguments.relocate(moduleBase);
+
   hookDlopen();
   status(`Hooked dlopen`);
-  hookShannonFunctions();
+
+  postInit();
 }
 
 rpc.exports.init = init;

@@ -68,15 +68,17 @@ int main(int argc, char **argv)
     return 1;
   }
   std::string executable = *exec;
-  if ((target != platform::ANDROID && target != platform::IOS) &&
-      !std::filesystem::exists(*exec))
+  if (target != platform::ANDROID && target != platform::IOS)
   {
-    fmt::print(stderr, "Error: Executable {} does not exist\n", *exec);
-    print_help();
-    return 1;
-  } else
-  {
-    executable = std::filesystem::canonical(executable).string();
+    if (!std::filesystem::exists(*exec))
+    {
+      fmt::print(stderr, "Error: Executable {} does not exist\n", *exec);
+      print_help();
+      return 1;
+    } else
+    {
+      executable = std::filesystem::canonical(executable).string();
+    }
   }
 
   const auto binary = args.get<std::string>("binary");

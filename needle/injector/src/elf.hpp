@@ -91,6 +91,32 @@ namespace elf
 
     typedef std::variant<Elf32_Ehdr, Elf64_Ehdr> Elf_Ehdr;
 
+    typedef struct Elf32_Phdr {
+        Elf32_Word	p_type;
+        Elf32_Off	p_offset;
+        Elf32_Addr	p_vaddr;
+        Elf32_Addr	p_paddr;
+        Elf32_Word	p_filesz;
+        Elf32_Word	p_memsz;
+        Elf32_Word	p_flags;
+        Elf32_Word	p_align;
+
+        static constexpr Elf32_Word PT_LOAD = 1;
+    } Elf32_Phdr;
+
+    typedef struct Elf64_Phdr {
+        Elf64_Word	p_type;
+        Elf64_Word	p_flags;
+        Elf64_Off	p_offset;
+        Elf64_Addr	p_vaddr;
+        Elf64_Addr	p_paddr;
+        Elf64_Xword	p_filesz;
+        Elf64_Xword	p_memsz;
+        Elf64_Xword	p_align;
+
+        static constexpr Elf64_Word PT_LOAD = 1;
+    } Elf64_Phdr;
+
     typedef struct Elf32_Shdr
     {
         Elf32_Word sh_name;

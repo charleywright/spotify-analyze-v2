@@ -1,7 +1,6 @@
-import LaunchArguments from "../launchArguments";
 import { status, info } from "../log";
-import { hook as hookShannonFunctions } from "../shannon";
-import "../base64-polyfill";
+import { postInit, preInit } from "./any";
+import LaunchArguments from "../launchArguments";
 
 enum LL_FLAGS {
   DONT_RESOLVE_DLL_REFERENCES = 0x00000001,
@@ -87,20 +86,15 @@ function hookLoadLibrary() {
 }
 
 function init(launchArgs: any) {
-  Object.assign(LaunchArguments, launchArgs);
-  (globalThis as any).Buffer = undefined;
-  (global as any).Buffer = undefined;
+  preInit(launchArgs);
 
-  status(
-    `Injected into process. Got arguments:\n${JSON.stringify(
-      launchArgs,
-      null,
-      2
-    )}`
-  );
+  const moduleBase = Process.getModuleByName("Spotify.exe").base;
+  LaunchArguments.relocate(moduleBase);
+
   hookLoadLibrary();
   status(`Hooked LoadLibraryA/LoadLibraryW`);
-  hookShannonFunctions();
+
+  postInit();
 }
 
 rpc.exports.init = init;

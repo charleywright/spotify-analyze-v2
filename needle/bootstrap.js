@@ -49,7 +49,7 @@ function sleep(milli) {
         join(scriptDir, `${platform}.js`),
         "utf-8"
       );
-      const pid = await frida.spawn(exec);
+      const pid = await frida.spawn(exec, { argv: ["--show-console"] });
       const session = await frida.attach(pid);
       const script = await session.createScript(scriptSrc);
       await script.load();
