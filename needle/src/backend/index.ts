@@ -3,6 +3,9 @@ import { status } from "../log";
 import { hook as hookShannonFunctions } from "../shannon";
 import "../base64-polyfill";
 
+import { linuxInit } from "./linux";
+import { windowsInit } from "./windows";
+
 export function preInit(launchArgs: any) {
   LaunchArguments.init(launchArgs);
   (globalThis as any).Buffer = undefined;
@@ -20,3 +23,8 @@ export function preInit(launchArgs: any) {
 export function postInit() {
   hookShannonFunctions();
 }
+
+rpc.exports = {
+  linuxInit,
+  windowsInit,
+};

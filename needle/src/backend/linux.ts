@@ -1,6 +1,6 @@
 import LaunchArguments from "../launchArguments";
 import { status, info } from "../log";
-import { postInit, preInit } from "./any";
+import { postInit, preInit } from ".";
 
 // https://github.com/lattera/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/bits/dlfcn.h#L24-L41
 enum RTLD {
@@ -34,7 +34,7 @@ function hookDlopen() {
   });
 }
 
-function init(launchArgs: any) {
+export function linuxInit(launchArgs: any) {
   preInit(launchArgs);
 
   const moduleBase = Process.getModuleByName("spotify").base;
@@ -45,5 +45,3 @@ function init(launchArgs: any) {
 
   postInit();
 }
-
-rpc.exports.init = init;

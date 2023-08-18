@@ -42,19 +42,20 @@ function sleep(milli) {
   }
 
   const scriptDir = join(dirname(fileURLToPath(import.meta.url)), "build");
+  const scriptSrc = fs.readFileSync(join(scriptDir, `needle.js`), "utf-8");
   switch (platform) {
     case "linux":
     case "windows": {
-      const scriptSrc = fs.readFileSync(
-        join(scriptDir, `${platform}.js`),
-        "utf-8"
-      );
-      const pid = await frida.spawn(exec, { argv: ["--show-console"] });
+      const pid = await frida.spawn(exec);
       console.log(`Spawned process ${pid}`);
       const session = await frida.attach(pid);
       const script = await session.createScript(scriptSrc);
       await script.load();
-      await script.exports.init(launchArgs);
+      if (platform === "linux") {
+        await script.exports.linuxInit(launchArgs);
+      } else {
+        await script.exports.windowsInit(launchArgs);
+      }
       await sleep(1000);
       await frida.resume(pid);
       break;

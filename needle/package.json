@@ -6,12 +6,8 @@
   "main": "bootstrap.js",
   "type": "module",
   "scripts": {
-    "compile-bootstrap": "",
-    "compile-linux": "frida-compile src/backend/linux.ts -o build/linux.js -c",
-    "watch-linux": "frida-compile src/backend/linux.ts -o build/linux.js -c -w",
-    "compile-windows": "frida-compile src/backend/windows.ts -o build/windows.js -c",
-    "watch-windows": "frida-compile src/backend/windows.ts -o build/windows.js -c -w",
-    "compile-all": "npm run compile-linux; npm run compile-windows"
+    "compile": "frida-compile src/backend/index.ts -o build/needle.js -c",
+    "watch": "frida-compile src/backend/index.ts -o build/needle.js -c -w"
   },
   "repository": {
     "type": "git",

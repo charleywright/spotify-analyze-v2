@@ -1,5 +1,5 @@
 import { status, info } from "../log";
-import { postInit, preInit } from "./any";
+import { postInit, preInit } from ".";
 import LaunchArguments from "../launchArguments";
 
 enum LL_FLAGS {
@@ -85,7 +85,7 @@ function hookLoadLibrary() {
   });
 }
 
-function init(launchArgs: any) {
+export function windowsInit(launchArgs: any) {
   preInit(launchArgs);
 
   const moduleBase = Process.getModuleByName("Spotify.exe").base;
@@ -96,5 +96,3 @@ function init(launchArgs: any) {
 
   postInit();
 }
-
-rpc.exports.init = init;
