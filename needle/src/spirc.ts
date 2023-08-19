@@ -155,8 +155,6 @@ function recv(data: ArrayBuffer) {
         RecvIntermediate.header.length
       }, got ${data.byteLength}:\n${hexdump(data, { header: false })}`
     );
-    RecvIntermediate.header.type = PacketType.Error;
-    RecvIntermediate.header.length = -1;
     return;
   }
 

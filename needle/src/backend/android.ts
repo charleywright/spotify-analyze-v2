@@ -33,6 +33,11 @@ function hookDlopen() {
 
 export function androidInit(launchArgs: any) {
   preInit(launchArgs);
+  /*
+    Completely broken on Android. Once detection uses XREFS
+    and disassembly they can be enabled again.
+  */
+  LaunchArguments.shannonDisableSafeCallers = true;
   hookDlopen();
   status(`Hooked dlopen`);
 }
