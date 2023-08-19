@@ -46,9 +46,10 @@ function sleep(milli) {
   switch (platform) {
     case "linux":
     case "windows": {
-      const pid = await frida.spawn(exec);
+      const device = await frida.getLocalDevice();
+      const pid = await device.spawn(exec);
       console.log(`Spawned process ${pid}`);
-      const session = await frida.attach(pid);
+      const session = await device.attach(pid);
       const script = await session.createScript(scriptSrc);
       await script.load();
       if (platform === "linux") {
@@ -57,11 +58,19 @@ function sleep(milli) {
         await script.exports.windowsInit(launchArgs);
       }
       await sleep(1000);
-      await frida.resume(pid);
+      await device.resume(pid);
       break;
     }
     case "android": {
-      console.error(`Android injection not supported yet`);
+      const device = await frida.getUsbDevice();
+      const pid = await device.spawn(exec);
+      console.log(`Spawned process ${pid}`);
+      const session = await device.attach(pid);
+      const script = await session.createScript(scriptSrc);
+      await script.load();
+      await script.exports.androidInit(launchArgs);
+      await sleep(1000);
+      await device.resume(pid);
       break;
     }
     case "ios": {

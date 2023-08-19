@@ -12,18 +12,18 @@ enum RTLD {
   NODELETE = 0x01000,
 }
 
-function hookDlopen() {
-  function getRtldFlags(flag: number): string {
-    let str = "";
-    if (flag & RTLD.LAZY) str += " | RTLD_LAZY";
-    if (flag & RTLD.NOW) str += " | RTLD_NOW";
-    if (flag & RTLD.NOLOAD) str += " | RTLD_NOLOAD";
-    if (flag & RTLD.DEEPBIND) str += " | RTLD_DEEPBIND";
-    if (flag & RTLD.GLOBAL) str += " | RTLD_GLOBAL";
-    if (flag & RTLD.NODELETE) str += " | RTLD_NODELETE";
-    return str.length > 0 ? str.substring(3) : "";
-  }
+export function getRtldFlags(flag: number): string {
+  let str = "0";
+  if (flag & RTLD.LAZY) str += " | RTLD_LAZY";
+  if (flag & RTLD.NOW) str += " | RTLD_NOW";
+  if (flag & RTLD.NOLOAD) str += " | RTLD_NOLOAD";
+  if (flag & RTLD.DEEPBIND) str += " | RTLD_DEEPBIND";
+  if (flag & RTLD.GLOBAL) str += " | RTLD_GLOBAL";
+  if (flag & RTLD.NODELETE) str += " | RTLD_NODELETE";
+  return str;
+}
 
+function hookDlopen() {
   const dlopen = Module.getExportByName(null, "dlopen");
   Interceptor.attach(dlopen, {
     onEnter: function (args) {
