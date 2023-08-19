@@ -6,6 +6,7 @@ export default class LaunchArguments {
   static shannonLogInvalidCalls = false;
   static shannonLogCallStacks = false;
   static shannonDisableSafeCallers = false;
+  static shannonDisableParsing = false;
 
   static init(launchArgs: any) {
     Object.assign(this, launchArgs);

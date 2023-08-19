@@ -1,4 +1,4 @@
-import { status, error, info } from "./log";
+import { status, error, info, color_code, RST_COL_CODE } from "./log";
 import LaunchArguments from "./launchArguments";
 import SPIRCParser from "./spirc";
 
@@ -136,6 +136,23 @@ export function hook() {
 
   Interceptor.attach(shannon.shn_encrypt, {
     onEnter: function (args) {
+      const ctx = this as unknown as ShnFuncCtx;
+      ctx.c = args[0];
+      ctx.buf = args[1];
+      ctx.nbytes = args[2].toUInt32();
+      const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
+
+      if (LaunchArguments.shannonDisableParsing) {
+        let str = `shn_encrypt(${ctx.c}, ${ctx.buf}, ${
+          ctx.nbytes
+        })\n${RST_COL_CODE}${hexdump(data, { header: false })}`;
+        if (LaunchArguments.shannonLogCallStacks) {
+          str += `\n${callStack(this.context)}`;
+        }
+        info(str);
+        return;
+      }
+
       if (
         !LaunchArguments.shannonDisableSafeCallers &&
         !SafeCallers.shn_encrypt.isNull()
@@ -160,11 +177,6 @@ export function hook() {
         SafeCallers.shn_encrypt = this.returnAddress;
       }
 
-      const ctx = this as unknown as ShnFuncCtx;
-      ctx.c = args[0];
-      ctx.buf = args[1];
-      ctx.nbytes = args[2].toUInt32();
-      const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
       SPIRCParser.send(data);
       if (LaunchArguments.shannonLogCallStacks) {
         console.log(callStack(this.context));
@@ -182,6 +194,17 @@ export function hook() {
     onLeave: function () {
       const ctx = this as unknown as ShnFuncCtx;
       const data = ctx.buf.readByteArray(ctx.nbytes) || new ArrayBuffer(0);
+
+      if (LaunchArguments.shannonDisableParsing) {
+        let str = `shn_decrypt(${ctx.c}, ${ctx.buf}, ${
+          ctx.nbytes
+        })\n${RST_COL_CODE}${hexdump(data, { header: false })}`;
+        if (LaunchArguments.shannonLogCallStacks) {
+          str += `\n${callStack(this.context)}`;
+        }
+        info(str);
+        return;
+      }
 
       if (
         !LaunchArguments.shannonDisableSafeCallers &&

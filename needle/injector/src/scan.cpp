@@ -961,6 +961,28 @@ scan_result scan_binary(platform target, const std::filesystem::path &binary_pat
    *     looking for the functions manually using the addresses we found in step 1.
    *     Then we can update our signatures or add additional logic.
    *
+   *  This works perfectly to find the functions, however after hooking them we may
+   *  sometimes run into another problem. These functions are called from more than
+   *  one place, and we are only interested in SPIRC data. To combat this we can
+   *  find the places we expect them to be called from and check if the return address
+   *  is one of them. To find the places they can be called from, we need to find
+   *  cross-references (commonly called XREFS) then analyze the calling function.
+   *  The calling function for shn_encrypt should create the header then copy the
+   *  data then call shn_encrypt with the whole buffer:
+   *   *(_BYTE *)v11[0] = packetType;
+   *   *((_BYTE *)v11[0] + 1) = BYTE1(packetLength);
+   *   *((_BYTE *)v11[0] + 2) = packetLength;
+   *   memcpy((char *)v11[0] + 3, packet, packetLength);
+   *   shn_encrypt((void *)(a1 + 952), v11[0], packetLength + 3);
+   *  The calling function for shn_decrypt should first call it with nbytes=3 to
+   *  decrypt the header then again to decrypt the body:
+   *    shn_decrypt(a1 + 744, v47, 3LL);
+   *    *(_BYTE *)(a1 + 56) = v47[0];
+   *    v10 = v47[1];
+   *    v11 = v47[2];
+   *    *(_QWORD *)(a1 + 64) = v11 & 0xFFFFFFFFFFFF00FFLL | ((unsigned __int64)v10 << 8);
+   *    shn_decrypt(a1 + 744, v15, *(unsigned int *)(a1 + 64));
+   *
    *  Notes:
    *  The offset into the binary file may not be the same as the offset once that file
    *  is mapped into memory. This is because due to dynamic linking, different parts

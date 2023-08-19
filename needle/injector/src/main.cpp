@@ -30,7 +30,8 @@ void print_help()
              "format and should use valid JSON values. These are the allowed options, all optional:\n"
              "  shannonLogCallStacks=true       - Log a call stack for SPIRC packet encryption\n"
              "  shannonLogInvalidCalls=true     - Log calls deemed to not be SPIRC related with return address\n"
-             "  shannonDisableSafeCallers=true  - Disable safe callers detection. Parsing will probably break\n", executable_name);
+             "  shannonDisableSafeCallers=true  - Disable safe callers detection. Parsing will probably break\n"
+             "  shannonDisableParsing=true      - Disable all parsing of shannon data, only logging calls\n", executable_name);
 }
 
 int main(int argc, char **argv)
