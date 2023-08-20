@@ -916,15 +916,8 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   offsets.success = true;
 }
 
-// TODO: Use definitions from Lipo
-inline const std::unordered_map<mach_o::cpu_subtype_arm, std::string_view> mach_o_subtype_strings =
-        {
-                {mach_o::cpu_subtype_arm::V6, "armv6"},
-                {mach_o::cpu_subtype_arm::V7, "armv7"}
-        };
-
 std::vector<mach_o::universal_file_entry>::const_iterator
-determine_mach_o_file_entry(const std::vector<mach_o::universal_file_entry> &file_entries, const flags::args &args)
+determine_mach_o_universal_file_entry(const std::vector<mach_o::universal_file_entry> &file_entries, const flags::args &args)
 {
   if (file_entries.size() == 1)
   {
@@ -932,20 +925,21 @@ determine_mach_o_file_entry(const std::vector<mach_o::universal_file_entry> &fil
   }
 
   const std::string_view &architecture = args.get<std::string_view>("arch", "");
-
-  for (auto it = file_entries.begin(); it != file_entries.end(); ++it)
+  if (architecture.empty())
   {
-    if (it->cpu != mach_o::cpu_type::ARM)
-    {
-      continue;
-    }
+    return file_entries.end();
+  }
 
-    const auto subtype = static_cast<mach_o::cpu_subtype_arm>(it->cpu_subtype);
-    for (const auto &[cpu_subtype, cpu_subtype_string]: mach_o_subtype_strings)
+  for (const auto &[cpu, cpu_str]: mach_o::CPU_NAMES)
+  {
+    if (architecture == cpu_str)
     {
-      if (subtype == cpu_subtype && architecture == cpu_subtype_string)
+      for (auto it = file_entries.begin(); it != file_entries.end(); it++)
       {
-        return it;
+        if (it->cpu == cpu.first && it->cpu_subtype == cpu.second)
+        {
+          return it;
+        }
       }
     }
   }
@@ -1027,36 +1021,22 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
 
     for (auto &file_entry: file_entries)
     {
-      file_entry.cpu = static_cast<mach_o::cpu_type>(bswap_32(static_cast<std::uint32_t>(file_entry.cpu)));
+      file_entry.cpu = bswap_32(file_entry.cpu);
       file_entry.cpu_subtype = bswap_32(file_entry.cpu_subtype);
       file_entry.offset = bswap_32(file_entry.offset);
       file_entry.size = bswap_32(file_entry.size);
       file_entry.align_pow = bswap_32(file_entry.align_pow);
-      fmt::print("Found Mach-O file entry for {} ({}) at {:#012x} with length {}\n",
-                 mach_o::cpu_type_str(file_entry.cpu),
-                 mach_o::cpu_subtype_str(file_entry.cpu, file_entry.cpu_subtype),
+      fmt::print("Found Mach-O file entry for {} at {:#012x} with length {}\n",
+                 mach_o::get_cpu_string(file_entry.cpu, file_entry.cpu_subtype),
                  file_entry.offset, file_entry.size
       );
     }
 
-    const auto &file_entry_it = determine_mach_o_file_entry(file_entries, args);
+    const auto &file_entry_it = determine_mach_o_universal_file_entry(file_entries, args);
     if (file_entry_it == file_entries.end())
     {
-      fmt::print(stderr, "Error: Couldn't determine which Mach-O entry to use\nValid options for --arch are:\n");
-      for (const auto &file_entry: file_entries)
-      {
-        if (file_entry.cpu != mach_o::cpu_type::ARM)
-        {
-          continue;
-        }
-        const auto subtype = static_cast<mach_o::cpu_subtype_arm>(file_entry.cpu_subtype);
-        if (mach_o_subtype_strings.count(subtype) == 0)
-        {
-          fmt::print(stderr, "Error: No string for ARM subtype %s\n", mach_o::cpu_subtype_arm_str(subtype));
-          continue;
-        }
-        fmt::print(stderr, "  {}\n", mach_o_subtype_strings.at(subtype));
-      }
+      fmt::print(stderr, "Error: Couldn't determine which Mach-O entry to use. "
+                         "See entries above for valid --arch values\n");
       std::exit(1);
     }
     binary_file.seekg(file_entry_it->offset);
@@ -1087,16 +1067,15 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       fmt::print(stderr, "Error: Failed to read Mach-O file header\n");
       return;
     }
-    fmt::print("Found Mach-O file header for {} ({}) with {} load commands\n",
-               mach_o::cpu_type_str(file_header.cpu),
-               mach_o::cpu_subtype_str(file_header.cpu, file_header.cpu_subtype),
+    fmt::print("Found Mach-O file header for {} with {} load commands\n",
+               mach_o::get_cpu_string(file_header.cpu, file_header.cpu_subtype),
                file_header.load_commands_count
     );
     for (std::size_t i = 0; i < file_header.load_commands_count; i++)
     {
       mach_o::load_command load_command;
-      binary_file.read(reinterpret_cast<char*>(&load_command), sizeof(load_command));
-      if(binary_file.gcount() != sizeof(load_command))
+      binary_file.read(reinterpret_cast<char *>(&load_command), sizeof(load_command));
+      if (binary_file.gcount() != sizeof(load_command))
       {
         fmt::print(stderr, "Error: Failed to read Mach-O load command\n");
         return;
@@ -1146,9 +1125,8 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       fmt::print(stderr, "Error: Failed to read Mach-O file header\n");
       return;
     }
-    fmt::print("Found Mach-O file header for {} ({}) with {} load commands\n",
-               mach_o::cpu_type_str(file_header.cpu),
-               mach_o::cpu_subtype_str(file_header.cpu, file_header.cpu_subtype),
+    fmt::print("Found Mach-O file header for {} with {} load commands\n",
+               mach_o::get_cpu_string(file_header.cpu, file_header.cpu_subtype),
                file_header.load_commands_count
     );
     for (std::size_t i = 0; i < file_header.load_commands_count; i++)

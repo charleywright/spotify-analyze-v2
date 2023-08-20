@@ -1,6 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
+#include <unordered_map>
+#include <string>
+#include <fmt/format.h>
 
 /*
  * References:
@@ -9,80 +13,30 @@
  * https://web.archive.org/web/20140904004108mp_/https://developer.apple.com/library/mac/documentation/developertools/conceptual/MachORuntime/Reference/reference.html#//apple_ref/doc/uid/20001298-BAJFFCGF
  */
 
+/*
+ * std::hash doesn't support std::pair<std::uint32_t, std::uint32_t> by default
+ * so we must add our own. Source: https://stackoverflow.com/a/55083395/12282075
+ */
+struct hash_pair final
+{
+    template<class TFirst, class TSecond>
+    size_t operator()(const std::pair<TFirst, TSecond> &p) const noexcept
+    {
+      uintmax_t hash = std::hash<TFirst>{}(p.first);
+      hash <<= sizeof(uintmax_t) * 4;
+      hash ^= std::hash<TSecond>{}(p.second);
+      return std::hash<uintmax_t>{}(hash);
+    }
+};
+
 namespace mach_o
 {
     typedef std::uint8_t header_magic[4];
 
-    enum class cpu_type : std::uint32_t
-    {
-        VAX = 0x00000001,
-        ROMP = 0x00000002,
-        NS32032 = 0x00000004,
-        NS32332 = 0x00000005,
-        MC680x0 = 0x00000006,
-        x86 = 0x00000007,
-        MIPS = 0x00000008,
-        NS32532 = 0x00000009,
-        MC98000 = 0x0000000A,
-        HP_PA = 0x0000000B,
-        ARM = 0x0000000C,
-        MC88000 = 0x0000000D,
-        SPARC = 0x0000000E,
-        i860_BE = 0x0000000F,
-        i860_LE = 0x00000010,
-        RS6000 = 0x00000011,
-        PowerPC = 0x00000012,
-    };
-
-    const char *cpu_type_str(cpu_type type)
-    {
-      bool is_64_bit = static_cast<std::uint32_t>(type) & 0x01000000;
-      type = static_cast<cpu_type>(static_cast<std::uint32_t>(type) & 0xFEFFFFFF);
-      switch (type)
-      {
-        case cpu_type::VAX:
-          return is_64_bit ? "VAX 64-bit" : "VAX";
-        case cpu_type::ROMP:
-          return is_64_bit ? "ROMP 64-bit" : "ROMP";
-        case cpu_type::NS32032:
-          return is_64_bit ? "NS32032 64-bit" : "NS32032";
-        case cpu_type::NS32332:
-          return is_64_bit ? "NS32332 64-bit" : "NS32332";
-        case cpu_type::MC680x0:
-          return is_64_bit ? "MC680x0 64-bit" : "MC680x0";
-        case cpu_type::x86:
-          return is_64_bit ? "x86 64-bit" : "x86";
-        case cpu_type::MIPS:
-          return is_64_bit ? "MIPS 64-bit" : "MIPS";
-        case cpu_type::NS32532:
-          return is_64_bit ? "NS32532 64-bit" : "NS32532";
-        case cpu_type::MC98000:
-          return is_64_bit ? "MC98000 64-bit" : "MC98000";
-        case cpu_type::HP_PA:
-          return is_64_bit ? "HP_PA 64-bit" : "HP_PA";
-        case cpu_type::ARM:
-          return is_64_bit ? "ARM 64-bit" : "ARM";
-        case cpu_type::MC88000:
-          return is_64_bit ? "MC88000 64-bit" : "MC88000";
-        case cpu_type::SPARC:
-          return is_64_bit ? "SPARC 64-bit" : "SPARC";
-        case cpu_type::i860_BE:
-          return is_64_bit ? "i860_BE 64-bit" : "i860_BE";
-        case cpu_type::i860_LE:
-          return is_64_bit ? "i860_LE 64-bit" : "i860_LE";
-        case cpu_type::RS6000:
-          return is_64_bit ? "RS6000 64-bit" : "RS6000";
-        case cpu_type::PowerPC:
-          return is_64_bit ? "PowerPC 64-bit" : "PowerPC";
-        default:
-          return is_64_bit ? "Unknown 64-bit" : "Unknown";
-      }
-    }
-
     typedef struct file_header32
     {
         header_magic magic;
-        cpu_type cpu;
+        std::uint32_t cpu;
         std::uint32_t cpu_subtype;
         std::uint32_t file_type;
         std::uint32_t load_commands_count;
@@ -93,7 +47,7 @@ namespace mach_o
     typedef struct file_header64
     {
         header_magic magic;
-        cpu_type cpu;
+        std::uint32_t cpu;
         std::uint32_t cpu_subtype;
         std::uint32_t file_type;
         std::uint32_t load_commands_count;
@@ -108,6 +62,37 @@ namespace mach_o
     constexpr std::uint8_t HEADER_MAGIC_64_LE[4] = {0xFE, 0xED, 0xFA, 0xCF};
     constexpr std::uint8_t HEADER_MAGIC_64_BE[4] = {0xCF, 0xFA, 0xED, 0xFE};
 
+    // No need for full enums, iOS only uses ARM
+    constexpr std::uint32_t CPU_CAPABILITY_ABI64 = 0x01000000;
+    constexpr std::uint32_t CPU_TYPE_ARM = 12;
+    constexpr std::uint32_t CPU_TYPE_ARM64 = CPU_TYPE_ARM | CPU_CAPABILITY_ABI64;
+    constexpr std::uint32_t CPU_SUBTYPE_ARM_V6 = 6;
+    constexpr std::uint32_t CPU_SUBTYPE_ARM_V7 = 9;
+    constexpr std::uint32_t CPU_SUBTYPE_ARM64_ALL = 0;
+
+    // Supported architectures. We use the same strings as Lipo
+    // https://github.com/tpoechtrager/cctools-port/blob/f28fb5e9c31efd3d0552afcce2d2c03cae25c1ca/cctools/libstuff/arch.c#L33-L110
+    constexpr std::string_view CPU_ARMV6 = "armv6";
+    constexpr std::string_view CPU_ARMV7 = "armv7";
+    constexpr std::string_view CPU_ARM64 = "arm64";
+
+    const inline std::unordered_map<std::pair<std::uint32_t, std::uint32_t>, std::string_view, hash_pair> CPU_NAMES = {
+            {{CPU_TYPE_ARM,   CPU_SUBTYPE_ARM_V6},    CPU_ARMV6},
+            {{CPU_TYPE_ARM,   CPU_SUBTYPE_ARM_V7},    CPU_ARMV7},
+            {{CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL}, CPU_ARM64}
+    };
+
+    std::string get_cpu_string(std::uint32_t cpu, std::uint32_t cpu_subtype)
+    {
+      std::pair<std::uint32_t, std::uint32_t> cpu_pair = {cpu, cpu_subtype};
+      const auto cpu_str = CPU_NAMES.find(cpu_pair);
+      if(cpu_str != CPU_NAMES.end())
+      {
+        return std::string(cpu_str->second);
+      }
+      return fmt::format("Unknown CPU (type: {}, subtype: {})", cpu, cpu_subtype);
+    }
+
     typedef struct universal_header
     {
         std::uint8_t magic[4];
@@ -118,7 +103,7 @@ namespace mach_o
 
     typedef struct universal_file_entry
     {
-        cpu_type cpu;
+        std::uint32_t cpu;
         std::uint32_t cpu_subtype;
         std::uint32_t offset;
         std::uint32_t size;
@@ -159,80 +144,4 @@ namespace mach_o
         std::uint32_t sections_count;
         std::uint32_t flags;
     } segment_command64;
-
-    enum class cpu_subtype_arm : std::uint32_t
-    {
-        ALL = 0x00000000,
-        A500_ARCH = 0x00000001,
-        A500 = 0x00000002,
-        A440 = 0x00000003,
-        M4 = 0x00000004,
-        V4T = 0x00000005,
-        V6 = 0x00000006,
-        V5TEJ = 0x00000007,
-        XSCALE = 0x00000008,
-        V7 = 0x00000009,
-        V7F = 0x0000000A,
-        V7S = 0x0000000B,
-        V7K = 0x0000000C,
-        V8 = 0x0000000D,
-        V6M = 0x0000000E,
-        V7M = 0x0000000F,
-        V7EM = 0x00000010,
-    };
-
-    const char *cpu_subtype_arm_str(cpu_subtype_arm subtype)
-    {
-      switch (subtype)
-      {
-        case cpu_subtype_arm::ALL:
-          return "ALL";
-        case cpu_subtype_arm::A500_ARCH:
-          return "A500_ARCH";
-        case cpu_subtype_arm::A500:
-          return "A500";
-        case cpu_subtype_arm::A440:
-          return "A440";
-        case cpu_subtype_arm::M4:
-          return "M4";
-        case cpu_subtype_arm::V4T:
-          return "V4T";
-        case cpu_subtype_arm::V6:
-          return "V6";
-        case cpu_subtype_arm::V5TEJ:
-          return "V5TEJ";
-        case cpu_subtype_arm::XSCALE:
-          return "XSCALE";
-        case cpu_subtype_arm::V7:
-          return "V7";
-        case cpu_subtype_arm::V7F:
-          return "V7F";
-        case cpu_subtype_arm::V7S:
-          return "V7S";
-        case cpu_subtype_arm::V7K:
-          return "V7K";
-        case cpu_subtype_arm::V8:
-          return "V8";
-        case cpu_subtype_arm::V6M:
-          return "V6M";
-        case cpu_subtype_arm::V7M:
-          return "V7M";
-        case cpu_subtype_arm::V7EM:
-          return "V7EM";
-        default:
-          return "Unknown";
-      }
-    }
-
-    const char *cpu_subtype_str(cpu_type cpu, std::uint32_t subtype)
-    {
-      cpu = static_cast<cpu_type>(static_cast<std::uint32_t>(cpu) & 0xFEFFFFFF);
-      switch (cpu)
-      {
-        case cpu_type::ARM:
-          return cpu_subtype_arm_str(static_cast<cpu_subtype_arm>(subtype));
-        default:
-          return "Unknown";
-      }
-    }
 }
