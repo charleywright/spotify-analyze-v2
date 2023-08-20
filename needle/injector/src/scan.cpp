@@ -985,6 +985,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     return;
   }
 
+  std::string_view architecture;
   mach_o::header_magic header_magic;
   binary_file.read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
   if (binary_file.gcount() != sizeof(header_magic))
@@ -1071,6 +1072,13 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                mach_o::get_cpu_string(file_header.cpu, file_header.cpu_subtype),
                file_header.load_commands_count
     );
+    const auto cpu_name = mach_o::CPU_NAMES.find({file_header.cpu, file_header.cpu_subtype});
+    if (cpu_name == mach_o::CPU_NAMES.end())
+    {
+      fmt::print(stderr, "Error: Unsupported CPU\n");
+      return;
+    }
+    architecture = cpu_name->second;
     for (std::size_t i = 0; i < file_header.load_commands_count; i++)
     {
       mach_o::load_command load_command;
@@ -1129,6 +1137,13 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                mach_o::get_cpu_string(file_header.cpu, file_header.cpu_subtype),
                file_header.load_commands_count
     );
+    const auto cpu_name = mach_o::CPU_NAMES.find({file_header.cpu, file_header.cpu_subtype});
+    if (cpu_name == mach_o::CPU_NAMES.end())
+    {
+      fmt::print(stderr, "Error: Unsupported CPU\n");
+      return;
+    }
+    architecture = cpu_name->second;
     for (std::size_t i = 0; i < file_header.load_commands_count; i++)
     {
       mach_o::load_command load_command;
@@ -1172,6 +1187,99 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     fmt::print(stderr, "Error: Invalid Mach-O header magic\n");
     return;
   }
+
+  static const std::unordered_map<std::string_view, sigscanner::signature> SHANNON_CONSTANTS =
+          {
+                  /*
+                   * Constant is embedded after function, and is loaded using offset from PC
+                   * 000FE750 C4 10 9F E5    ldr r1, [pc, #0xc4]
+                   * 000FE754 82 01 20 E0    eor r0, r0, r2, lsl #3
+                   * ...
+                   * 000FE81C 3A C5 96 69    0x6996C53A
+                   */
+                  {mach_o::CPU_ARMV6, "3A C5 96 69"},
+                  /*
+                   * 4C F2 3A 52    movw r2, #0xc53a
+                   * 68 6B          ldr  r0, [r5, #0x34]
+                   * C6 F6 96 12    movt r2, #0x6996
+                   *
+                   * The second instruction appears to stay constant across versions
+                   */
+                  {mach_o::CPU_ARMV7, "4C F2 3A 52 68 6B C6 F6 96 12"},
+                  /*
+                   * Registers can change, so 4B and CB are wildcards
+                   * 4A A7 98 52    movz w10, #0xc53a
+                   * CA 32 AD 72    movk w10, #0x6996, lsl #16
+                   */
+                  {mach_o::CPU_ARM64, "?? A7 98 52 ?? 32 AD 72"},
+          };
+  static const std::unordered_map<std::string_view, sigscanner::signature> SHANNON_PROLOGUES =
+          {
+                  /*
+                   * F0 40 2D E9    push {r4, r5, r6, r7, lr}
+                   * 0C 70 8D E2    add  r7, sp, #0xc
+                   */
+                  {mach_o::CPU_ARMV6, "F0 40 2D E9 0C 70 8D E2"},
+                  /*
+                   * F0 B5    push {r4, r5, r6, r7, lr}
+                   * 03 AF    add  r7, sp, #0xc
+                   */
+                  {mach_o::CPU_ARMV7, "F0 B5 03 AF"},
+                  /*
+                   * FA 67 BB A9    stp x26, x25, [sp, #-0x50]!
+                   * F8 5F 01 A9    stp x24, x23, [sp, #0x10]
+                   * F6 57 02 A9    stp x22, x21, [sp, #0x20]
+                   * F4 4F 03 A9    stp x20, x19, [sp, #0x30]
+                   */
+                  {mach_o::CPU_ARM64, "FA 67 BB A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9"},
+          };
+
+  const auto &SHANNON_CONSTANT = SHANNON_CONSTANTS.at(architecture);
+  const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
+  sigscanner::multi_scanner scanner;
+  scanner.add_signature(SHANNON_CONSTANT);
+  scanner.add_signature(SERVER_PUBLIC_KEY);
+  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
+  std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
+  std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
+  if (server_public_key_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find server public key\n");
+    return;
+  }
+  if (server_public_key_offsets.size() != 1)
+  {
+    fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
+    return;
+  }
+  offsets.server_public_key = calculate_relocated_offset(server_public_key_offsets[0], relocations);
+  fmt::print("Found server public key at {}:{:#012x} Offset: {:#012x}\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
+  if (shannon_constant_offsets.empty())
+  {
+    fmt::print(stderr, "Error: Failed to find shannon constant\n");
+    return;
+  }
+  for (const auto &offset: shannon_constant_offsets)
+  {
+    std::uint64_t relocated_offset = calculate_relocated_offset(offset, relocations);
+    fmt::print("Found shannon constant at {}:{:#012x} Offset: {:#012x}\n", binary_filename, offset, relocated_offset);
+  }
+
+  /*
+   * shn_finish seems to contain the last instance of the constant however on
+   * arm64 it is the second instance of six. The encryption/decryption functions
+   * are normally above shn_finish however on arm64 one was above and one was
+   * below with a few smaller functions in-between. The only reliable way to
+   * always find the functions is to check before and after all occurrences of
+   * the constant which could be up to 12 scans, so instead of reading the file
+   * up to 12 times, we will load the whole thing into memory and scan it there.
+   * This will use 100MB+ of memory however that is preferred to repeatedly
+   * seeking through the file.
+   *
+   * This would work well however on multi-architecture files we could find
+   * signature matches in the wrong architecture. To combat this we will only
+   * read the data for the architecture we are interested in.
+   */
 }
 
 scan_result scan_binary(platform target, const std::filesystem::path &binary_path, const flags::args &args)

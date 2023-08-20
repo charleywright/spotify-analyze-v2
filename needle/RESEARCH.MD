@@ -394,7 +394,7 @@ __text:01AC0D52 C6 F6 96 11
 
 #### 8.8.58-4.95.0.0082.gbfb5444b60
 
-There are 6 occurrences of the constant. shn_finish contains the second occurrence. One of the encryption functions is before shn_finish, the other is a few subroutines later
+Only supports arm64. There are 6 occurrences of the constant. shn_finish contains the second occurrence. One of the encryption functions is before shn_finish, the other is a few subroutines later
 
 ```asm
 shn_addr1
