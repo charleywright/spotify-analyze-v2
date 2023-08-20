@@ -25,6 +25,10 @@ void print_help()
              "  Android: Required, path to liborbit-jni-spotify.so. Must be correct architecture and version\n"
              "  iOS: Required, path to Spotify in Spotify.app\n"
              "\n"
+             "--arch: Architecture to use in a multi-architecture Mach-O file\n"
+             "  armv6: ARM v6\n"
+             "  armv7: ARM v7\n"
+             "\n"
              "Arguments can be terminated with -- then arguments for the bootstrap script may follow.\n"
              "These arguments influence how and what frida will inject into. They follow a key-value\n"
              "format and should use valid JSON values. These are the allowed options, all optional:\n"
@@ -103,7 +107,7 @@ int main(int argc, char **argv)
   fmt::print("Executable: {}\n", *exec);
   fmt::print("Binary: {}\n", binary_path.string());
 
-  scan_result offsets = scan_binary(target, binary_path);
+  scan_result offsets = scan_binary(target, binary_path, args);
   if (!offsets.success)
   {
     fmt::print(stderr, "Error: Failed to find offsets\n");

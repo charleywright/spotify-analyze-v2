@@ -3,6 +3,7 @@
 #include "platform.hpp"
 #include "sigscanner/sigscanner.hpp"
 #include <filesystem>
+#include "flags.h"
 
 struct scan_result
 {
@@ -12,4 +13,4 @@ struct scan_result
     bool success = false;
 };
 
-scan_result scan_binary(platform target, const std::filesystem::path& binary_path);
+scan_result scan_binary(platform target, const std::filesystem::path &binary_path, const flags::args &args);

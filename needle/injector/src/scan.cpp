@@ -3,12 +3,12 @@
 #include "sigscanner/sigscanner.hpp"
 #include "elf.hpp"
 #include "pe.hpp"
+#include "mach-o.hpp"
 #include <memory>
 #include <array>
 #include "fmt/core.h"
-#include <cstring>
 #include <variant>
-#include <cassert>
+#include "byteswap.hpp"
 
 const char *SERVER_PUBLIC_KEY_SIG = "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 
@@ -65,7 +65,7 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
 {
   elf::elf_file_details binary_details;
 
-  elf::Elf_Ident e_ident{0};
+  elf::Elf_Ident e_ident;
   binary_file.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
   if (binary_file.gcount() != sizeof(e_ident))
   {
@@ -439,7 +439,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
     return;
   }
-  pe::IMAGE_DOS_HEADER dos_header{0};
+  pe::IMAGE_DOS_HEADER dos_header;
   binary_file.read(reinterpret_cast<char *>(&dos_header), sizeof(dos_header));
   if (binary_file.gcount() != sizeof(dos_header))
   {
@@ -475,7 +475,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     return;
   }
 
-  pe::IMAGE_FILE_HEADER file_header{0};
+  pe::IMAGE_FILE_HEADER file_header;
   binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
   if (binary_file.gcount() != sizeof(file_header))
   {
@@ -486,7 +486,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   std::uint64_t image_base, section_alignment;
   if (file_header.SizeOfOptionalHeader == sizeof(pe::IMAGE_OPTIONAL_HEADER64))
   {
-    pe::IMAGE_OPTIONAL_HEADER64 optional_header{0};
+    pe::IMAGE_OPTIONAL_HEADER64 optional_header;
     binary_file.read(reinterpret_cast<char *>(&optional_header), sizeof(optional_header));
     if (binary_file.gcount() != sizeof(optional_header))
     {
@@ -505,7 +505,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     section_alignment = optional_header.SectionAlignment;
   } else if (file_header.SizeOfOptionalHeader == sizeof(pe::IMAGE_OPTIONAL_HEADER32))
   {
-    pe::IMAGE_OPTIONAL_HEADER32 optional_header{0};
+    pe::IMAGE_OPTIONAL_HEADER32 optional_header;
     binary_file.read(reinterpret_cast<char *>(&optional_header), sizeof(optional_header));
     if (binary_file.gcount() != sizeof(optional_header))
     {
@@ -916,7 +916,287 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   offsets.success = true;
 }
 
-scan_result scan_binary(platform target, const std::filesystem::path &binary_path)
+// TODO: Use definitions from Lipo
+inline const std::unordered_map<mach_o::cpu_subtype_arm, std::string_view> mach_o_subtype_strings =
+        {
+                {mach_o::cpu_subtype_arm::V6, "armv6"},
+                {mach_o::cpu_subtype_arm::V7, "armv7"}
+        };
+
+std::vector<mach_o::universal_file_entry>::const_iterator
+determine_mach_o_file_entry(const std::vector<mach_o::universal_file_entry> &file_entries, const flags::args &args)
+{
+  if (file_entries.size() == 1)
+  {
+    return file_entries.begin();
+  }
+
+  const std::string_view &architecture = args.get<std::string_view>("arch", "");
+
+  for (auto it = file_entries.begin(); it != file_entries.end(); ++it)
+  {
+    if (it->cpu != mach_o::cpu_type::ARM)
+    {
+      continue;
+    }
+
+    const auto subtype = static_cast<mach_o::cpu_subtype_arm>(it->cpu_subtype);
+    for (const auto &[cpu_subtype, cpu_subtype_string]: mach_o_subtype_strings)
+    {
+      if (subtype == cpu_subtype && architecture == cpu_subtype_string)
+      {
+        return it;
+      }
+    }
+  }
+
+  return file_entries.end();
+}
+
+// TODO: Support big endian hosts
+void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, const flags::args &args)
+{
+  /*
+   * Apps on iOS are distributed using .ipa files which are zip archives. When
+   * downloaded from the App Store APIs directly they are encrypted and must be
+   * decrypted by a device running iOS or macOS. There are various tools that
+   * allow this, mostly using mremap_encrypted. Alternatively the decrypted file
+   * can be copied from an iOS device using frida-ios-dump or similar. an encrypted
+   * IPA will decrypt properly but the Spotify binary will be encrypted and useless
+   * to us.
+   *
+   * After unzipping the .ipa file there will be a "Payload" folder which contains
+   * a "Spotify.app" folder which itself contains the "Spotify" binary. This is a
+   * Mach-O executable which contains all the stuff we're interested in. Mach-O
+   * files are a container for executables and other compiled code and have the
+   * same purpose as Unix's ELF files. They support multiple architectures, which
+   * means one file may contain code for armv7 and armv8, each with different
+   * offsets. To account for this we require an extra command line flag to specify
+   * which architecture should be used.
+   *
+   * Once we have the image to parse, we read the header magic to determine the
+   * bitness and endianness. We then read the rest of the file header to get the
+   * CPU type and the number of load commands. Load commands are used to describe
+   * segments in the file which we need because some of the segments will be loaded
+   * into virtual memory. We do not need to parse the segments themselves as the
+   * load commands contain the virtual memory map of the file from which we can
+   * determine the relocations.
+   */
+
+  const std::string binary_filename = binary_path.filename().string();
+  std::ifstream binary_file(binary_path, std::ios::binary);
+  if (!binary_file)
+  {
+    fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
+    return;
+  }
+
+  mach_o::header_magic header_magic;
+  binary_file.read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
+  if (binary_file.gcount() != sizeof(header_magic))
+  {
+    fmt::print(stderr, "Error: Failed to read Mach-O header magic\n");
+    return;
+  }
+  binary_file.seekg(-static_cast<std::int32_t>(sizeof(header_magic)), std::ios::cur);
+
+  /*
+   * Take care of multi-architecture files by putting the read cursor at the
+   * start of the image for the architecture we want to scan.
+   */
+  if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_UNIVERSAL, sizeof(header_magic)) == 0)
+  {
+    fmt::print("Detected Mach-O file as multi-architecture\n");
+    mach_o::universal_header file_header;
+    binary_file.seekg(0);
+    binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
+    file_header.binaries_count = bswap_32(file_header.binaries_count);
+    if (file_header.binaries_count == 0)
+    {
+      fmt::print(stderr, "Error: Mach-O file has no architectures\n");
+      return;
+    }
+    std::vector<mach_o::universal_file_entry> file_entries(file_header.binaries_count);
+    std::streamsize file_entries_size = (long) sizeof(mach_o::universal_file_entry) * file_header.binaries_count;
+    binary_file.read(reinterpret_cast<char *>(file_entries.data()), file_entries_size);
+    if (binary_file.gcount() != file_entries_size)
+    {
+      fmt::print(stderr, "Error: Failed to read Mach-O file entries\n");
+      return;
+    }
+
+    for (auto &file_entry: file_entries)
+    {
+      file_entry.cpu = static_cast<mach_o::cpu_type>(bswap_32(static_cast<std::uint32_t>(file_entry.cpu)));
+      file_entry.cpu_subtype = bswap_32(file_entry.cpu_subtype);
+      file_entry.offset = bswap_32(file_entry.offset);
+      file_entry.size = bswap_32(file_entry.size);
+      file_entry.align_pow = bswap_32(file_entry.align_pow);
+      fmt::print("Found Mach-O file entry for {} ({}) at {:#012x} with length {}\n",
+                 mach_o::cpu_type_str(file_entry.cpu),
+                 mach_o::cpu_subtype_str(file_entry.cpu, file_entry.cpu_subtype),
+                 file_entry.offset, file_entry.size
+      );
+    }
+
+    const auto &file_entry_it = determine_mach_o_file_entry(file_entries, args);
+    if (file_entry_it == file_entries.end())
+    {
+      fmt::print(stderr, "Error: Couldn't determine which Mach-O entry to use\nValid options for --arch are:\n");
+      for (const auto &file_entry: file_entries)
+      {
+        if (file_entry.cpu != mach_o::cpu_type::ARM)
+        {
+          continue;
+        }
+        const auto subtype = static_cast<mach_o::cpu_subtype_arm>(file_entry.cpu_subtype);
+        if (mach_o_subtype_strings.count(subtype) == 0)
+        {
+          fmt::print(stderr, "Error: No string for ARM subtype %s\n", mach_o::cpu_subtype_arm_str(subtype));
+          continue;
+        }
+        fmt::print(stderr, "  {}\n", mach_o_subtype_strings.at(subtype));
+      }
+      std::exit(1);
+    }
+    binary_file.seekg(file_entry_it->offset);
+    binary_file.read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
+    if (binary_file.gcount() != sizeof(header_magic))
+    {
+      fmt::print(stderr, "Error: Failed to read second Mach-O header magic\n");
+      return;
+    }
+    binary_file.seekg(-static_cast<std::int32_t>(sizeof(header_magic)), std::ios::cur);
+    // Fall through into the standard parsing code
+  }
+
+  std::vector<relocation_entry> relocations;
+  if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_32_LE, sizeof(header_magic)) == 0)
+  {
+    fmt::print("Detected Mach-O image as 32-bit Little Endian\n");
+    fmt::print(stderr, "Error: No implementation for 32-bit Little Endian Mach-O\n"
+                       "Feel free to open an issue or pull request on GitHub\n");
+    return;
+  } else if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_32_BE, sizeof(header_magic)) == 0)
+  {
+    fmt::print("Detected Mach-O image as 32-bit Big Endian\n");
+    mach_o::file_header32 file_header;
+    binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
+    if (binary_file.gcount() != sizeof(file_header))
+    {
+      fmt::print(stderr, "Error: Failed to read Mach-O file header\n");
+      return;
+    }
+    fmt::print("Found Mach-O file header for {} ({}) with {} load commands\n",
+               mach_o::cpu_type_str(file_header.cpu),
+               mach_o::cpu_subtype_str(file_header.cpu, file_header.cpu_subtype),
+               file_header.load_commands_count
+    );
+    for (std::size_t i = 0; i < file_header.load_commands_count; i++)
+    {
+      mach_o::load_command load_command;
+      binary_file.read(reinterpret_cast<char*>(&load_command), sizeof(load_command));
+      if(binary_file.gcount() != sizeof(load_command))
+      {
+        fmt::print(stderr, "Error: Failed to read Mach-O load command\n");
+        return;
+      }
+      std::streamoff next_load_command_offset =
+              static_cast<std::streamoff>(binary_file.tellg()) + load_command.size - static_cast<std::streamoff>(sizeof(load_command));
+      if (load_command.type == mach_o::LC_SEGMENT)
+      {
+        mach_o::segment_command32 segment_command;
+        binary_file.read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
+        if (binary_file.gcount() != sizeof(segment_command))
+        {
+          fmt::print(stderr, "Error: Failed to read Mach-O segment command\n");
+          return;
+        }
+        relocation_entry entry;
+        entry.offset_in_file = segment_command.offset;
+        entry.size_in_file = segment_command.size;
+        entry.offset_in_memory = segment_command.v_addr;
+        entry.size_in_memory = segment_command.v_size;
+        fmt::print("Found Mach-O relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} [{:^16}] with {} sections\n",
+                   entry.offset_in_file,
+                   entry.offset_in_file + entry.size_in_file,
+                   entry.offset_in_memory,
+                   entry.offset_in_memory + entry.size_in_memory,
+                   segment_command.name,
+                   segment_command.sections_count
+        );
+        relocations.emplace_back(entry);
+      }
+      // Skip remaining bytes of this load command structure
+      binary_file.seekg(next_load_command_offset);
+    }
+  } else if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_64_LE, sizeof(header_magic)) == 0)
+  {
+    fmt::print("Detected Mach-O image as 64-bit Little Endian\n");
+    fmt::print(stderr, "Error: No implementation for 64-bit Little Endian Mach-O\n"
+                       "Feel free to open an issue or pull request on GitHub\n");
+    return;
+  } else if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_64_BE, sizeof(header_magic)) == 0)
+  {
+    fmt::print("Detected Mach-O image as 64-bit Big Endian\n");
+    mach_o::file_header64 file_header;
+    binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
+    if (binary_file.gcount() != sizeof(file_header))
+    {
+      fmt::print(stderr, "Error: Failed to read Mach-O file header\n");
+      return;
+    }
+    fmt::print("Found Mach-O file header for {} ({}) with {} load commands\n",
+               mach_o::cpu_type_str(file_header.cpu),
+               mach_o::cpu_subtype_str(file_header.cpu, file_header.cpu_subtype),
+               file_header.load_commands_count
+    );
+    for (std::size_t i = 0; i < file_header.load_commands_count; i++)
+    {
+      mach_o::load_command load_command;
+      binary_file.read(reinterpret_cast<char *>(&load_command), sizeof(load_command));
+      if (binary_file.gcount() != sizeof(load_command))
+      {
+        fmt::print(stderr, "Error: Failed to read Mach-O load command\n");
+        return;
+      }
+      std::streamoff next_load_command_offset =
+              static_cast<std::streamoff>(binary_file.tellg()) + load_command.size - static_cast<std::streamoff>(sizeof(load_command));
+      if (load_command.type == mach_o::LC_SEGMENT_64)
+      {
+        mach_o::segment_command64 segment_command;
+        binary_file.read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
+        if (binary_file.gcount() != sizeof(segment_command))
+        {
+          fmt::print(stderr, "Error: Failed to read Mach-O segment command\n");
+          return;
+        }
+        relocation_entry entry;
+        entry.offset_in_file = segment_command.offset;
+        entry.size_in_file = segment_command.size;
+        entry.offset_in_memory = segment_command.v_addr;
+        entry.size_in_memory = segment_command.v_size;
+        fmt::print("Found Mach-O relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} [{:^16}] with {} sections\n",
+                   entry.offset_in_file,
+                   entry.offset_in_file + entry.size_in_file,
+                   entry.offset_in_memory,
+                   entry.offset_in_memory + entry.size_in_memory,
+                   segment_command.name,
+                   segment_command.sections_count
+        );
+        relocations.emplace_back(entry);
+      }
+      // Skip remaining bytes of this load command structure
+      binary_file.seekg(next_load_command_offset);
+    }
+  } else
+  {
+    fmt::print(stderr, "Error: Invalid Mach-O header magic\n");
+    return;
+  }
+}
+
+scan_result scan_binary(platform target, const std::filesystem::path &binary_path, const flags::args &args)
 {
   scan_result offsets;
 
@@ -1005,6 +1285,11 @@ scan_result scan_binary(platform target, const std::filesystem::path &binary_pat
     case platform::ANDROID:
     {
       scan_android(offsets, binary_path);
+      return offsets;
+    }
+    case platform::IOS:
+    {
+      scan_ios(offsets, binary_path, args);
       return offsets;
     }
     default:
