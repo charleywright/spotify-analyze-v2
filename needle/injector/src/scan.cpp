@@ -1026,11 +1026,17 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     const auto &file_entry_it = determine_mach_o_universal_file_entry(file_entries, args);
     if (file_entry_it == file_entries.end())
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Couldn't determine which Mach-O entry to use. "
                          "See entries above for valid --arch values\n");
       std::exit(1);
     }
     binary_file = std::make_unique<file_backed_block>(binary_path, file_entry_it->offset, file_entry_it->size);
+    if(binary_file->error())
+    {
+      fmt::print(stderr, "Error: {}", binary_file->error_str());
+      return;
+    }
     binary_file->read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
     binary_file->seek(0);
     // Fall through into the standard parsing code

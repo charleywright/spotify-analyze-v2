@@ -61,12 +61,21 @@ public:
 private:
     const std::filesystem::path &path;
 
-    // Windows requires a mapping and a view. On Linux we just use the view
+    /*
+     * Windows requires a mapping and a view. On Linux we just use the view
+     * These are aligned to memory pages and are the "real" addresses
+     */
     void *mapping = nullptr;
     void *view = nullptr;
 
+    /*
+     * Mapping files requires using page boundaries however the caller's offset
+     * may not lie on a page boundary. These store the block's properties, not
+     * the mapped memory's properties
+     */
     std::uint64_t block_size = 0;
-    void *cursor = nullptr;
+    void *block_base = nullptr;
+    void *block_cursor = nullptr;
 
     std::string error_string;
 };
