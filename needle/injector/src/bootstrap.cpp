@@ -26,7 +26,8 @@ void bootstrap::bootstrap(platform target, const std::string &exec, const std::v
   const std::filesystem::path bootstrap_script = locate_bootstrap_script();
   if (bootstrap_script.empty())
   {
-    fmt::print(stderr, "Error: Failed to find bootstrap.mjs script\n");
+    fflush(stdout);
+    fmt::print(stderr, "Error: Failed to find bootstrap.js script\n");
     return;
   }
 

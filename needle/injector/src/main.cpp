@@ -109,6 +109,7 @@ int main(int argc, char **argv)
   scan_result offsets = scan_binary(target, binary_path, args);
   if (!offsets.success)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find offsets\n");
     return 1;
   }

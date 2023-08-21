@@ -70,6 +70,7 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
   binary_file.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
   if (binary_file.gcount() != sizeof(e_ident))
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to read ELF identifier\n");
     return binary_details;
   }
@@ -77,6 +78,7 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
   const sigscanner::signature elf_header_magic = "7F 45 4C 46";
   if (!elf_header_magic.check(e_ident.ei_mag, sizeof(e_ident.ei_mag)))
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Binary is not an ELF file\n");
     return binary_details;
   }
@@ -94,6 +96,7 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
     binary_file.read(reinterpret_cast<char *>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
     if (binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Failed to read ELF header\n");
       return binary_details;
     }
@@ -106,6 +109,7 @@ elf::elf_file_details parse_elf(std::ifstream &binary_file)
     binary_file.read(reinterpret_cast<char *>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
     if (binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Failed to read ELF header\n");
       return binary_details;
     }
@@ -189,6 +193,7 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
     elf::Elf64_Half program_header_table_entry_size = header.e_phentsize;
     if (program_header_table_entry_size != sizeof(elf::Elf64_Phdr))
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Invalid program header table entry size\n");
       return relocations;
     }
@@ -199,6 +204,7 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
     binary_file.read(reinterpret_cast<char *>(program_headers.data()), static_cast<std::streamsize>(program_header_table_size));
     if (binary_file.gcount() != program_header_table_size)
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Failed to read program headers\n");
       return relocations;
     }
@@ -233,6 +239,7 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
     elf::Elf32_Half program_header_table_entry_size = header.e_phentsize;
     if (program_header_table_entry_size != sizeof(elf::Elf32_Shdr))
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Invalid section header table entry size\n");
       return relocations;
     }
@@ -243,6 +250,7 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
     binary_file.read(reinterpret_cast<char *>(program_headers.data()), static_cast<std::streamsize>(program_header_table_size));
     if (binary_file.gcount() != program_header_table_size)
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Failed to read program headers\n");
       return relocations;
     }
@@ -286,6 +294,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   std::ifstream binary_file(binary_path, std::ios::binary);
   if (!binary_file)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
     return;
   }
@@ -309,11 +318,13 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
   if (server_public_key_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find server public key\n");
     return;
   }
   if (server_public_key_offsets.size() != 1)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
@@ -328,6 +339,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   offsets.server_public_key = server_key_offset;
   if (shannon_constant_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
     return;
   }
@@ -366,6 +378,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
   if (function_prologues.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
     return;
   }
@@ -396,6 +409,7 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
   }
   if (function_prologues.size() < 2)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Found too few prologues\n");
     return;
   }
@@ -437,6 +451,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   std::ifstream binary_file(binary_path, std::ios::binary);
   if (!binary_file)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
     return;
   }
@@ -444,6 +459,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   binary_file.read(reinterpret_cast<char *>(&dos_header), sizeof(dos_header));
   if (binary_file.gcount() != sizeof(dos_header))
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to read DOS header\n");
     return;
   }
@@ -451,6 +467,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   const sigscanner::signature dos_header_magic = "4D 5A";
   if (!dos_header_magic.check(reinterpret_cast<sigscanner::byte *>(&dos_header.e_magic), sizeof(dos_header.e_magic)))
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Invalid DOS header magic\n");
     return;
   }
@@ -462,6 +479,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   binary_file.read(nt_header_magic, sizeof(nt_header_magic));
   if (binary_file.gcount() != sizeof(nt_header_magic))
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to read NT header magic\n");
     return;
   }
@@ -472,6 +490,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
           nt_header_magic[3] != '\0'
           )
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Invalid NT header magic\n");
     return;
   }
@@ -480,6 +499,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
   if (binary_file.gcount() != sizeof(file_header))
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to read file header\n");
     return;
   }
@@ -491,6 +511,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     binary_file.read(reinterpret_cast<char *>(&optional_header), sizeof(optional_header));
     if (binary_file.gcount() != sizeof(optional_header))
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Failed to read optional header\n");
       return;
     }
@@ -499,6 +520,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
             optional_header.Magic != pe::IMAGE_NT_OPTIONAL_HDR32_MAGIC
             )
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Invalid optional header magic\n");
       return;
     }
@@ -510,6 +532,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     binary_file.read(reinterpret_cast<char *>(&optional_header), sizeof(optional_header));
     if (binary_file.gcount() != sizeof(optional_header))
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Failed to read optional header\n");
       return;
     }
@@ -518,6 +541,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
             optional_header.Magic != pe::IMAGE_NT_OPTIONAL_HDR32_MAGIC
             )
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Invalid optional header magic\n");
       return;
     }
@@ -525,6 +549,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
     section_alignment = optional_header.SectionAlignment;
   } else
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Invalid optional header size\n");
     return;
   }
@@ -534,6 +559,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   binary_file.read(reinterpret_cast<char *>(section_headers.data()), section_headers_size);
   if (binary_file.gcount() != section_headers_size)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to read section headers\n");
     return;
   }
@@ -596,11 +622,13 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
   if (server_public_key_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find server public key\n");
     return;
   }
   if (server_public_key_offsets.size() != 1)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
@@ -615,6 +643,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   offsets.server_public_key = server_key_offset;
   if (shannon_constant_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
     return;
   }
@@ -663,6 +692,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
   if (binary_file.gcount() != shn_bytes.size())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to read bytes to scan for shannon prologue\n");
     return;
   }
@@ -670,6 +700,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
   if (function_prologues.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
     return;
   }
@@ -687,6 +718,7 @@ void scan_windows(scan_result &offsets, const std::filesystem::path &binary_path
   }
   if (function_prologues.size() < 2)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Found too few prologues\n");
     return;
   }
@@ -782,6 +814,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   std::ifstream binary_file(binary_path, std::ios::binary);
   if (!binary_file)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
     return;
   }
@@ -801,6 +834,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     {
       if (binary_details.is_64_bit || !binary_details.is_little_endian)
       {
+        fflush(stdout);
         fmt::print(stderr, "Error: Expected x86 to be 32-bit and little endian\n");
         return;
       }
@@ -811,6 +845,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     {
       if (!binary_details.is_64_bit || !binary_details.is_little_endian)
       {
+        fflush(stdout);
         fmt::print(stderr, "Error: Expected x86_64 to be 64-bit and little endian\n");
         return;
       }
@@ -821,6 +856,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     {
       if (binary_details.is_64_bit || !binary_details.is_little_endian)
       {
+        fflush(stdout);
         fmt::print(stderr, "Error: Expected armeabi-v7a to be 32-bit and little endian\n");
         return;
       }
@@ -831,6 +867,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     {
       if (!binary_details.is_64_bit || !binary_details.is_little_endian)
       {
+        fflush(stdout);
         fmt::print(stderr, "Error: Expected arm64-v8a to be 64-bit and little endian\n");
         return;
       }
@@ -839,6 +876,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     default:
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Unknown JNI target %u. See 'scan_android' implementation\n", binary_details.machine);
       return;
     }
@@ -854,11 +892,13 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
   if (server_public_key_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find server public key\n");
     return;
   }
   if (server_public_key_offsets.size() != 1)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
@@ -866,6 +906,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   fmt::print("Found server public key at {}:{:#012x} Offset: {:#012x}\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
     return;
   }
@@ -890,6 +931,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
   if (function_prologues.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shn_encrypt/shn_decrypt prologue\n");
     return;
   }
@@ -908,6 +950,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   }
   if (function_prologues.size() < 2)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Found too few prologues\n");
     return;
   }
@@ -982,6 +1025,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   std::unique_ptr<file_backed_block> binary_file = std::make_unique<file_backed_block>(binary_path);
   if (binary_file->error())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: {}\n", binary_file->error_str());
     return;
   }
@@ -1003,6 +1047,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     file_header.binaries_count = bswap_32(file_header.binaries_count);
     if (file_header.binaries_count == 0)
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Mach-O file has no architectures\n");
       return;
     }
@@ -1034,6 +1079,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     binary_file = std::make_unique<file_backed_block>(binary_path, file_entry_it->offset, file_entry_it->size);
     if(binary_file->error())
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: {}", binary_file->error_str());
       return;
     }
@@ -1046,6 +1092,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_32_LE, sizeof(header_magic)) == 0)
   {
     fmt::print("Detected Mach-O image as 32-bit Little Endian\n");
+    fflush(stdout);
     fmt::print(stderr, "Error: No implementation for 32-bit Little Endian Mach-O\n"
                        "Feel free to open an issue or pull request on GitHub\n");
     return;
@@ -1061,6 +1108,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     const auto cpu_name = mach_o::CPU_NAMES.find({file_header.cpu, file_header.cpu_subtype});
     if (cpu_name == mach_o::CPU_NAMES.end())
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Unsupported CPU\n");
       return;
     }
@@ -1095,6 +1143,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   } else if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_64_LE, sizeof(header_magic)) == 0)
   {
     fmt::print("Detected Mach-O image as 64-bit Little Endian\n");
+    fflush(stdout);
     fmt::print(stderr, "Error: No implementation for 64-bit Little Endian Mach-O\n"
                        "Feel free to open an issue or pull request on GitHub\n");
     return;
@@ -1110,6 +1159,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     const auto cpu_name = mach_o::CPU_NAMES.find({file_header.cpu, file_header.cpu_subtype});
     if (cpu_name == mach_o::CPU_NAMES.end())
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Unsupported CPU\n");
       return;
     }
@@ -1143,6 +1193,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     }
   } else
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Invalid Mach-O header magic\n");
     return;
   }
@@ -1209,11 +1260,13 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
   if (server_public_key_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find server public key\n");
     return;
   }
   if (server_public_key_offsets.size() != 1)
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Expected only one server public key, found {}\n", server_public_key_offsets.size());
     return;
   }
@@ -1221,6 +1274,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   fmt::print("Found server public key at {}:{:#012x} Offset: {:#012x}\n", binary_filename, server_public_key_offsets[0], offsets.server_public_key);
   if (shannon_constant_offsets.empty())
   {
+    fflush(stdout);
     fmt::print(stderr, "Error: Failed to find shannon constant\n");
     return;
   }
@@ -1351,6 +1405,7 @@ scan_result scan_binary(platform target, const std::filesystem::path &binary_pat
     }
     default:
     {
+      fflush(stdout);
       fmt::print(stderr, "Error: Scanning not implemented for this target\n");
       return offsets;
     }
