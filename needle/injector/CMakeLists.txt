@@ -7,6 +7,7 @@ add_executable(needle-injector
         src/main.cpp
         src/scan.cpp
         src/bootstrap.cpp
+        src/file_backed_block.cpp
 )
 target_include_directories(needle-injector PRIVATE src)
 
