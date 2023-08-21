@@ -9,6 +9,7 @@
 #include "fmt/core.h"
 #include <variant>
 #include "byteswap.hpp"
+#include "file_backed_block.hpp"
 
 const char *SERVER_PUBLIC_KEY_SIG = "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 
@@ -978,22 +979,17 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
    */
 
   const std::string binary_filename = binary_path.filename().string();
-  std::ifstream binary_file(binary_path, std::ios::binary);
-  if (!binary_file)
+  std::unique_ptr<file_backed_block> binary_file = std::make_unique<file_backed_block>(binary_path);
+  if (binary_file->error())
   {
-    fmt::print(stderr, "Error: Failed to open {}\n", binary_path.string());
+    fmt::print(stderr, "Error: {}\n", binary_file->error_str());
     return;
   }
 
   std::string_view architecture;
   mach_o::header_magic header_magic;
-  binary_file.read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
-  if (binary_file.gcount() != sizeof(header_magic))
-  {
-    fmt::print(stderr, "Error: Failed to read Mach-O header magic\n");
-    return;
-  }
-  binary_file.seekg(-static_cast<std::int32_t>(sizeof(header_magic)), std::ios::cur);
+  binary_file->read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
+  binary_file->seek(0);
 
   /*
    * Take care of multi-architecture files by putting the read cursor at the
@@ -1003,8 +999,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   {
     fmt::print("Detected Mach-O file as multi-architecture\n");
     mach_o::universal_header file_header;
-    binary_file.seekg(0);
-    binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
+    binary_file->read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
     file_header.binaries_count = bswap_32(file_header.binaries_count);
     if (file_header.binaries_count == 0)
     {
@@ -1013,12 +1008,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     }
     std::vector<mach_o::universal_file_entry> file_entries(file_header.binaries_count);
     std::streamsize file_entries_size = (long) sizeof(mach_o::universal_file_entry) * file_header.binaries_count;
-    binary_file.read(reinterpret_cast<char *>(file_entries.data()), file_entries_size);
-    if (binary_file.gcount() != file_entries_size)
-    {
-      fmt::print(stderr, "Error: Failed to read Mach-O file entries\n");
-      return;
-    }
+    binary_file->read(reinterpret_cast<char *>(file_entries.data()), file_entries_size);
 
     for (auto &file_entry: file_entries)
     {
@@ -1040,14 +1030,9 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                          "See entries above for valid --arch values\n");
       std::exit(1);
     }
-    binary_file.seekg(file_entry_it->offset);
-    binary_file.read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
-    if (binary_file.gcount() != sizeof(header_magic))
-    {
-      fmt::print(stderr, "Error: Failed to read second Mach-O header magic\n");
-      return;
-    }
-    binary_file.seekg(-static_cast<std::int32_t>(sizeof(header_magic)), std::ios::cur);
+    binary_file = std::make_unique<file_backed_block>(binary_path, file_entry_it->offset, file_entry_it->size);
+    binary_file->read(reinterpret_cast<char *>(&header_magic), sizeof(header_magic));
+    binary_file->seek(0);
     // Fall through into the standard parsing code
   }
 
@@ -1062,12 +1047,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   {
     fmt::print("Detected Mach-O image as 32-bit Big Endian\n");
     mach_o::file_header32 file_header;
-    binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
-    if (binary_file.gcount() != sizeof(file_header))
-    {
-      fmt::print(stderr, "Error: Failed to read Mach-O file header\n");
-      return;
-    }
+    binary_file->read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
     fmt::print("Found Mach-O file header for {} with {} load commands\n",
                mach_o::get_cpu_string(file_header.cpu, file_header.cpu_subtype),
                file_header.load_commands_count
@@ -1082,23 +1062,12 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     for (std::size_t i = 0; i < file_header.load_commands_count; i++)
     {
       mach_o::load_command load_command;
-      binary_file.read(reinterpret_cast<char *>(&load_command), sizeof(load_command));
-      if (binary_file.gcount() != sizeof(load_command))
-      {
-        fmt::print(stderr, "Error: Failed to read Mach-O load command\n");
-        return;
-      }
-      std::streamoff next_load_command_offset =
-              static_cast<std::streamoff>(binary_file.tellg()) + load_command.size - static_cast<std::streamoff>(sizeof(load_command));
+      binary_file->read(reinterpret_cast<char *>(&load_command), sizeof(load_command));
+      std::uint64_t next_load_command_offset = binary_file->pos() + load_command.size - sizeof(load_command);
       if (load_command.type == mach_o::LC_SEGMENT)
       {
         mach_o::segment_command32 segment_command;
-        binary_file.read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
-        if (binary_file.gcount() != sizeof(segment_command))
-        {
-          fmt::print(stderr, "Error: Failed to read Mach-O segment command\n");
-          return;
-        }
+        binary_file->read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
         relocation_entry entry;
         entry.offset_in_file = segment_command.offset;
         entry.size_in_file = segment_command.size;
@@ -1115,7 +1084,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
         relocations.emplace_back(entry);
       }
       // Skip remaining bytes of this load command structure
-      binary_file.seekg(next_load_command_offset);
+      binary_file->seek(next_load_command_offset);
     }
   } else if (std::memcmp(header_magic, mach_o::HEADER_MAGIC_64_LE, sizeof(header_magic)) == 0)
   {
@@ -1127,12 +1096,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   {
     fmt::print("Detected Mach-O image as 64-bit Big Endian\n");
     mach_o::file_header64 file_header;
-    binary_file.read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
-    if (binary_file.gcount() != sizeof(file_header))
-    {
-      fmt::print(stderr, "Error: Failed to read Mach-O file header\n");
-      return;
-    }
+    binary_file->read(reinterpret_cast<char *>(&file_header), sizeof(file_header));
     fmt::print("Found Mach-O file header for {} with {} load commands\n",
                mach_o::get_cpu_string(file_header.cpu, file_header.cpu_subtype),
                file_header.load_commands_count
@@ -1147,23 +1111,12 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
     for (std::size_t i = 0; i < file_header.load_commands_count; i++)
     {
       mach_o::load_command load_command;
-      binary_file.read(reinterpret_cast<char *>(&load_command), sizeof(load_command));
-      if (binary_file.gcount() != sizeof(load_command))
-      {
-        fmt::print(stderr, "Error: Failed to read Mach-O load command\n");
-        return;
-      }
-      std::streamoff next_load_command_offset =
-              static_cast<std::streamoff>(binary_file.tellg()) + load_command.size - static_cast<std::streamoff>(sizeof(load_command));
+      binary_file->read(reinterpret_cast<char *>(&load_command), sizeof(load_command));
+      std::uint64_t next_load_command_offset = binary_file->pos() + load_command.size - sizeof(load_command);
       if (load_command.type == mach_o::LC_SEGMENT_64)
       {
         mach_o::segment_command64 segment_command;
-        binary_file.read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
-        if (binary_file.gcount() != sizeof(segment_command))
-        {
-          fmt::print(stderr, "Error: Failed to read Mach-O segment command\n");
-          return;
-        }
+        binary_file->read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
         relocation_entry entry;
         entry.offset_in_file = segment_command.offset;
         entry.size_in_file = segment_command.size;
@@ -1180,7 +1133,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
         relocations.emplace_back(entry);
       }
       // Skip remaining bytes of this load command structure
-      binary_file.seekg(next_load_command_offset);
+      binary_file->seek(next_load_command_offset);
     }
   } else
   {
@@ -1239,7 +1192,13 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
   sigscanner::multi_scanner scanner;
   scanner.add_signature(SHANNON_CONSTANT);
   scanner.add_signature(SERVER_PUBLIC_KEY);
-  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan_file(binary_path);
+  sigscanner::scan_options scan_options;
+  scan_options.set_thread_count(2);
+  std::unordered_map<sigscanner::signature, std::vector<sigscanner::offset>> results = scanner.scan(
+          reinterpret_cast<const sigscanner::byte *>(binary_file->base_ptr()),
+          binary_file->size(),
+          scan_options
+  );
   std::vector<sigscanner::offset> &shannon_constant_offsets = results[SHANNON_CONSTANT];
   std::vector<sigscanner::offset> &server_public_key_offsets = results[SERVER_PUBLIC_KEY];
   if (server_public_key_offsets.empty())
@@ -1278,7 +1237,13 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
    *
    * This would work well however on multi-architecture files we could find
    * signature matches in the wrong architecture. To combat this we will only
-   * read the data for the architecture we are interested in.
+   * read the data for the architecture we are interested in by changing the
+   * binary chunk to only be that image. The offsets used for segments in an
+   * image from a multi-architecture binary are relative to that image, for
+   * example if the first image is at 0x1000, the first segment may have a
+   * load_command with file offset 0 which is actually 0x1000 + 0. This means
+   * we can safely adjust our binary chunk to only contain the image we want to
+   * scan without having to deal with adding a delta to every offset.
    */
 }
 

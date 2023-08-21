@@ -12,7 +12,21 @@ class file_backed_block
 public:
     explicit file_backed_block(const std::filesystem::path &file);
     explicit file_backed_block(const std::filesystem::path &file, std::uint64_t offset, std::uint64_t size);
+    file_backed_block(const file_backed_block &) = delete;
+    const file_backed_block &operator=(const file_backed_block &) = delete;
+    file_backed_block(file_backed_block &&) = delete;
+    const file_backed_block &operator=(file_backed_block &&) = delete;
     ~file_backed_block();
+
+    /*
+     * Check if there was an error
+     */
+    bool error() const;
+
+    /*
+     * Get the error string
+     */
+    std::string error_str() const;
 
     /*
      * Get the size of the block
@@ -53,4 +67,6 @@ private:
 
     std::uint64_t block_size = 0;
     void *cursor = nullptr;
+
+    std::string error_string;
 };
