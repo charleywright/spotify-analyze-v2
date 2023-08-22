@@ -1077,7 +1077,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       std::exit(1);
     }
     binary_file = std::make_unique<file_backed_block>(binary_path, file_entry_it->offset, file_entry_it->size);
-    if(binary_file->error())
+    if (binary_file->error())
     {
       fflush(stdout);
       fmt::print(stderr, "Error: {}", binary_file->error_str());
@@ -1215,7 +1215,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                    *
                    * The second instruction appears to stay constant across versions
                    */
-                  {mach_o::CPU_ARMV7, "4C F2 3A 52 68 6B C6 F6 96 12"},
+                  {mach_o::CPU_ARMV7, "4C F2 3A 51 C6 F6 96 11"},
                   /*
                    * Registers can change, so 4B and CB are wildcards
                    * 4A A7 98 52    movz w10, #0xc53a
@@ -1228,13 +1228,16 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                   /*
                    * F0 40 2D E9    push {r4, r5, r6, r7, lr}
                    * 0C 70 8D E2    add  r7, sp, #0xc
+                   * 00 0D 2D E9    push {r8, sl, fp}
+                   * 08 D0 4D E2    sub  sp, sp, #8
+                   * 00 40 A0 E1    mov  r4, r0
                    */
-                  {mach_o::CPU_ARMV6, "F0 40 2D E9 0C 70 8D E2"},
+                  {mach_o::CPU_ARMV6, "F0 40 2D E9 0C 70 8D E2 00 0D 2D E9 08 D0 4D E2 00 40 A0 E1"},
                   /*
                    * F0 B5    push {r4, r5, r6, r7, lr}
                    * 03 AF    add  r7, sp, #0xc
                    */
-                  {mach_o::CPU_ARMV7, "F0 B5 03 AF"},
+                  {mach_o::CPU_ARMV7, "F0 B5 03 AF 2D E9 00 0D 82 B0"},
                   /*
                    * FA 67 BB A9    stp x26, x25, [sp, #-0x50]!
                    * F8 5F 01 A9    stp x24, x23, [sp, #0x10]
@@ -1292,8 +1295,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
    * always find the functions is to check before and after all occurrences of
    * the constant which could be up to 12 scans, so instead of reading the file
    * up to 12 times, we will load the whole thing into memory and scan it there.
-   * This will use 100MB+ of memory however that is preferred to repeatedly
-   * seeking through the file.
+   * Memory mapping the file saves us potentially 100MB.
    *
    * This would work well however on multi-architecture files we could find
    * signature matches in the wrong architecture. To combat this we will only
@@ -1305,6 +1307,83 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
    * we can safely adjust our binary chunk to only contain the image we want to
    * scan without having to deal with adding a delta to every offset.
    */
+
+  const auto push_offset = [&offsets](sigscanner::offset
+                                      offset) -> bool {
+      if (offsets.shn_addr1 > 0)
+      {
+        offsets.shn_addr2 = offset;
+        offsets.success = true;
+        return true;
+      } else
+      {
+        offsets.shn_addr1 = offset;
+        return false;
+      }
+  };
+
+  const auto &SHANNON_PROLOGUE = SHANNON_PROLOGUES.at(architecture);
+  const std::size_t SCAN_SIZE = 0x2000; // Functions themselves can be 0x1100 (4KB+)
+  /*
+   * Scan backwards, on average the functions are closer to the last instances of the constant
+   */
+  for (auto shannon_constant_it = shannon_constant_offsets.rbegin(); shannon_constant_it != shannon_constant_offsets.rend(); shannon_constant_it++)
+  {
+    sigscanner::scanner prologue_scanner(SHANNON_PROLOGUE);
+    std::uint64_t scan_start = std::max(std::int64_t{0}, static_cast<std::int64_t>(*shannon_constant_it - SCAN_SIZE));
+    std::size_t scan_size = std::min(static_cast<std::size_t>(binary_file->size() - scan_start), SCAN_SIZE);
+    binary_file->seek(scan_start);
+    std::vector<sigscanner::offset> prologue_offsets = prologue_scanner.reverse_scan(reinterpret_cast<sigscanner::byte *>(binary_file->pos_ptr()), scan_size);
+    if (!prologue_offsets.empty())
+    {
+      std::uint64_t first_offset = prologue_offsets[0] + binary_file->pos();
+      std::uint64_t first_relocated = calculate_relocated_offset(first_offset, relocations);
+      fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x}\n", binary_filename, first_offset, first_relocated);
+      if (push_offset(first_relocated))
+      {
+        return;
+      }
+      scan_start = std::max(std::int64_t{0}, static_cast<std::int64_t>(first_offset - SCAN_SIZE));
+      scan_size = std::min(static_cast<std::size_t>(binary_file->size() - scan_start), SCAN_SIZE);
+      binary_file->seek(scan_start);
+      prologue_offsets = prologue_scanner.reverse_scan(reinterpret_cast<sigscanner::byte *>(binary_file->pos_ptr()), scan_size);
+      if (!prologue_offsets.empty())
+      {
+        std::uint64_t second_offset = prologue_offsets[0] + binary_file->pos();
+        std::uint64_t second_relocated = calculate_relocated_offset(second_offset, relocations);
+        fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x}\n", binary_filename, second_offset, second_relocated);
+        push_offset(second_relocated);
+        return;
+      }
+    }
+
+    scan_start = *shannon_constant_it;
+    scan_size = std::min(static_cast<std::size_t>(binary_file->size() - scan_start), SCAN_SIZE);
+    binary_file->seek(scan_start);
+    prologue_offsets = prologue_scanner.scan(reinterpret_cast<sigscanner::byte *>(binary_file->pos_ptr()), scan_size);
+    if (!prologue_offsets.empty())
+    {
+      std::uint64_t file_offset = prologue_offsets[0] + binary_file->pos();
+      std::uint64_t relocated_offset = calculate_relocated_offset(file_offset, relocations);
+      fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x}\n", binary_filename, file_offset, relocated_offset);
+      if (push_offset(relocated_offset))
+      {
+        return;
+      }
+      scan_start = std::max(std::int64_t{0}, static_cast<std::int64_t>(file_offset - SCAN_SIZE));
+      scan_size = std::min(static_cast<std::size_t>(binary_file->size() - scan_start), SCAN_SIZE);
+      binary_file->seek(scan_start);
+      prologue_offsets = prologue_scanner.scan(reinterpret_cast<sigscanner::byte *>(binary_file->pos_ptr()), scan_size);
+      if (!prologue_offsets.empty())
+      {
+        std::uint64_t second_offset = prologue_offsets[0] + binary_file->pos();
+        std::uint64_t second_relocated = calculate_relocated_offset(second_offset, relocations);
+        fmt::print("Found function prologue at {}:{:#012x} Offset: {:#012x}\n", binary_filename, second_offset, second_relocated);
+        push_offset(second_relocated);
+        return;
+      }
+    }
+  }
 }
 
 scan_result scan_binary(platform target, const std::filesystem::path &binary_path, const flags::args &args)
