@@ -74,7 +74,15 @@ function sleep(milli) {
       break;
     }
     case "ios": {
-      console.error(`iOS injection not supported yet`);
+      const device = await frida.getUsbDevice();
+      const pid = await device.spawn(exec);
+      console.log(`Spawned process ${pid}`);
+      const session = await device.attach(pid);
+      const script = await session.createScript(scriptSrc);
+      await script.load();
+      await script.exports.iosInit(launchArgs);
+      await sleep(1000);
+      await device.resume(pid);
       break;
     }
   }

@@ -36,9 +36,9 @@ std::uint64_t calculate_relocated_offset(std::uint64_t position, const std::vect
   {
     if (position >= entry.offset_in_file && position < entry.offset_in_file + entry.size_in_file)
     {
-      const std::uint64_t offset = position - entry.offset_in_file;
+      const std::uint64_t offset_from_segment = position - entry.offset_in_file;
       const std::uint64_t offset_from_base = entry.offset_in_memory - relocations[0].offset_in_memory;
-      return offset_from_base + offset;
+      return offset_from_base + offset_from_segment;
     }
   }
   return position;
@@ -1122,6 +1122,10 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       {
         mach_o::segment_command32 segment_command;
         binary_file->read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
+        if (segment_command.size == 0)
+        {
+          continue;
+        }
         relocation_entry entry;
         entry.offset_in_file = segment_command.offset;
         entry.size_in_file = segment_command.size;
@@ -1173,6 +1177,10 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       {
         mach_o::segment_command64 segment_command;
         binary_file->read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
+        if (segment_command.size == 0)
+        {
+          continue;
+        }
         relocation_entry entry;
         entry.offset_in_file = segment_command.offset;
         entry.size_in_file = segment_command.size;

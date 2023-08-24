@@ -6,6 +6,7 @@ import "../base64-polyfill";
 import { linuxInit } from "./linux";
 import { windowsInit } from "./windows";
 import { androidInit } from "./android";
+import { iosInit } from "./ios";
 
 export function preInit(launchArgs: any) {
   LaunchArguments.init(launchArgs);
@@ -29,4 +30,5 @@ rpc.exports = {
   linuxInit,
   windowsInit,
   androidInit,
+  iosInit,
 };
