@@ -759,9 +759,6 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
    */
   static const std::unordered_map<std::uint16_t, sigscanner::signature> JNI_SHANNON_CONSTANTS =
           {
-                  /*
-                   *
-                   */
                   {JNI_X86,         "3A C5 96 69"},
                   {JNI_X86_64,      "3A C5 96 69"},
                   /*
@@ -772,42 +769,34 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
                    */
                   {JNI_ARMEABI_V7A, "3A C5 96 69"},
                   /*
-                   * Registers can change, so 4B and CB are wildcards
-                   * 4B A7 98 52    movz w11, #0xc53a
-                   * CB 32 AD 72    movk w11, #0x6996, lsl #16
+                   * Registers can change, so use wildcards
                    */
-                  {JNI_ARM64_V8A,   "?? A7 98 52 ?? 32 AD 72"}
+                  {JNI_ARM64_V8A,   "?? A7 98 52 " // movz w11, #0xc53a
+                                    "?? 32 AD 72"  // movk w11, #0x6996, lsl #16
+                  }
           };
   static const std::unordered_map<std::uint16_t, sigscanner::signature> JNI_SHANNON_PROLOGUES =
           {
-                  /*
-                   * 55                push ebp
-                   * 89 E5             mov  ebp, esp
-                   * 53                push ebx
-                   * 57                push edi
-                   * 56                push esi
-                   * 83 E4 F0          and  esp, 0xfffffff0
-                   * 83 EC ??          sub  esp, ??
-                   * E8 00 00 00 00    call 0x5
-                   */
-                  {JNI_X86,         "55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00"},
-                  /*
-                   * 55                push rbp
-                   * 48 89 E5          mov  rbp, rsp
-                   */
-                  {JNI_X86_64,      "55 48 89 E5"},
-                  /*
-                   * F0 4D 2D E9       push {r4, r5, r6, r7, r8, sl, fp, lr}
-                   * 18 B0 8D E2       add  fp, sp, #0x18
-                   */
-                  {JNI_ARMEABI_V7A, "F0 4D 2D E9 18 B0 8D E2"},
-                  /*
-                   * F7 0F 1C F8    str x23, [sp, #-0x40]!
-                   * F6 57 01 A9    stp x22, x21, [sp, #0x10]
-                   * F4 4F 02 A9    stp x20, x19, [sp, #0x20]
-                   * FD 7B 03 A9    stp x29, x30, [sp, #0x30]
-                   */
-                  {JNI_ARM64_V8A,   "F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9"}
+                  {JNI_X86,         "55 "            // push ebp
+                                    "89 E5 "         // mov  ebp, esp
+                                    "53 "            // push ebx
+                                    "57 "            // push edi
+                                    "56 "            // push esi
+                                    "83 E4 ?? "      // and  esp, 0xfffffff0
+                                    "83 EC ?? "      // sub  esp, ??
+                                    "E8 00 00 00 00" // call 0x5
+                  },
+                  {JNI_X86_64,      "55 "      // push rbp
+                                    "48 89 E5" // mov  rbp, rsp
+                  },
+                  {JNI_ARMEABI_V7A, "F0 4D 2D E9 " // push {r4, r5, r6, r7, r8, sl, fp, lr}
+                                    "18 B0 8D E2"  // add  fp, sp, #0x18
+                  },
+                  {JNI_ARM64_V8A,   "F7 0F 1C F8 " // str x23, [sp, #-0x40]!
+                                    "F6 57 01 A9 " // stp x22, x21, [sp, #0x10]
+                                    "F4 4F 02 A9 " // stp x20, x19, [sp, #0x20]
+                                    "FD 7B 03 A9"  // stp x29, x30, [sp, #0x30]
+                  }
           };
 
   const std::string binary_filename = binary_path.filename().string();
@@ -1218,43 +1207,36 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                    * 000FE81C 3A C5 96 69    0x6996C53A
                    */
                   {mach_o::CPU_ARMV6, "3A C5 96 69"},
+                  {mach_o::CPU_ARMV7, "4C F2 3A 51 " // movw r1, #0xc53a
+                                      "C6 F6 96 11"  // movt r1, #0x6996
+                  },
                   /*
-                   * 4C F2 3A 52    movw r2, #0xc53a
-                   * 68 6B          ldr  r0, [r5, #0x34]
-                   * C6 F6 96 12    movt r2, #0x6996
-                   *
-                   * The second instruction appears to stay constant across versions
+                   * Registers can change, so use wildcards
                    */
-                  {mach_o::CPU_ARMV7, "4C F2 3A 51 C6 F6 96 11"},
-                  /*
-                   * Registers can change, so 4B and CB are wildcards
-                   * 4A A7 98 52    movz w10, #0xc53a
-                   * CA 32 AD 72    movk w10, #0x6996, lsl #16
-                   */
-                  {mach_o::CPU_ARM64, "?? A7 98 52 ?? 32 AD 72"},
+                  {mach_o::CPU_ARM64, "?? A7 98 52 " // movz w10, #0xc53a
+                                      "?? 32 AD 72"  // movk w10, #0x6996, lsl #16
+                                      },
           };
   static const std::unordered_map<std::string_view, sigscanner::signature> SHANNON_PROLOGUES =
           {
-                  /*
-                   * F0 40 2D E9    push {r4, r5, r6, r7, lr}
-                   * 0C 70 8D E2    add  r7, sp, #0xc
-                   * 00 0D 2D E9    push {r8, sl, fp}
-                   * 08 D0 4D E2    sub  sp, sp, #8
-                   * 00 40 A0 E1    mov  r4, r0
-                   */
-                  {mach_o::CPU_ARMV6, "F0 40 2D E9 0C 70 8D E2 00 0D 2D E9 08 D0 4D E2 00 40 A0 E1"},
-                  /*
-                   * F0 B5    push {r4, r5, r6, r7, lr}
-                   * 03 AF    add  r7, sp, #0xc
-                   */
-                  {mach_o::CPU_ARMV7, "F0 B5 03 AF 2D E9 00 0D 82 B0"},
-                  /*
-                   * FA 67 BB A9    stp x26, x25, [sp, #-0x50]!
-                   * F8 5F 01 A9    stp x24, x23, [sp, #0x10]
-                   * F6 57 02 A9    stp x22, x21, [sp, #0x20]
-                   * F4 4F 03 A9    stp x20, x19, [sp, #0x30]
-                   */
-                  {mach_o::CPU_ARM64, "FA 67 BB A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9"},
+                  {mach_o::CPU_ARMV6, "F0 40 2D E9 " // push {r4, r5, r6, r7, lr}
+                                      "0C 70 8D E2 " // add  r7, sp, #0xc
+                                      "00 0D 2D E9 " // push {r8, sl, fp}
+                                      "08 D0 4D E2 " // sub  sp, sp, #8
+                                      "00 40 A0 E1"  // mov  r4, r0
+                  },
+                  {mach_o::CPU_ARMV7, "F0 B5 "       // push   {r4, r5, r6, r7, lr}
+                                      "03 AF "       // add    r7, sp, #0xc
+                                      "2D E9 00 0D " // push.w {r8, sl, fp}
+                                      "82 B0"        // sub    sp, #8
+                  },
+                  {mach_o::CPU_ARM64, "FA 67 BB A9 " // stp x26, x25, [sp, #-0x50]!
+                                      "F8 5F 01 A9 " // stp x24, x23, [sp, #0x10]
+                                      "F6 57 02 A9 " // stp x22, x21, [sp, #0x20]
+                                      "F4 4F 03 A9 " // stp x20, x19, [sp, #0x30]
+                                      "FD 7B 04 A9 " // stp x29, x30, [sp, #0x40]
+                                      "FD 03 01 91"  // add x29, sp, #0x40
+                  },
           };
 
   const auto &SHANNON_CONSTANT = SHANNON_CONSTANTS.at(architecture);
