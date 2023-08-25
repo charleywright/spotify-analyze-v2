@@ -1122,8 +1122,9 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       {
         mach_o::segment_command32 segment_command;
         binary_file->read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
-        if (segment_command.size == 0)
+        if (std::strcmp(segment_command.name, "__PAGEZERO") == 0)
         {
+          fmt::print("Skipping __PAGEZERO segment\n");
           continue;
         }
         relocation_entry entry;
@@ -1177,8 +1178,9 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
       {
         mach_o::segment_command64 segment_command;
         binary_file->read(reinterpret_cast<char *>(&segment_command), sizeof(segment_command));
-        if (segment_command.size == 0)
+        if (std::strcmp(segment_command.name, "__PAGEZERO") == 0)
         {
+          fmt::print("Skipping __PAGEZERO segment\n");
           continue;
         }
         relocation_entry entry;
