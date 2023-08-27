@@ -1,0 +1,31 @@
+{
+  "name": "needle",
+  "version": "1.0.0",
+  "description": "A Frida script that instruments Spotify",
+  "homepage": "https://github.com/charleywright/spotify-analyze-v2",
+  "main": "bootstrap.js",
+  "type": "module",
+  "scripts": {
+    "compile": "frida-compile src/backend/index.ts -o build/needle.js -c",
+    "watch": "frida-compile src/backend/index.ts -o build/needle.js -c -w"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/charleywright/spotify-analyze-v2",
+    "directory": "needle"
+  },
+  "author": "Charley Wright",
+  "license": "ISC",
+  "dependencies": {
+    "@types/frida-gum": "^18.3.1",
+    "@types/google-protobuf": "^3.15.6",
+    "@types/node": "^18.14.1",
+    "@types/yargs-parser": "^21.0.0",
+    "frida": "^16.1.3",
+    "frida-compile": "^10.2.5",
+    "frida-fs": "^5.2.2",
+    "ts-proto": "^1.156.3",
+    "typescript": "^4.9.5",
+    "yargs-parser": "^21.1.1"
+  }
+}
