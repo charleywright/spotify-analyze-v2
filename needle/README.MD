@@ -1,6 +1,6 @@
 # Needle
 
-The basic idea of needle is to hook useful functions and add logging. While reversing a structure this allows for quickly prototyping ideas and acts as a reference implementation. Currently it hooks shn_encrypt and shn_decrypt which are the functions used to encrypt/decrypt SPIRC traffic. It then parses what it can and logs the decrypted traffic to the console.
+The basic idea of needle is to hook useful functions and add logging using an easily-extendable parser. While reversing a structure this allows for fast prototyping of ideas and acts as a reference implementation. Currently shn_encrypt and shn_decrypt are hooked which are the functions used to encrypt/decrypt SPIRC traffic (the proprietary protocol used by Spotify). It then parses what it can and logs the decrypted traffic to the console.
 
 ## Building
 
@@ -26,7 +26,9 @@ npm run compile
 
 ## Usage
 
-#### Linux
+This tool uses [Frida](https://frida.re) for instrumentation therefore requires frida-server to be running on Android or iOS. Setting that up will not be covered here as there are plenty of amazing resources online already. There are no plans to support frida-gadget however a PR is always welcome.
+
+### Linux
 
 The injector requires the path to the `spotify` binary. This can be found using `which spotify` and is likely a symlink. The bootstrap script will launch this process, so make sure it is closed first (`pkill -9 spotify`) then run
 
@@ -34,7 +36,7 @@ The injector requires the path to the `spotify` binary. This can be found using 
 ./needle-injector --target linux --exec <path/to/spotify>
 ```
 
-#### Windows
+### Windows
 
 The injector requires the path to `Spotify.exe` which is usually located at `%APPDATA%\Spotify\Spotify.exe`. The bootstrap script will launch this process, so make sure it is closed first (`Stop-Process -Name Spotify`) then run
 
@@ -42,22 +44,19 @@ The injector requires the path to `Spotify.exe` which is usually located at `%AP
 ./needle-injector --target windows --exec <path/to/Spotify.exe>
 ```
 
-#### Android
+### Android
 
 The injector requires the package name (probably `com.spotify.music`) which can be found using `frida-ps -aiU` and looking for Spotify. It also needs the JNI library which contains the code that we're interested in. This can be found by extracting the APK ([Softpedia](https://mobile.softpedia.com/apk/spotify/) have the best list) or can be pulled from the device with ADB:
 
 ```bash
 # Get install path
 adb shell pm path com.spotify.music
-# package:/data/app/~~2Q_dAO-R8knLG0ud6MXnew==/com.spotify.music-msq2fZq3LOLz7NX1CuAUMA==/base.apk
 
 # Check which architecture of library is installed
-adb shell ls /data/app/~~2Q_dAO-R8knLG0ud6MXnew==/com.spotify.music-msq2fZq3LOLz7NX1CuAUMA==/lib/
+adb shell ls <install path>/lib/
 
 # Pull the APK
 adb pull <install path>/lib/<arch>/liborbit-jni-spotify.so
-# e.g. for my device (ARM64):
-# adb pull /data/app/~~2Q_dAO-R8knLG0ud6MXnew==/com.spotify.music-msq2fZq3LOLz7NX1CuAUMA==/lib/arm64/liborbit-jni-spotify.so
 ```
 
 There are four architectures shipped with the app, `x86`, `x86_64`, `armeabi-v7a`, `arm64-v8a`. The library will be in a different folder depending on the architecture:
@@ -66,10 +65,37 @@ There are four architectures shipped with the app, `x86`, `x86_64`, `armeabi-v7a
 * armeabi-v7a: `/lib/arm/`
 * arm64-v8a: `/lib/arm64/`
 
-The injector does not need to know the architecture, it will find it automatically. It can be run using
+For example to pull the library for an x86_64 device the commands may look like this:
+
+```bash
+adb shell pm path com.spotify.music
+# package:/data/app/~~BrlrJPhZ8k3d4Le2K8WmTA==/com.spotify.music-Qg8ZuOmtolB45ql5IpvzFA==/base.apk
+adb shell ls /data/app/~~BrlrJPhZ8k3d4Le2K8WmTA==/com.spotify.music-Qg8ZuOmtolB45ql5IpvzFA==/lib/
+# x86_64
+adb pull /data/app/~~BrlrJPhZ8k3d4Le2K8WmTA==/com.spotify.music-Qg8ZuOmtolB45ql5IpvzFA==/lib/x86_64/liborbit-jni-spotify.so
+```
+
+The injector does not need to know the architecture, it will determine it automatically. It can be run using
 
 ```bash
 ./needle-injector --target android --exec com.spotify.music --binary <path/to/liborbit-jni-spotify.so>
+```
+
+### iOS
+
+iOS uses .ipa files which are similar to APKs in that they are renamed .zip archives. There are two types of IPAs, encrypted and unencrypted. For the injector to function it requires an unencrypted IPA which can be dumped from an iDevice or decrypted using [mremap_encrypted](https://github.com/JohnCoates/flexdecrypt/blob/master/Readme.md) or [frida-ios-dump](https://github.com/AloneMonkey/frida-ios-dump). The only device that has been tested is an iPhone SE 1st generation running iOS 15.7.8 and Palera1n rootless. These are the steps for that device:
+
+#### Obtaining a decrypted IPA using a rootless jailbreak
+
+1. Install frida-server by either following [miticollo's guide for building Frida](https://gist.github.com/miticollo/6e65b59d83b17bacc00523a0f9d41c11) or adding [their repository for Sileo/Zebra](https://miticollo.github.io/repos/) and installing from there
+2. Clone [miticollo's fork of frida-ios-dump](https://github.com/miticollo/frida-ios-dump) and follow the instructions to install dependencies
+3. Start the spotify app and run `./dump.py --list`. There should be a process called "Spotify"
+4. Dump the app: `python ./dump.py -H <local ip> -u mobile -P <password> Spotify`
+
+Once an unencrypted IPA has been obtained it can be extracted then the injector can be run using
+
+```bash
+./needle-injector --target ios --exec com.spotify.client --binary <path/to/extracted/ipa>/Payload/Spotify.app/Spotify
 ```
 
 ### Options
@@ -81,18 +107,20 @@ Additional options can be specified by terminating the injector's arguments usin
 
 A list and description of possible options is available by passing the `--help` flag.
 
-## Architecture
+## Project structure
 
 This project is split into 3 parts, the injector, the launch wrapper, and the frida script.
 
-* The injector is written in C++ using cmake as a build system. Its purpose is to scan/parse binary files to find offsets that we are interested in. Because it is written in C++ implementing binary format parsing is quite simple and fast.
+* The injector is written in C++ using cmake as a build system. Its purpose is to parse and scan binary files to find offsets that we are interested in. It is implemented in C++ for speed and simplicity in parsing binary formats.
 
 * The launch wrapper is a small Node.js script which uses frida-node to launch the Spotify app and inject the Frida script. It then provides the Frida script with the offsets from the injector, acting like a glue between the two.
 
 * The Frida script is compiled from TypeScript files and contains all the Spotify-related code. It is split into two parts, the parser and the platform backends. 
-    * Platform backends take care of abstracting away the specifics of each platform such as library loading.
+    * Platform backends take care of abstracting away the specifics of each platform such as library loading or base addresses.
     * The parser deals with parsing SPIRC packets, implementing the mercury protocol etc.
 
-The launch wrapper can be replaced by the Frida C API and integrated into the injector however this API is undocumented aside from comments in the code and I had issues building it.
+The launch wrapper can be replaced by the Frida C API and integrated into the injector however this API is undocumented aside from comments in the code and I had issues building it so this change will happen at a later date.
 
-The injector code is heavily commented to explain how it works on different platforms so for implementation details see those.
+## Contributing
+
+Contributions are always welcome, please open an issue or a PR if you have any ideas or suggestions. Currently there are no code formatting guidelines however this may change in the future.

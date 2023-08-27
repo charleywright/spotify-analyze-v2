@@ -37,8 +37,8 @@ function hookDlopen() {
 export function linuxInit(launchArgs: any) {
   preInit(launchArgs);
 
-  const moduleBase = Process.getModuleByName("spotify").base;
-  LaunchArguments.relocate(moduleBase);
+  const module = Process.getModuleByName("spotify");
+  LaunchArguments.relocate(module.base);
 
   hookDlopen();
   status(`Hooked dlopen`);
