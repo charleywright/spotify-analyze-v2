@@ -681,10 +681,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   {
     case JNI_X86:
     {
-      if (
-              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS32 ||
-              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
-              )
+      if (!elf_file.is_32_bit() || !elf_file.is_little_endian())
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected x86 to be 32-bit and little endian\n");
@@ -695,10 +692,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     case JNI_X86_64:
     {
-      if (
-              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS64 ||
-              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
-              )
+      if (!elf_file.is_64_bit() || !elf_file.is_little_endian())
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected x86_64 to be 64-bit and little endian\n");
@@ -709,10 +703,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     case JNI_ARMEABI_V7A:
     {
-      if (
-              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS32 ||
-              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
-              )
+      if (!elf_file.is_32_bit() || !elf_file.is_little_endian())
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected armeabi-v7a to be 32-bit and little endian\n");
@@ -723,10 +714,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     case JNI_ARM64_V8A:
     {
-      if (
-              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS64 ||
-              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
-              )
+      if (!elf_file.is_64_bit() || !elf_file.is_little_endian())
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected arm64-v8a to be 64-bit and little endian\n");
