@@ -62,64 +62,7 @@ std::uint64_t calculate_relocated_address(std::uint64_t position, const std::vec
   return position;
 }
 
-elf::elf_file_details parse_elf(std::ifstream &binary_file)
-{
-  elf::elf_file_details binary_details;
-
-  elf::Elf_Ident e_ident;
-  binary_file.read(reinterpret_cast<char *>(&e_ident), sizeof(e_ident));
-  if (binary_file.gcount() != sizeof(e_ident))
-  {
-    fflush(stdout);
-    fmt::print(stderr, "Error: Failed to read ELF identifier\n");
-    return binary_details;
-  }
-
-  const sigscanner::signature elf_header_magic = "7F 45 4C 46";
-  if (!elf_header_magic.check(e_ident.ei_mag, sizeof(e_ident.ei_mag)))
-  {
-    fflush(stdout);
-    fmt::print(stderr, "Error: Binary is not an ELF file\n");
-    return binary_details;
-  }
-
-  binary_details.is_64_bit = e_ident.ei_class == elf::Elf_Ident::ELFCLASS64;
-  binary_details.is_little_endian = e_ident.ei_data == elf::Elf_Ident::ELFDATA2LSB;
-
-  fmt::print("Detected binary as {} {}\n", binary_details.is_64_bit ? "64-bit" : "32-bit", binary_details.is_little_endian ? "little endian" : "big endian");
-
-  if (binary_details.is_64_bit)
-  {
-    binary_details.header = elf::Elf64_Ehdr{0};
-    auto &elf_header = std::get<elf::Elf64_Ehdr>(binary_details.header);
-    elf_header.e_ident = e_ident;
-    binary_file.read(reinterpret_cast<char *>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
-    if (binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
-    {
-      fflush(stdout);
-      fmt::print(stderr, "Error: Failed to read ELF header\n");
-      return binary_details;
-    }
-    binary_details.machine = elf_header.e_machine;
-  } else
-  {
-    binary_details.header = elf::Elf32_Ehdr{0};
-    auto &elf_header = std::get<elf::Elf32_Ehdr>(binary_details.header);
-    elf_header.e_ident = e_ident;
-    binary_file.read(reinterpret_cast<char *>(&elf_header) + sizeof(e_ident), sizeof(elf_header) - sizeof(e_ident));
-    if (binary_file.gcount() != sizeof(elf_header) - sizeof(e_ident))
-    {
-      fflush(stdout);
-      fmt::print(stderr, "Error: Failed to read ELF header\n");
-      return binary_details;
-    }
-    binary_details.machine = elf_header.e_machine;
-  }
-
-  return binary_details;
-}
-
-std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, const elf::elf_file_details &binary_details)
+std::vector<relocation_entry> parse_elf_relocations(const elf::elf_file &elf_file)
 {
   /*
    * These are offsets of the shannon constant using a binary file scan:
@@ -182,105 +125,31 @@ std::vector<relocation_entry> parse_elf_relocations(std::ifstream &binary_file, 
   */
 
   std::vector<relocation_entry> relocations;
-
-  /*
-   * TODO: Migrate to an elf_file class. This will allow us to use the same code for both 32-bit
-   * and 64-bit binaries and abstract away the implementation.
-   */
-  if (binary_details.is_64_bit)
+  const std::vector<elf::elf_program_header> &program_headers = elf_file.get_program_headers();
+  for (const auto &program_header: program_headers)
   {
-    const auto &header = std::get<elf::Elf64_Ehdr>(binary_details.header);
-    elf::Elf64_Half program_header_table_entry_size = header.e_phentsize;
-    if (program_header_table_entry_size != sizeof(elf::Elf64_Phdr))
+    if (program_header.p_type == elf::elf_program_header::PT_LOAD)
     {
-      fflush(stdout);
-      fmt::print(stderr, "Error: Invalid program header table entry size\n");
-      return relocations;
-    }
-
-    std::vector<elf::Elf64_Phdr> program_headers(header.e_phnum);
-    elf::Elf64_Half program_header_table_size = header.e_phnum * program_header_table_entry_size;
-    binary_file.seekg(static_cast<std::streamoff>(header.e_phoff));
-    binary_file.read(reinterpret_cast<char *>(program_headers.data()), static_cast<std::streamsize>(program_header_table_size));
-    if (binary_file.gcount() != program_header_table_size)
-    {
-      fflush(stdout);
-      fmt::print(stderr, "Error: Failed to read program headers\n");
-      return relocations;
-    }
-
-    for (const auto &program_header: program_headers)
-    {
-      if (program_header.p_type == elf::Elf64_Phdr::PT_LOAD)
-      {
-        relocation_entry entry;
-        entry.offset_in_file = program_header.p_offset;
-        entry.size_in_file = program_header.p_filesz;
-        elf::Elf64_Addr aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
-        elf::Elf64_Addr aligned_vaddr_end =
-                (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
-        entry.size_in_memory = program_header.p_memsz;
-        entry.offset_in_memory = program_header.p_vaddr;
-        entry.size_in_memory = program_header.p_memsz;
-        fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
-                   program_header.p_offset,
-                   program_header.p_filesz,
-                   program_header.p_vaddr,
-                   program_header.p_vaddr + program_header.p_memsz,
-                   aligned_vaddr_start,
-                   aligned_vaddr_end
-        );
-        relocations.emplace_back(entry);
-      }
-    }
-  } else
-  {
-    const auto &header = std::get<elf::Elf32_Ehdr>(binary_details.header);
-    elf::Elf32_Half program_header_table_entry_size = header.e_phentsize;
-    if (program_header_table_entry_size != sizeof(elf::Elf32_Shdr))
-    {
-      fflush(stdout);
-      fmt::print(stderr, "Error: Invalid section header table entry size\n");
-      return relocations;
-    }
-
-    std::vector<elf::Elf32_Phdr> program_headers(header.e_phnum);
-    elf::Elf32_Half program_header_table_size = header.e_phnum * program_header_table_entry_size;
-    binary_file.seekg(static_cast<std::streamoff>(header.e_phoff));
-    binary_file.read(reinterpret_cast<char *>(program_headers.data()), static_cast<std::streamsize>(program_header_table_size));
-    if (binary_file.gcount() != program_header_table_size)
-    {
-      fflush(stdout);
-      fmt::print(stderr, "Error: Failed to read program headers\n");
-      return relocations;
-    }
-
-    for (const auto &program_header: program_headers)
-    {
-      if (program_header.p_type == elf::Elf32_Phdr::PT_LOAD)
-      {
-        relocation_entry entry;
-        entry.offset_in_file = program_header.p_offset;
-        entry.size_in_file = program_header.p_filesz;
-        elf::Elf32_Addr aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
-        elf::Elf32_Addr aligned_vaddr_end =
-                (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
-        entry.size_in_memory = program_header.p_memsz;
-        entry.offset_in_memory = program_header.p_vaddr;
-        entry.size_in_memory = program_header.p_memsz;
-        fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
-                   program_header.p_offset,
-                   program_header.p_filesz,
-                   program_header.p_vaddr,
-                   program_header.p_vaddr + program_header.p_memsz,
-                   aligned_vaddr_start,
-                   aligned_vaddr_end
-        );
-        relocations.emplace_back(entry);
-      }
+      relocation_entry entry;
+      entry.offset_in_file = program_header.p_offset;
+      entry.size_in_file = program_header.p_filesz;
+      std::uint64_t aligned_vaddr_start = program_header.p_vaddr / program_header.p_align * program_header.p_align;
+      std::uint64_t aligned_vaddr_end =
+              (program_header.p_vaddr + program_header.p_memsz + program_header.p_align - 1) / program_header.p_align * program_header.p_align;
+      entry.size_in_memory = program_header.p_memsz;
+      entry.offset_in_memory = program_header.p_vaddr;
+      entry.size_in_memory = program_header.p_memsz;
+      fmt::print("Found ELF relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x})\n",
+                 program_header.p_offset,
+                 program_header.p_filesz,
+                 program_header.p_vaddr,
+                 program_header.p_vaddr + program_header.p_memsz,
+                 aligned_vaddr_start,
+                 aligned_vaddr_end
+      );
+      relocations.emplace_back(entry);
     }
   }
-
   return relocations;
 }
 
@@ -299,14 +168,9 @@ void scan_linux(scan_result &offsets, const std::filesystem::path &binary_path)
     return;
   }
 
-  elf::elf_file_details binary_details = parse_elf(binary_file);
-  if (binary_details.machine == 0)
-  {
-    return;
-  }
-
   // Symbols move around when loaded into memory. See the comment at the top of the implementation
-  std::vector<relocation_entry> relocations = parse_elf_relocations(binary_file, binary_details);
+  elf::elf_file elf_file(binary_path);
+  std::vector<relocation_entry> relocations = parse_elf_relocations(elf_file);
 
   const sigscanner::signature SHANNON_CONSTANT = "3A C5 96 69";
   const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
@@ -743,10 +607,10 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
    */
 
   // These are the values I found on my phone. They should be constant
-  static constexpr std::uint16_t JNI_X86 = 3;
-  static constexpr std::uint16_t JNI_X86_64 = 62;
-  static constexpr std::uint16_t JNI_ARMEABI_V7A = 40;
-  static constexpr std::uint16_t JNI_ARM64_V8A = 183;
+  static constexpr std::uint16_t JNI_X86 = elf::elf_header::EM_386;
+  static constexpr std::uint16_t JNI_X86_64 = elf::elf_header::EM_X86_64;
+  static constexpr std::uint16_t JNI_ARMEABI_V7A = elf::elf_header::EM_ARM;
+  static constexpr std::uint16_t JNI_ARM64_V8A = elf::elf_header::EM_AARCH64;
   static const std::unordered_map<std::uint16_t, std::string_view> JNI_ARCHITECTURES =
           {
                   {JNI_X86,         "x86"},
@@ -808,20 +672,19 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     return;
   }
 
-  elf::elf_file_details binary_details = parse_elf(binary_file);
-  if (binary_details.machine == 0)
-  {
-    return;
-  }
-
   // Same as Linux. See the comment at the top of the implementation
-  std::vector<relocation_entry> relocations = parse_elf_relocations(binary_file, binary_details);
+  elf::elf_file elf_file(binary_path);
+  std::vector<relocation_entry> relocations = parse_elf_relocations(elf_file);
+  elf::elf_header elf_header = elf_file.get_header();
 
-  switch (binary_details.machine)
+  switch (elf_header.e_machine)
   {
     case JNI_X86:
     {
-      if (binary_details.is_64_bit || !binary_details.is_little_endian)
+      if (
+              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS32 ||
+              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
+              )
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected x86 to be 32-bit and little endian\n");
@@ -832,7 +695,10 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     case JNI_X86_64:
     {
-      if (!binary_details.is_64_bit || !binary_details.is_little_endian)
+      if (
+              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS64 ||
+              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
+              )
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected x86_64 to be 64-bit and little endian\n");
@@ -843,7 +709,10 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     case JNI_ARMEABI_V7A:
     {
-      if (binary_details.is_64_bit || !binary_details.is_little_endian)
+      if (
+              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS32 ||
+              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
+              )
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected armeabi-v7a to be 32-bit and little endian\n");
@@ -854,7 +723,10 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     }
     case JNI_ARM64_V8A:
     {
-      if (!binary_details.is_64_bit || !binary_details.is_little_endian)
+      if (
+              elf_header.e_ident.ei_class != elf::elf_ident::ELFCLASS64 ||
+              elf_header.e_ident.ei_data != elf::elf_ident::ELFDATA2LSB
+              )
       {
         fflush(stdout);
         fmt::print(stderr, "Error: Expected arm64-v8a to be 64-bit and little endian\n");
@@ -866,12 +738,12 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
     default:
     {
       fflush(stdout);
-      fmt::print(stderr, "Error: Unknown JNI target %u. See 'scan_android' implementation\n", binary_details.machine);
+      fmt::print(stderr, "Error: Unknown JNI target %u. See 'scan_android' implementation\n", elf_header.e_machine);
       return;
     }
   }
 
-  const auto &SHANNON_CONSTANT = JNI_SHANNON_CONSTANTS.at(binary_details.machine);
+  const auto &SHANNON_CONSTANT = JNI_SHANNON_CONSTANTS.at(elf_header.e_machine);
   const sigscanner::signature SERVER_PUBLIC_KEY = SERVER_PUBLIC_KEY_SIG;
   sigscanner::multi_scanner scanner;
   scanner.add_signature(SHANNON_CONSTANT);
@@ -916,7 +788,7 @@ void scan_android(scan_result &offsets, const std::filesystem::path &binary_path
   std::int64_t shn_prologue_scan_base = static_cast<std::int64_t>(last_shannon_constant - shn_bytes.size());
   binary_file.seekg(std::max(std::int64_t{0}, shn_prologue_scan_base));
   binary_file.read(reinterpret_cast<char *>(shn_bytes.data()), shn_bytes.size());
-  const sigscanner::signature &function_prologue = JNI_SHANNON_PROLOGUES.at(binary_details.machine);
+  const sigscanner::signature &function_prologue = JNI_SHANNON_PROLOGUES.at(elf_header.e_machine);
   std::vector<sigscanner::offset> function_prologues = function_prologue.reverse_scan(shn_bytes.data(), shn_bytes.size(), shn_prologue_scan_base);
   if (function_prologues.empty())
   {
@@ -1215,7 +1087,7 @@ void scan_ios(scan_result &offsets, const std::filesystem::path &binary_path, co
                    */
                   {mach_o::CPU_ARM64, "?? A7 98 52 " // movz w10, #0xc53a
                                       "?? 32 AD 72"  // movk w10, #0x6996, lsl #16
-                                      },
+                  },
           };
   static const std::unordered_map<std::string_view, sigscanner::signature> SHANNON_PROLOGUES =
           {
