@@ -4,6 +4,7 @@
 #include "scan.hpp"
 #include "bootstrap.hpp"
 #include "fmt/core.h"
+#include "kill.hpp"
 
 std::string executable_name;
 
@@ -27,6 +28,8 @@ void print_help()
              "\n"
              "--arch: Architecture to use in a multi-architecture Mach-O file. This is only needed for iOS\n"
              "  armv6, armv7, arm64\n"
+             "\n"
+             "--kill: Kill any existing instances (Linux and Windows only)"
              "\n"
              "Arguments can be terminated with -- then arguments for the bootstrap script may follow.\n"
              "These arguments influence how and what frida will inject into. They follow a key-value\n"
@@ -118,6 +121,12 @@ int main(int argc, char **argv)
   fmt::print("- shn_addr1:  {:#012x}\n", offsets.shn_addr1);
   fmt::print("- shn_addr2:  {:#012x}\n", offsets.shn_addr2);
   fmt::print("- server_key: {:#012x}\n", offsets.server_public_key);
+
+  if (args.get<bool>("kill"))
+  {
+    fmt::print("Killing existing instances...\n");
+    process::kill_all(executable);
+  }
 
   bootstrap::bootstrap(target, executable, args.skipped(), offsets);
 }

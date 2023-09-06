@@ -15,6 +15,7 @@ add_executable(needle-injector
         src/scan.cpp
         src/bootstrap.cpp
         src/file_backed_block.cpp
+        src/kill.cpp
 )
 target_include_directories(needle-injector PRIVATE src)
 
