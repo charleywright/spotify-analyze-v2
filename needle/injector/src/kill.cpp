@@ -54,6 +54,37 @@ void process::kill_all(const std::string &process_name)
 
 #elif defined(NEEDLE_TARGET_WINDOWS)
 
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <processthreadsapi.h>
+
+void process::kill_all(const std::string &process_name) {
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  PROCESSENTRY32 process_entry;
+  process_entry.dwSize = sizeof(process_entry);
+  BOOL ret = Process32First(snapshot, &process_entry);
+  while(ret)
+  {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, FALSE, process_entry.th32ProcessID);
+    if(process)
+    {
+      CHAR buffer[512];
+      DWORD size = sizeof(buffer);
+      if(QueryFullProcessImageName(process, 0, buffer, &size))
+      {
+        std::string path(buffer, size);
+        if(path.find(process_name) == 0)
+        {
+          TerminateProcess(process, 0);
+        }
+      }
+    }
+    ret = Process32Next(snapshot, &process_entry);
+  }
+  CloseHandle(snapshot);
+}
+
 #else
 #error "kill::kill_process not implemented for platform"
 #endif
