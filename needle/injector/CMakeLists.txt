@@ -3,6 +3,13 @@ project(needle-injector)
 include(FetchContent)
 set(CMAKE_CXX_STANDARD 17)
 
+set(NEEDLE_TARGET_PLATFORM DETECT CACHE STRING "Platform to build the injector for")
+set(NEEDLE_TARGET_PLATFORMS LINUX WINDOWS DETECT)
+set_property(CACHE NEEDLE_TARGET_PLATFORM PROPERTY STRINGS ${NEEDLE_TARGET_PLATFORMS})
+if (NOT NEEDLE_TARGET_PLATFORM IN_LIST NEEDLE_TARGET_PLATFORMS)
+    message(FATAL_ERROR "Needle: Invalid target platform ${NEEDLE_TARGET_PLATFORM}, must be one of ${NEEDLE_TARGET_PLATFORMS}")
+endif ()
+
 add_executable(needle-injector
         src/main.cpp
         src/scan.cpp
@@ -10,6 +17,20 @@ add_executable(needle-injector
         src/file_backed_block.cpp
 )
 target_include_directories(needle-injector PRIVATE src)
+
+if (NEEDLE_TARGET_PLATFORM STREQUAL "DETECT")
+    # https://github.com/Kitware/CMake/blob/master/Modules/CMakeDetermineSystem.cmake
+    message(STATUS "Needle: Detecting platform...")
+    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        set(NEEDLE_TARGET_PLATFORM "WINDOWS")
+    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(NEEDLE_TARGET_PLATFORM "LINUX")
+    else ()
+        message(FATAL_ERROR "Needle: Could not detect platform ${CMAKE_SYSTEM_NAME}")
+    endif ()
+endif ()
+message(STATUS "Needle: Targeting ${NEEDLE_TARGET_PLATFORM}")
+target_compile_definitions(needle-injector PRIVATE "NEEDLE_TARGET_${NEEDLE_TARGET_PLATFORM}")
 
 # TODO: Open a pull request for argument termination
 ## Switch back from fork when https://github.com/sailormoon/flags/pull/14 is merged
