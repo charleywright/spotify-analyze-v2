@@ -105,7 +105,25 @@ Additional options can be specified by terminating the injector's arguments usin
 ./needle-injector --target linux --exec /opt/spotify/spotify -- shannonDisableParsing=true
 ```
 
-A list and description of possible options is available by passing the `--help` flag.
+These options are passed on to the Frida script and control how it will interact with the process. There are additional flags for the injector itself:
+
+**--target** [linux, windows, android, ios] - The target platform the script will be injected into  
+This controls how the injector will parse the binary and which entrypoint it will use when injecting the Frida script.
+
+**--exec** &lt;identifier&gt; - The path to the executable or platform-specific identifier  
+This is the identifier that will be used when spawning the process. On Windows and Linux it should be the path to the executable. On Android it should be the package ID (e.g. com.spotify.music). On iOS it should be the bundle ID (e.g. com.spotify.client). On both Android and iOS the identifier can be found using `frida-ps -aiU` (list installed apps on USB device)
+
+**--binary** &lt;path&gt; - The path to the binary which will be scanned for offsets  
+The binary must contain the spotify library, which is statically linked on desktop and iOS, and a shared JNI library on Android. On Windows and Linux it should be the same as --exec therefore can be omitted and the injector will use that value. On iOS it should be the path to the spotify binary inside the IPA (e.g. Payload/Spotify.app/Spotify). On Android it should be the path to the JNI library (e.g. liborbit-jni-spotify.so)
+
+**--arch** &lt;identifier&gt; - **iOS ONLY** - The architecture to use in a multi-architecture binary  
+Mach-O archives ([as Apple call them](https://web.archive.org/web/20140904004108mp_/https://developer.apple.com/library/mac/documentation/developertools/conceptual/MachORuntime/Reference/reference.html#//apple_ref/doc/uid/20001298-BAJFFCGF:~:text=Note%3A%C2%A0Binaries%20that%20contain%20object%20files%20for%20more%20than%20one%20architecture%20are%20not%20Mach%2DO%20files.%20They%20archive%20one%20or%20more%20Mach%2DO%20files)) can contain multiple Mach-O files for different architectures. Some .ipa files will contain these archives so by default the injector will quit and list the architectures it found. This option should then be added to specify which architecture to use. The injector uses the same identifiers as macOS's [Lipo](https://ss64.com/osx/lipo.html) and a list of them is defined [here](https://github.com/tpoechtrager/cctools-port/blob/f28fb5e9c31efd3d0552afcce2d2c03cae25c1ca/cctools/libstuff/arch.c#L33-L110) for reference.
+
+**--kill** - On Linux and Windows kill any instances of the executable before spawning
+
+**--enable-debug** - Enable Spotify's inbuilt debug logging on desktop  
+Example:
+![Debug logging enabled](/assets/needle-debug-log.png)
 
 ## Project structure
 
