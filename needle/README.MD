@@ -4,8 +4,6 @@ The basic idea of needle is to hook useful functions and add logging using an ea
 
 ## Building
 
-#### Injector
-
 The injector uses CMake and FetchContent, so should "just work". To build:
 
 ```bash
@@ -15,7 +13,7 @@ cmake -B build/
 cmake --build build/
 ```
 
-#### Bootstrap script and Frida script
+CMake will try to compile the Frida script for you, if it fails, you can compile it yourself:
 
 ```bash
 # Install dependencies
@@ -60,6 +58,7 @@ adb pull <install path>/lib/<arch>/liborbit-jni-spotify.so
 ```
 
 There are four architectures shipped with the app, `x86`, `x86_64`, `armeabi-v7a`, `arm64-v8a`. The library will be in a different folder depending on the architecture:
+
 * x86: `/lib/x86/`
 * x86_64: `/lib/x86_64/`
 * armeabi-v7a: `/lib/arm/`
@@ -99,6 +98,7 @@ Once an unencrypted IPA has been obtained it can be extracted then the injector 
 ```
 
 ### Options
+
 Additional options can be specified by terminating the injector's arguments using `--` then specifying `key=value` pairs:
 
 ```
@@ -133,7 +133,7 @@ This project is split into 3 parts, the injector, the launch wrapper, and the fr
 
 * The launch wrapper is a small Node.js script which uses frida-node to launch the Spotify app and inject the Frida script. It then provides the Frida script with the offsets from the injector, acting like a glue between the two.
 
-* The Frida script is compiled from TypeScript files and contains all the Spotify-related code. It is split into two parts, the parser and the platform backends. 
+* The Frida script is compiled from TypeScript files and contains all the Spotify-related code. It is split into two parts, the parser and the platform backends.
     * Platform backends take care of abstracting away the specifics of each platform such as library loading or base addresses.
     * The parser deals with parsing SPIRC packets, implementing the mercury protocol etc.
 
@@ -142,3 +142,16 @@ The launch wrapper can be replaced by the Frida C API and integrated into the in
 ## Contributing
 
 Contributions are always welcome, please open an issue or a PR if you have any ideas or suggestions. Currently there are no code formatting guidelines however this may change in the future.
+
+## Development
+
+To work on the codebase you will probably want to recompile the Frida script on every change. This can be done using
+
+```bash
+yarn run watch 
+# or npm run watch
+```
+
+To speed up build time, pass `-DNEEDLE_COMPILE_FRIDA_SCRIPT=OFF` when configuring cmake, this will skip compiling the Frida script on every build.
+
+If yarn.lock or package-lock.json are updated, they should be synced using [synp](https://www.npmjs.com/package/synp). This has only been tested for creating package-lock.json from yarn.lock

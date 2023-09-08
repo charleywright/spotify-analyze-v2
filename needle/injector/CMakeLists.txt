@@ -3,6 +3,7 @@ project(needle-injector)
 include(FetchContent)
 set(CMAKE_CXX_STANDARD 17)
 
+set(NEEDLE_COMPILE_FRIDA_SCRIPT ON CACHE BOOL "Compile the Frida script while building")
 set(NEEDLE_TARGET_PLATFORM DETECT CACHE STRING "Platform to build the injector for")
 set(NEEDLE_TARGET_PLATFORMS LINUX WINDOWS DETECT)
 set_property(CACHE NEEDLE_TARGET_PLATFORM PROPERTY STRINGS ${NEEDLE_TARGET_PLATFORMS})
@@ -57,3 +58,28 @@ FetchContent_Declare(fmt URL https://github.com/fmtlib/fmt/releases/download/10.
 set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(fmt)
 target_link_libraries(needle-injector PRIVATE fmt::fmt)
+
+if (NEEDLE_COMPILE_FRIDA_SCRIPT)
+    find_program(YARN_PATH yarn)
+    find_program(NPM_PATH npm)
+
+    if (YARN_PATH)
+        message(STATUS "Needle: Found yarn")
+
+        add_custom_target(needle-frida-compile ALL
+                COMMAND "${YARN_PATH}" install && "${YARN_PATH}" run compile
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}../"
+        )
+        add_dependencies(needle-injector needle-frida-compile)
+    elseif (NPM_PATH)
+        message(STATUS "Needle: Could not find yarn, using npm")
+
+        add_custom_target(needle-frida-compile ALL
+                COMMAND "${NPM_PATH}" install && "${NPM_PATH}" run compile
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}../"
+        )
+        add_dependencies(needle-injector needle-frida-compile)
+    else ()
+        message(STATUS "Needle: Could not find yarn or npm, run `npm run compile` manually")
+    endif ()
+endif ()
