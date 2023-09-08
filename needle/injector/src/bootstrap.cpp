@@ -21,7 +21,7 @@ std::filesystem::path locate_bootstrap_script()
   return "";
 }
 
-void bootstrap::bootstrap(platform target, const std::string &exec, const std::vector<std::string_view> &bootstrapper_args, const scan_result &offsets)
+void bootstrap::bootstrap(platform target, const std::string &exec, const flags::args &args, const scan_result &result)
 {
   const std::filesystem::path bootstrap_script = locate_bootstrap_script();
   if (bootstrap_script.empty())
@@ -41,8 +41,12 @@ void bootstrap::bootstrap(platform target, const std::string &exec, const std::v
   command << "node " << bootstrap_script \
   << " --platform " << platform_str(target) \
   << " --exec \"" << exec << '"';
-  command << " -- " << fmt::format("serverKey={:#x} shnAddr1={:#x} shnAddr2={:#x}", offsets.server_public_key, offsets.shn_addr1, offsets.shn_addr2);
-  for (const auto &bootstrapper_arg : bootstrapper_args)
+  if (args.get<bool>("enable-debug"))
+  {
+    command << " --enable-debug";
+  }
+  command << " -- " << fmt::format("serverKey={:#x} shnAddr1={:#x} shnAddr2={:#x}", result.server_public_key, result.shn_addr1, result.shn_addr2);
+  for (const auto &bootstrapper_arg: args.skipped())
   {
     command << ' ' << bootstrapper_arg;
   }

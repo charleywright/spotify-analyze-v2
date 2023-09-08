@@ -5,5 +5,5 @@
 
 namespace bootstrap
 {
-    void bootstrap(platform target, const std::string &exec, const std::vector<std::string_view> &bootstrapper_args, const scan_result &result);
+    void bootstrap(platform target, const std::string &exec, const flags::args &args, const scan_result &result);
 }

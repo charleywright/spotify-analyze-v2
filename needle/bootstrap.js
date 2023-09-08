@@ -22,6 +22,10 @@ function sleep(milli) {
   return new Promise((resolve) => setTimeout(resolve, milli));
 }
 
+function onOutput(pid, fd, data) {
+  process.stdout.write(data);
+}
+
 (async () => {
   const args = parser(process.argv, {
     configuration: {
@@ -47,9 +51,20 @@ function sleep(milli) {
     case "linux":
     case "windows": {
       const device = await frida.getLocalDevice();
-      const pid = await device.spawn(exec);
+      device.output.connect(onOutput);
+      let argv = [exec];
+      if (args["enable-debug"]) {
+        argv.push("--show-console");
+      }
+      const pid = await device.spawn(exec, {
+        argv,
+        stdio: frida.Stdio.Pipe,
+      });
       console.log(`Spawned process ${pid}`);
       const session = await device.attach(pid);
+      session.detached.connect(() => {
+        device.output.disconnect(onOutput);
+      });
       const script = await session.createScript(scriptSrc);
       await script.load();
       if (platform === "linux") {

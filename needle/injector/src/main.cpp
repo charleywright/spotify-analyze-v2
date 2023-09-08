@@ -29,7 +29,9 @@ void print_help()
              "--arch: Architecture to use in a multi-architecture Mach-O file. This is only needed for iOS\n"
              "  armv6, armv7, arm64\n"
              "\n"
-             "--kill: Kill any existing instances (Linux and Windows only)"
+             "--kill: Kill any existing instances (Linux and Windows only)\n"
+             "\n"
+             "--enable-debug: Enable debug logging on Linux an Windows\n"
              "\n"
              "Arguments can be terminated with -- then arguments for the bootstrap script may follow.\n"
              "These arguments influence how and what frida will inject into. They follow a key-value\n"
@@ -128,5 +130,5 @@ int main(int argc, char **argv)
     process::kill_all(executable);
   }
 
-  bootstrap::bootstrap(target, executable, args.skipped(), offsets);
+  bootstrap::bootstrap(target, executable, args, offsets);
 }
