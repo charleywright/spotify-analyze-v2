@@ -1,5 +1,7 @@
+mod scan;
+
 #[derive(Debug, Clone, clap::ValueEnum)]
-enum Target {
+pub enum Target {
     Linux,
     Windows,
     Android,
@@ -54,5 +56,10 @@ fn main() {
                 cmd.error(clap::error::ErrorKind::MissingRequiredArgument, "Binary is required").exit();
             }
         }
+    }
+
+    let offsets = scan::scan_binary(target, &matches);
+    if offsets.is_none() {
+        cmd.error(clap::error::ErrorKind::InvalidValue, "Failed to scan binary").exit();
     }
 }
