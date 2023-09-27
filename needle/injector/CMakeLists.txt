@@ -68,7 +68,7 @@ if (NEEDLE_COMPILE_FRIDA_SCRIPT)
 
         add_custom_target(needle-frida-compile ALL
                 COMMAND "${YARN_PATH}" install && "${YARN_PATH}" run compile
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}../"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../"
         )
         add_dependencies(needle-injector needle-frida-compile)
     elseif (NPM_PATH)
@@ -76,7 +76,7 @@ if (NEEDLE_COMPILE_FRIDA_SCRIPT)
 
         add_custom_target(needle-frida-compile ALL
                 COMMAND "${NPM_PATH}" install && "${NPM_PATH}" run compile
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}../"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../"
         )
         add_dependencies(needle-injector needle-frida-compile)
     else ()
