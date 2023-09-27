@@ -1,3 +1,2 @@
 node_modules/
-injector/build*
-injector-rs/target/
+injector/target/

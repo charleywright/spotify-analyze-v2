@@ -4,16 +4,14 @@ The basic idea of needle is to hook useful functions and add logging using an ea
 
 ## Building
 
-The injector uses CMake and FetchContent, so should "just work". To build:
+The injector uses Rust, so should "just work". To build:
 
 ```bash
 cd injector
-mkdir build
-cmake -B build/
-cmake --build build/
+cargo build --release
 ```
 
-CMake will try to compile the Frida script for you, if it fails, you can compile it yourself:
+The Frida script must be compiled separately:
 
 ```bash
 # Install dependencies
@@ -129,7 +127,7 @@ Example:
 
 This project is split into 3 parts, the injector, the launch wrapper, and the frida script.
 
-* The injector is written in C++ using cmake as a build system. Its purpose is to parse and scan binary files to find offsets that we are interested in. It is implemented in C++ for speed and simplicity in parsing binary formats.
+* The injector was originally written in C++ then ported to Rust. Its purpose is to parse and scan binary files to find offsets that we are interested in. It is separate from the Frida script because signature scanning in Frida can be really slow, and we can optimise by parsing the platform-specific binary format.
 
 * The launch wrapper is a small Node.js script which uses frida-node to launch the Spotify app and inject the Frida script. It then provides the Frida script with the offsets from the injector, acting like a glue between the two.
 
@@ -137,11 +135,11 @@ This project is split into 3 parts, the injector, the launch wrapper, and the fr
     * Platform backends take care of abstracting away the specifics of each platform such as library loading or base addresses.
     * The parser deals with parsing SPIRC packets, implementing the mercury protocol etc.
 
-The launch wrapper can be replaced by the Frida C API and integrated into the injector however this API is undocumented aside from comments in the code and I had issues building it so this change will happen at a later date.
+The launch wrapper can be replaced by the [Frida crate](https://docs.rs/frida/0.4.1/frida/) and integrated into the injector however spawning processes is currently unsupported (there is [an open PR to add support](https://github.com/frida/frida-rust/pull/110)) so this change will happen at a later date.
 
 ## Contributing
 
-Contributions are always welcome, please open an issue or a PR if you have any ideas or suggestions. Currently there are no code formatting guidelines however this may change in the future.
+Contributions are always welcome, please open an issue or a PR if you have any ideas or suggestions. JS and TS should follow the current code formatting, Rust should be formatted using the provided rust-fmt configuration.
 
 ## Development
 
@@ -152,6 +150,8 @@ yarn run watch
 # or npm run watch
 ```
 
-To speed up build time, pass `-DNEEDLE_COMPILE_FRIDA_SCRIPT=OFF` when configuring cmake, this will skip compiling the Frida script on every build.
+If yarn.lock or package-lock.json are updated, they should be synced using [synp](https://www.npmjs.com/package/synp)
 
-If yarn.lock or package-lock.json are updated, they should be synced using [synp](https://www.npmjs.com/package/synp). This has only been tested for creating package-lock.json from yarn.lock
+### TODO
+
+* [ ] Integrate the bootstrap script into the injector
