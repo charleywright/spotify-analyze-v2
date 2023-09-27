@@ -121,7 +121,6 @@ dependencies = [
  "clap",
  "elf",
  "lazy_static",
- "sigscanner",
 ]
 
 [[package]]
@@ -141,10 +140,6 @@ checksum = "5267fca4496028628a95160fc423a33e8b2e6af8a5302579e322e4b520293cae"
 dependencies = [
  "proc-macro2",
 ]
-
-[[package]]
-name = "sigscanner"
-version = "1.0.0"
 
 [[package]]
 name = "strsim"

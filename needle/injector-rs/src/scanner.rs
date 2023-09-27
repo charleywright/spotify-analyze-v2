@@ -24,18 +24,19 @@ impl Signature {
                 "?" | "??" => {
                     bytes.push(0);
                     mask.push(MaskType::Wildcard);
-                }
+                },
                 _ => {
                     let byte = u8::from_str_radix(part, 16).ok()?;
                     bytes.push(byte);
                     mask.push(MaskType::Byte);
-                }
+                },
             }
         }
 
         Some(Self { bytes, mask })
     }
 
+    #[allow(dead_code)]
     pub fn from_code_style(bytes: &str, mask: &str) -> Option<Self> {
         if bytes.len() != mask.len() {
             return None;
@@ -44,7 +45,7 @@ impl Signature {
             return None;
         }
 
-        let mut bytes_vec = Vec::from(bytes.as_bytes());
+        let bytes_vec = Vec::from(bytes.as_bytes());
         let mut mask_vec = vec![];
         for c in mask.chars() {
             match c {
@@ -60,6 +61,7 @@ impl Signature {
         })
     }
 
+    #[allow(dead_code)]
     pub fn scan(&self, data: &[u8]) -> Vec<usize> {
         self.scan_with_offset(data, 0)
     }
@@ -77,7 +79,7 @@ impl Signature {
                             found = false;
                             break;
                         }
-                    }
+                    },
                 }
             }
             if found {
@@ -88,6 +90,7 @@ impl Signature {
         results
     }
 
+    #[allow(dead_code)]
     pub fn reverse_scan(&self, data: &[u8]) -> Vec<usize> {
         self.reverse_scan_with_offset(data, 0)
     }
@@ -105,7 +108,7 @@ impl Signature {
                             found = false;
                             break;
                         }
-                    }
+                    },
                 }
             }
             if found {

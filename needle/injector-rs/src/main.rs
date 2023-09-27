@@ -1,4 +1,5 @@
 mod scan;
+mod scanner;
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum Target {
@@ -45,7 +46,7 @@ fn main() {
             if !exec_path.exists() {
                 cmd.error(clap::error::ErrorKind::InvalidValue, "Executable does not exist").exit();
             }
-        }
+        },
         Target::Android | Target::IOS => {
             if let Some(binary) = matches.get_one::<String>("binary") {
                 let binary_path = std::path::PathBuf::from(binary);
@@ -55,7 +56,7 @@ fn main() {
             } else {
                 cmd.error(clap::error::ErrorKind::MissingRequiredArgument, "Binary is required").exit();
             }
-        }
+        },
     }
 
     let offsets = scan::scan_binary(target, &matches);
