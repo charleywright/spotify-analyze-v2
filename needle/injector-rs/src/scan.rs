@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use lazy_static::lazy_static;
 
@@ -141,8 +141,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
     match target {
         Target::Linux => {
             /*
-              On Linux the spotify binary is an ELF file. We can use this to determine the architecture of the binary and then
-              use the correct signatures. We also need to parse the ELF file to find relocations.
+              On Linux the spotify binary is an ELF file. We can parse this file to significantly reduce the scanning
+              area and find the relocation entries for the binary
             */
             let binary = args.get_one::<String>("binary").unwrap_or(executable);
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
@@ -156,8 +156,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let relocations = parse_elf_relocations(&mut elf_file);
 
             /*
-             The server key is easy to find, it's stored in the .rodata section and is always the same across all
-             versions of the app and contains no wildcards
+              The server key is easy to find, it's stored in the .rodata section and is always the same across all
+              versions of the app and contains no wildcards
             */
             let rodata_header =
                 elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
@@ -165,18 +165,17 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 [rodata_header.sh_offset as usize..rodata_header.sh_offset as usize + rodata_header.sh_size as usize];
             let server_key_offsets =
                 SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(rodata_section, rodata_header.sh_offset as usize);
-            // let server_key_offsets = SERVER_PUBLIC_KEY_SIGNATURE.scan(&binary_data);
             if server_key_offsets.is_empty() {
                 eprintln!("Failed to find server public key");
                 return None;
             }
-            for server_file_key_offset in server_key_offsets {
-                let relocated_offset = calculate_relocated_offset(&relocations, server_file_key_offset);
-                let relocated_address = calculate_relocated_address(&relocations, server_file_key_offset);
+            for server_key_offset in server_key_offsets {
+                let relocated_offset = calculate_relocated_offset(&relocations, server_key_offset);
+                let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
                 println!(
                     "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                     binary_path.file_name().unwrap().to_str().unwrap(),
-                    server_file_key_offset,
+                    server_key_offset,
                     relocated_offset,
                     relocated_address
                 );
@@ -274,8 +273,259 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
 
             Some(offsets)
         }
-        _ => {
-            return None;
+        Target::Windows => {
+            eprintln!("Windows is not supported yet");
+            None
+        }
+        Target::Android => {
+            /*
+              Android apps are packaged as APKs. APKs are just zip files with a different extension. When the APK is
+              extracted there is a libs folder which contains JNI libraries (Java Native Interface). These are
+              libraries written in a compiled language such as C, C++ or Rust that can be called from Java. Since
+              phones can have different architectures, Spotify ships multiple builds of the library: x86, x86_64,
+              armeabi-v7a, arm64-v8a. These are different binaries with different instruction sets therefore have
+              different signatures and offsets. We could ask the user to specify however since they are all shared
+              libraries (.so files) we can read the ELF header to find the architecture.
+            */
+
+            // These seem to be the JNI library machine types for android
+            const JNI_X86: u16 = elf::abi::EM_386;
+            const JNI_X86_64: u16 = elf::abi::EM_X86_64;
+            const JNI_ARMEABI_V7A: u16 = elf::abi::EM_ARM;
+            const JNI_ARM64_V8A: u16 = elf::abi::EM_AARCH64;
+            /*
+              Tested all signatures on 8.8.12.545 on all architectures
+            */
+            #[allow(non_snake_case)]
+                let JNI_SHANNON_CONSTANTS = HashMap::from([
+                (JNI_X86, sigscanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                (JNI_X86_64, sigscanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                /*
+                  Constant is embedded after function, and is loaded using offset from PC
+                  .text:00C7B410                 LDR             R2, [PC, #0xAC]
+                  ...
+                  .text:00C7B4C4 dword_C7B4C4    DCD 0x6996C53A
+                */
+                (JNI_ARMEABI_V7A, sigscanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                /*
+                  Registers can change, so use wildcards
+                  movz w11, #0xc53a
+                  movk w11, #0x6996, lsl #16
+                */
+                (JNI_ARM64_V8A, sigscanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
+            ]);
+            #[allow(non_snake_case)]
+                let JNI_SHANNON_PROLOGUES = HashMap::from([
+                /*
+                  push ebp
+                  mov  ebp, esp
+                  push ebx
+                  push edi
+                  push esi
+                  and  esp, 0xfffffff0
+                  sub  esp, ??
+                  call 0x5
+                */
+                (
+                    JNI_X86,
+                    sigscanner::Signature::from_ida_style("55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00")
+                        .unwrap(),
+                ),
+                /*
+                  push rbp
+                  mov  rbp, rsp
+                */
+                (JNI_X86_64, sigscanner::Signature::from_ida_style("55 48 89 E5").unwrap()),
+                /*
+                  push {r4, r5, r6, r7, r8, sl, fp, lr}
+                  add  fp, sp, #0x18
+                */
+                (JNI_ARMEABI_V7A, sigscanner::Signature::from_ida_style("F0 4D 2D E9 18 B0 8D E2").unwrap()),
+                /*
+                  str x23, [sp, #-0x40]!
+                  stp x22, x21, [sp, #0x10]
+                  stp x20, x19, [sp, #0x20]
+                  stp x29, x30, [sp, #0x30]
+                */
+                (
+                    JNI_ARM64_V8A,
+                    sigscanner::Signature::from_ida_style("F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9").unwrap(),
+                ),
+            ]);
+
+            let binary = args.get_one::<String>("binary").unwrap();
+            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+
+            println!("Target: android");
+            println!("Executable: {}", executable);
+            println!("Binary: {}", binary_path.to_str().unwrap());
+
+            let binary_data = std::fs::read(&binary_path).unwrap();
+            let mut elf_file = elf::ElfBytes::<elf::endian::NativeEndian>::minimal_parse(&binary_data).unwrap();
+            let relocations = parse_elf_relocations(&mut elf_file);
+
+            match elf_file.ehdr.e_machine {
+                JNI_X86 => {
+                    if elf_file.ehdr.class != elf::file::Class::ELF32 {
+                        eprintln!("Expected x86 to be 32 bit");
+                        return None;
+                    }
+                    if elf_file.ehdr.endianness != elf::endian::LittleEndian {
+                        eprintln!("Expected x86 to be little endian");
+                        return None;
+                    }
+                    println!("Detected JNI for x86");
+                }
+                JNI_X86_64 => {
+                    if elf_file.ehdr.class != elf::file::Class::ELF64 {
+                        eprintln!("Expected x86_64 to be 64 bit");
+                        return None;
+                    }
+                    if elf_file.ehdr.endianness != elf::endian::LittleEndian {
+                        eprintln!("Expected x86_64 to be little endian");
+                        return None;
+                    }
+                    println!("Detected JNI for x86_64");
+                }
+                JNI_ARMEABI_V7A => {
+                    if elf_file.ehdr.class != elf::file::Class::ELF32 {
+                        eprintln!("Expected armeabi-v7a to be 32 bit");
+                        return None;
+                    }
+                    if elf_file.ehdr.endianness != elf::endian::LittleEndian {
+                        eprintln!("Expected armeabi-v7a to be little endian");
+                        return None;
+                    }
+                    println!("Detected JNI for armeabi-v7a");
+                }
+                JNI_ARM64_V8A => {
+                    if elf_file.ehdr.class != elf::file::Class::ELF64 {
+                        eprintln!("Expected arm64-v8a to be 64 bit");
+                        return None;
+                    }
+                    if elf_file.ehdr.endianness != elf::endian::LittleEndian {
+                        eprintln!("Expected arm64-v8a to be little endian");
+                        return None;
+                    }
+                    println!("Detected JNI for arm64-v8a");
+                }
+                _ => {
+                    eprintln!("Unknown JNI target {}", elf_file.ehdr.e_machine);
+                    return None;
+                }
+            }
+
+            /*
+              Same as on Linux, the server key is in .rodata and there is only one instance with no wildcards
+            */
+            let rodata_header =
+                elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
+            let rodata_section = &binary_data
+                [rodata_header.sh_offset as usize..rodata_header.sh_offset as usize + rodata_header.sh_size as usize];
+            let server_key_offsets =
+                SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(rodata_section, rodata_header.sh_offset as usize);
+            if server_key_offsets.is_empty() {
+                eprintln!("Failed to find server public key");
+                return None;
+            }
+            for server_key_offset in server_key_offsets {
+                let relocated_offset = calculate_relocated_offset(&relocations, server_key_offset);
+                let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
+                println!(
+                    "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    server_key_offset,
+                    relocated_offset,
+                    relocated_address
+                );
+                offsets.server_public_key_offset = relocated_offset;
+            }
+
+            let text_header = elf_file.section_header_by_name(".text").unwrap().expect("Failed to find .text section");
+            let text_section = &binary_data
+                [text_header.sh_offset as usize..text_header.sh_offset as usize + text_header.sh_size as usize];
+            let shannon_constant_signature = JNI_SHANNON_CONSTANTS.get(&elf_file.ehdr.e_machine).unwrap();
+            let shannon_constant_offsets =
+                shannon_constant_signature.scan_with_offset(text_section, text_header.sh_offset as usize);
+            if shannon_constant_offsets.is_empty() {
+                eprintln!("Failed to find shannon constant");
+                return None;
+            }
+            for shannon_constant_offset in &shannon_constant_offsets {
+                let relocated_offset = calculate_relocated_offset(&relocations, shannon_constant_offset.clone());
+                let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
+                println!(
+                    "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    shannon_constant_offset,
+                    relocated_offset,
+                    relocated_address
+                );
+            }
+
+            /*
+              Same as for Linux, shn_encrypt, shn_decrypt and sometimes shn_finish all have the same prologue. We could
+              probably get away with shorter signatures but these work for now
+            */
+
+            let last_shannon_constant = shannon_constant_offsets.last().unwrap();
+            let shannon_prologue_scan_size: usize = 0x2000;
+            let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
+            let shannon_prologue_scan_end = last_shannon_constant.clone();
+            let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+            let shannon_prologue_signature = JNI_SHANNON_PROLOGUES.get(&elf_file.ehdr.e_machine).unwrap();
+            let mut shannon_prologue_offsets = VecDeque::from(
+                shannon_prologue_signature
+                    .reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_base),
+            );
+            if shannon_prologue_offsets.is_empty() {
+                eprintln!("Failed to find shn_encrypt/shn_decrypt prologue");
+                return None;
+            }
+
+            // We hit shn_finish
+            if last_shannon_constant - shannon_prologue_offsets[0] < 0x200 {
+                let relocated_shn_finish_offset = calculate_relocated_offset(&relocations, shannon_prologue_offsets[0]);
+                let relocated_shn_finish_address =
+                    calculate_relocated_address(&relocations, shannon_prologue_offsets[0]);
+                println!(
+                    "Found shn_finish at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    shannon_prologue_offsets[0],
+                    relocated_shn_finish_offset,
+                    relocated_shn_finish_address
+                );
+                shannon_prologue_offsets.pop_front();
+            }
+
+            for shannon_prologue in &shannon_prologue_offsets {
+                let relocated_prologue_offset = calculate_relocated_offset(&relocations, shannon_prologue.clone());
+                let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
+                println!(
+                    "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    shannon_prologue,
+                    relocated_prologue_offset,
+                    relocated_prologue_address
+                );
+            }
+            shannon_prologue_offsets = shannon_prologue_offsets
+                .iter()
+                .map(|offset| calculate_relocated_offset(&relocations, offset.clone()))
+                .collect();
+            if shannon_prologue_offsets.len() < 2 {
+                eprintln!("Found too few prologues");
+                return None;
+            }
+
+            offsets.shannon_offset1 = shannon_prologue_offsets[0];
+            offsets.shannon_offset2 = shannon_prologue_offsets[1];
+
+            Some(offsets)
+        }
+        Target::IOS => {
+            eprintln!("iOS is not supported yet");
+            None
         }
     }
 }
