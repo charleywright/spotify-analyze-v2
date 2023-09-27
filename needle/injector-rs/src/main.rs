@@ -62,4 +62,9 @@ fn main() {
     if offsets.is_none() {
         cmd.error(clap::error::ErrorKind::InvalidValue, "Failed to scan binary").exit();
     }
+    let offsets = offsets.unwrap();
+    println!("Using offsets:");
+    println!(" - shannon_offset1:   {:#012x}", offsets.shannon_offset1);
+    println!(" - shannon_offset2:   {:#012x}", offsets.shannon_offset2);
+    println!(" - server_public_key: {:#012x}", offsets.server_public_key_offset);
 }

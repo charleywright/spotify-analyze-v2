@@ -1,9 +1,11 @@
-use super::Target;
-use aobscan;
+use std::collections::VecDeque;
+
 use lazy_static::lazy_static;
 
+use super::Target;
+
 lazy_static! {
-    static ref SERVER_PUBLIC_KEY_SIGNATURE: aobscan::Pattern = aobscan::PatternBuilder::from_ida_style("ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd").unwrap().with_threads(1).unwrap().build();
+    static ref SERVER_PUBLIC_KEY_SIGNATURE: sigscanner::Signature = sigscanner::Signature::from_ida_style("ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd").unwrap();
 }
 
 struct RelocationEntry {
@@ -123,9 +125,9 @@ fn parse_elf_relocations(elf_file: &mut elf::ElfBytes<elf::endian::NativeEndian>
 }
 
 pub struct Offsets {
-    shannon_offset1: usize,
-    shannon_offset2: usize,
-    server_public_key_offset: usize,
+    pub shannon_offset1: usize,
+    pub shannon_offset2: usize,
+    pub server_public_key_offset: usize,
 }
 
 pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> {
@@ -161,11 +163,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
             let rodata_section = &binary_data
                 [rodata_header.sh_offset as usize..rodata_header.sh_offset as usize + rodata_header.sh_size as usize];
-            let mut server_key_offsets = Vec::<usize>::new();
-            SERVER_PUBLIC_KEY_SIGNATURE.scan(rodata_section, |offset| {
-                server_key_offsets.push(offset + rodata_header.sh_offset as usize);
-                return true;
-            });
+            let server_key_offsets =
+                SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(rodata_section, rodata_header.sh_offset as usize);
+            // let server_key_offsets = SERVER_PUBLIC_KEY_SIGNATURE.scan(&binary_data);
             if server_key_offsets.is_empty() {
                 eprintln!("Failed to find server public key");
                 return None;
@@ -186,20 +186,16 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let text_header = elf_file.section_header_by_name(".text").unwrap().expect("Failed to find .text section");
             let text_section = &binary_data
                 [text_header.sh_offset as usize..text_header.sh_offset as usize + text_header.sh_size as usize];
-            let mut shannon_constant_offsets = Vec::<usize>::new();
-            let shannon_constant_signature =
-                aobscan::PatternBuilder::from_ida_style("3A C5 96 69").unwrap().with_threads(1).unwrap().build();
-            shannon_constant_signature.scan(text_section, |offset| {
-                shannon_constant_offsets.push(offset + text_header.sh_offset as usize);
-                return true;
-            });
+            let shannon_constant_signature = sigscanner::Signature::from_ida_style("3A C5 96 69").unwrap();
+            let shannon_constant_offsets =
+                shannon_constant_signature.scan_with_offset(text_section, text_header.sh_offset as usize);
             if shannon_constant_offsets.is_empty() {
                 eprintln!("Failed to find shannon constant");
                 return None;
             }
-            for shannon_constant_offset in shannon_constant_offsets {
-                let relocated_offset = calculate_relocated_offset(&relocations, shannon_constant_offset);
-                let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset);
+            for shannon_constant_offset in &shannon_constant_offsets {
+                let relocated_offset = calculate_relocated_offset(&relocations, shannon_constant_offset.clone());
+                let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                     binary_path.file_name().unwrap().to_str().unwrap(),
@@ -226,11 +222,57 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
             let shannon_prologue_scan_size: usize = 0x2000;
             let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
-            let shannon_prologue_scan_end = last_shannon_constant + shannon_prologue_scan_size;
+            let shannon_prologue_scan_end = last_shannon_constant.clone();
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+            let shannon_prologue_signature = sigscanner::Signature::from_ida_style("55 48 89 E5").unwrap();
+            let mut shannon_prologue_offsets = VecDeque::from(
+                shannon_prologue_signature
+                    .reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_base),
+            );
+            if shannon_prologue_offsets.is_empty() {
+                eprintln!("Failed to find shn_encrypt/shn_decrypt prologue");
+                return None;
+            }
 
+            // We hit shn_finish
+            if last_shannon_constant - shannon_prologue_offsets[0] < 0x200 {
+                let relocated_shn_finish_offset = calculate_relocated_offset(&relocations, shannon_prologue_offsets[0]);
+                let relocated_shn_finish_address =
+                    calculate_relocated_address(&relocations, shannon_prologue_offsets[0]);
+                println!(
+                    "Found shn_finish at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    shannon_prologue_offsets[0],
+                    relocated_shn_finish_offset,
+                    relocated_shn_finish_address
+                );
+                shannon_prologue_offsets.pop_front();
+            }
 
-            return None;
+            for shannon_prologue in &shannon_prologue_offsets {
+                let relocated_prologue_offset = calculate_relocated_offset(&relocations, shannon_prologue.clone());
+                let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
+                println!(
+                    "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    shannon_prologue,
+                    relocated_prologue_offset,
+                    relocated_prologue_address
+                );
+            }
+            shannon_prologue_offsets = shannon_prologue_offsets
+                .iter()
+                .map(|offset| calculate_relocated_offset(&relocations, offset.clone()))
+                .collect();
+            if shannon_prologue_offsets.len() < 2 {
+                eprintln!("Found too few prologues");
+                return None;
+            }
+
+            offsets.shannon_offset1 = shannon_prologue_offsets[0];
+            offsets.shannon_offset2 = shannon_prologue_offsets[1];
+
+            Some(offsets)
         }
         _ => {
             return None;
