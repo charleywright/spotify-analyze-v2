@@ -1,5 +1,6 @@
 mod scan;
 mod scanner;
+mod script;
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum Target {
@@ -68,4 +69,12 @@ fn main() {
     println!(" - shannon_offset1:   {:#012x}", offsets.shannon_offset1);
     println!(" - shannon_offset2:   {:#012x}", offsets.shannon_offset2);
     println!(" - server_public_key: {:#012x}", offsets.server_public_key_offset);
+
+    let script_dir = script::locate_script_dir();
+    if script_dir.is_none() {
+        eprintln!("Failed to find Frida script directory");
+        std::process::exit(1);
+    }
+    let script_dir = script_dir.unwrap();
+    println!("Using script dir {}", script_dir.display());
 }
