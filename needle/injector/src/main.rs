@@ -24,6 +24,8 @@ fn main() {
                    For Android, this is the path to liborbit-jni-spotify.so for the correct architecture\n\
                    For iOS, this is the path to the Spotify file inside the decrypted IPA\n\
                    For Windows & Linux this is optional and will use the executable path if not specified"))
+        .arg(clap::Arg::new("compile-script").long("compile-script").required(false).action(clap::ArgAction::SetTrue)
+            .help("Install dependencies and compile the Frida script before injecting"))
         .arg(clap::Arg::new("macho-architecture").long("arch").required(false)
             .help("Mach-O architecture to use for iOS\n\
                    Only required if the binary is a fat binary. Identifiers are the same as lipo -info"))
@@ -77,4 +79,12 @@ fn main() {
     }
     let script_dir = script_dir.unwrap();
     println!("Using script dir {}", script_dir.display());
+
+    if matches.get_flag("compile-script") {
+        if !script::compile_script(&script_dir) {
+            eprintln!("Failed to compile Frida script");
+        } else {
+            println!("Compiled Frida script")
+        }
+    }
 }
