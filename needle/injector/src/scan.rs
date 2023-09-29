@@ -287,10 +287,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             */
             let binary = args.get_one::<String>("binary").unwrap_or(executable);
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
 
             println!("Target: linux");
             println!("Executable: {}", executable);
-            println!("Binary: {}", binary_path.to_str().unwrap());
+            println!("Binary: {}", binary_path.display());
 
             let binary_data = std::fs::read(&binary_path).unwrap();
             let mut elf_file = elf::ElfBytes::<elf::endian::NativeEndian>::minimal_parse(&binary_data).unwrap();
@@ -315,7 +316,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
                 println!(
                     "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     server_key_offset,
                     relocated_offset,
                     relocated_address
@@ -338,7 +339,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     shannon_constant_offset,
                     relocated_offset,
                     relocated_address
@@ -381,7 +382,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     calculate_relocated_address(&relocations, shannon_prologue_offsets[0]);
                 println!(
                     "Found shn_finish at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     shannon_prologue_offsets[0],
                     relocated_shn_finish_offset,
                     relocated_shn_finish_address
@@ -394,7 +395,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
                 println!(
                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     shannon_prologue,
                     relocated_prologue_offset,
                     relocated_prologue_address
@@ -495,10 +496,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
 
             let binary = args.get_one::<String>("binary").unwrap();
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
 
             println!("Target: android");
             println!("Executable: {}", executable);
-            println!("Binary: {}", binary_path.to_str().unwrap());
+            println!("Binary: {}", binary_path.display());
 
             let binary_data = std::fs::read(&binary_path).unwrap();
             let mut elf_file = elf::ElfBytes::<elf::endian::NativeEndian>::minimal_parse(&binary_data).unwrap();
@@ -573,7 +575,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
                 println!(
                     "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     server_key_offset,
                     relocated_offset,
                     relocated_address
@@ -596,7 +598,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     shannon_constant_offset,
                     relocated_offset,
                     relocated_address
@@ -630,7 +632,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     calculate_relocated_address(&relocations, shannon_prologue_offsets[0]);
                 println!(
                     "Found shn_finish at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     shannon_prologue_offsets[0],
                     relocated_shn_finish_offset,
                     relocated_shn_finish_address
@@ -643,7 +645,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
                 println!(
                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_path.file_name().unwrap().to_str().unwrap(),
+                    binary_filename,
                     shannon_prologue,
                     relocated_prologue_offset,
                     relocated_prologue_address
@@ -748,11 +750,12 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
 
             let binary = args.get_one::<String>("binary").unwrap();
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
             let target_arch = args.get_one::<String>("macho-architecture");
 
             println!("Target: ios");
             println!("Executable: {}", executable);
-            println!("Binary: {}", binary_path.to_str().unwrap());
+            println!("Binary: {}", binary_path.display());
 
             let mut binary_data = std::fs::read(binary_path.clone()).unwrap();
             let mut binary_data_cursor = std::io::Cursor::new(&mut binary_data);
@@ -841,7 +844,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
                             println!(
                                 "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                                binary_path.file_name().unwrap().to_str().unwrap(),
+                                binary_filename,
                                 server_key_offset + scannable_file.offset as usize,
                                 relocated_offset,
                                 relocated_address
@@ -872,7 +875,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                 calculate_relocated_address(&relocations, shannon_constant_offset.clone());
                             println!(
                                 "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                                binary_path.file_name().unwrap().to_str().unwrap(),
+                                binary_filename,
                                 shannon_constant_offset + scannable_file.offset as usize,
                                 relocated_offset,
                                 relocated_address
@@ -916,7 +919,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                 let first_address = calculate_relocated_address(&relocations, first_offset);
                                 println!(
                                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                                    binary_path.file_name().unwrap().to_str().unwrap(),
+                                    binary_filename,
                                     first_offset + scannable_file.offset as usize,
                                     first_relocated,
                                     first_address
@@ -936,7 +939,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                     let first_address = calculate_relocated_address(&relocations, first_offset);
                                     println!(
                                         "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                                        binary_path.file_name().unwrap().to_str().unwrap(),
+                                        binary_filename,
                                         first_offset + scannable_file.offset as usize,
                                         first_relocated,
                                         first_address
@@ -960,7 +963,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                 let first_address = calculate_relocated_address(&relocations, first_offset);
                                 println!(
                                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                                    binary_path.file_name().unwrap().to_str().unwrap(),
+                                    binary_filename,
                                     first_offset + scannable_file.offset as usize,
                                     first_relocated,
                                     first_address
@@ -980,7 +983,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                     let first_address = calculate_relocated_address(&relocations, first_offset);
                                     println!(
                                         "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                                        binary_path.file_name().unwrap().to_str().unwrap(),
+                                        binary_filename,
                                         first_offset + scannable_file.offset as usize,
                                         first_relocated,
                                         first_address

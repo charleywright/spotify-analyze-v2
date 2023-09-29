@@ -155,4 +155,5 @@ If yarn.lock or package-lock.json are updated, they should be synced using [synp
 ### TODO
 
 * [ ] Integrate the bootstrap script into the injector
-* [ ] Multithreaded scanning?. 8.8.60 IPA has 80MB of __text which takes 160ms to scan on release build
+* [ ] Multithreaded scanning in injector?. 8.8.60 IPA has 80MB of __text which takes 160ms to scan on release build
+* [ ] Redo error handling in injector
