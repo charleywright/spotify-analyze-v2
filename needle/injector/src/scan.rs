@@ -158,7 +158,7 @@ fn parse_mach_o_relocations(commands: &Vec<mach_object::MachCommand>) -> Vec<Rel
                     offset_in_memory: *vmaddr,
                     size_in_memory: *vmsize,
                 });
-            }
+            },
             mach_object::LoadCommand::Segment64 {
                 segname,
                 fileoff,
@@ -187,8 +187,8 @@ fn parse_mach_o_relocations(commands: &Vec<mach_object::MachCommand>) -> Vec<Rel
                     offset_in_memory: *vmaddr,
                     size_in_memory: *vmsize,
                 });
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -257,11 +257,11 @@ fn find_macho_file<'a>(target_arch: Option<&String>, ofile: &'a mach_object::OFi
             } else {
                 None
             }
-        }
+        },
         _ => {
             eprintln!("Unsupported Mach-O format");
             None
-        }
+        },
     }
 }
 
@@ -316,10 +316,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
                 println!(
                     "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_filename,
-                    server_key_offset,
-                    relocated_offset,
-                    relocated_address
+                    binary_filename, server_key_offset, relocated_offset, relocated_address
                 );
                 offsets.server_public_key_offset = relocated_offset;
             }
@@ -339,10 +336,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_filename,
-                    shannon_constant_offset,
-                    relocated_offset,
-                    relocated_address
+                    binary_filename, shannon_constant_offset, relocated_offset, relocated_address
                 );
             }
 
@@ -395,10 +389,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
                 println!(
                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_filename,
-                    shannon_prologue,
-                    relocated_prologue_offset,
-                    relocated_prologue_address
+                    binary_filename, shannon_prologue, relocated_prologue_offset, relocated_prologue_address
                 );
             }
             shannon_prologue_offsets = shannon_prologue_offsets
@@ -414,11 +405,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             offsets.shannon_offset2 = shannon_prologue_offsets[1];
 
             Some(offsets)
-        }
+        },
         Target::Windows => {
             eprintln!("Windows is not supported yet");
             None
-        }
+        },
         Target::Android => {
             /*
               Android apps are packaged as APKs. APKs are just zip files with a different extension. When the APK is
@@ -439,7 +430,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
               Tested all signatures on 8.8.12.545 on all architectures
             */
             #[allow(non_snake_case)]
-                let JNI_SHANNON_CONSTANTS = HashMap::from([
+            let JNI_SHANNON_CONSTANTS = HashMap::from([
                 (JNI_X86, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
                 (JNI_X86_64, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
                 /*
@@ -457,7 +448,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 (JNI_ARM64_V8A, scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
             ]);
             #[allow(non_snake_case)]
-                let JNI_SHANNON_PROLOGUES = HashMap::from([
+            let JNI_SHANNON_PROLOGUES = HashMap::from([
                 /*
                   push ebp
                   mov  ebp, esp
@@ -517,7 +508,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for x86");
-                }
+                },
                 JNI_X86_64 => {
                     if elf_file.ehdr.class != elf::file::Class::ELF64 {
                         eprintln!("Expected x86_64 to be 64 bit");
@@ -528,7 +519,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for x86_64");
-                }
+                },
                 JNI_ARMEABI_V7A => {
                     if elf_file.ehdr.class != elf::file::Class::ELF32 {
                         eprintln!("Expected armeabi-v7a to be 32 bit");
@@ -539,7 +530,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for armeabi-v7a");
-                }
+                },
                 JNI_ARM64_V8A => {
                     if elf_file.ehdr.class != elf::file::Class::ELF64 {
                         eprintln!("Expected arm64-v8a to be 64 bit");
@@ -550,11 +541,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for arm64-v8a");
-                }
+                },
                 _ => {
                     eprintln!("Unknown JNI target {}", elf_file.ehdr.e_machine);
                     return None;
-                }
+                },
             }
 
             /*
@@ -575,10 +566,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
                 println!(
                     "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_filename,
-                    server_key_offset,
-                    relocated_offset,
-                    relocated_address
+                    binary_filename, server_key_offset, relocated_offset, relocated_address
                 );
                 offsets.server_public_key_offset = relocated_offset;
             }
@@ -598,10 +586,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_filename,
-                    shannon_constant_offset,
-                    relocated_offset,
-                    relocated_address
+                    binary_filename, shannon_constant_offset, relocated_offset, relocated_address
                 );
             }
 
@@ -645,10 +630,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
                 println!(
                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
-                    binary_filename,
-                    shannon_prologue,
-                    relocated_prologue_offset,
-                    relocated_prologue_address
+                    binary_filename, shannon_prologue, relocated_prologue_offset, relocated_prologue_address
                 );
             }
             shannon_prologue_offsets = shannon_prologue_offsets
@@ -664,7 +646,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             offsets.shannon_offset2 = shannon_prologue_offsets[1];
 
             Some(offsets)
-        }
+        },
         Target::IOS => {
             /*
               Apps on iOS are distributed using .ipa files which are zip archives. When downloaded from the App Store
@@ -688,7 +670,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             */
 
             #[allow(non_snake_case)]
-                let SHANNON_CONSTANTS = HashMap::from([
+            let SHANNON_CONSTANTS = HashMap::from([
                 /*
                   Constant is embedded after function, and is loaded using offset from PC
                   000FE750 C4 10 9F E5    ldr r1, [pc, #0xc4]
@@ -711,7 +693,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 ("arm64", scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
             ]);
             #[allow(non_snake_case)]
-                let SHANNON_PROLOGUES = HashMap::from([
+            let SHANNON_PROLOGUES = HashMap::from([
                 /*
                   push {r4, r5, r6, r7, lr}
                   add  r7, sp, #0xc
@@ -744,7 +726,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     scanner::Signature::from_ida_style(
                         "FA 67 BB A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 7B 04 A9 FD 03 01 91",
                     )
-                        .unwrap(),
+                    .unwrap(),
                 ),
             ]);
 
@@ -777,28 +759,28 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                     "Found Mach-O file header for {} with {} load commands",
                                     scannable_file.arch, header.ncmds
                                 );
-                            }
+                            },
                             mach_object::MH_CIGAM => {
                                 println!("Detected Mach-O image as 32-bit Big Endian");
                                 eprintln!("No implementation for 32-bit Big Endian Mach-O");
                                 return None;
-                            }
+                            },
                             mach_object::MH_MAGIC_64 => {
                                 println!("Detected Mach-O image as 64-bit Little Endian");
                                 println!(
                                     "Found Mach-O file header for {} with {} load commands",
                                     scannable_file.arch, header.ncmds
                                 );
-                            }
+                            },
                             mach_object::MH_CIGAM_64 => {
                                 println!("Detected Mach-O image as 64-bit Big Endian");
                                 eprintln!("No implementation for 64-bit Big Endian Mach-O");
                                 return None;
-                            }
+                            },
                             _ => {
                                 eprintln!("Unsupported Mach-O magic {:0x}", header.magic);
                                 return None;
-                            }
+                            },
                         }
 
                         let relocations = parse_mach_o_relocations(commands);
@@ -811,14 +793,14 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                                         ..
                                     } => {
                                         sections.extend(segment_sections.to_vec());
-                                    }
+                                    },
                                     mach_object::LoadCommand::Segment64 {
                                         sections: segment_sections,
                                         ..
                                     } => {
                                         sections.extend(segment_sections.to_vec());
-                                    }
-                                    _ => {}
+                                    },
+                                    _ => {},
                                 }
                             }
                             sections
@@ -996,14 +978,14 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         }
 
                         None
-                    }
+                    },
                     _ => {
                         return None;
-                    }
+                    },
                 }
             } else {
                 return None;
             }
-        }
+        },
     }
 }
