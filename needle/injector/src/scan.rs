@@ -125,6 +125,146 @@ fn parse_elf_relocations(elf_file: &mut elf::ElfBytes<elf::endian::NativeEndian>
     return relocations;
 }
 
+fn parse_mach_o_relocations(commands: &Vec<mach_object::MachCommand>) -> Vec<RelocationEntry> {
+    let mut relocations = vec![];
+
+    for command in commands {
+        match &command.0 {
+            mach_object::LoadCommand::Segment {
+                segname,
+                fileoff,
+                filesize,
+                vmaddr,
+                vmsize,
+                sections,
+                ..
+            } => {
+                if segname == "__PAGEZERO" {
+                    println!("Skipping __PAGEZERO segment");
+                    continue;
+                }
+                println!(
+                    "Found Mach-O relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} [{:^16}] with {} sections",
+                    fileoff,
+                    fileoff + filesize,
+                    vmaddr,
+                    vmaddr + vmsize,
+                    segname,
+                    sections.len()
+                );
+                relocations.push(RelocationEntry {
+                    offset_in_file: *fileoff,
+                    size_in_file: *filesize,
+                    offset_in_memory: *vmaddr,
+                    size_in_memory: *vmsize,
+                });
+            }
+            mach_object::LoadCommand::Segment64 {
+                segname,
+                fileoff,
+                filesize,
+                vmaddr,
+                vmsize,
+                sections,
+                ..
+            } => {
+                if segname == "__PAGEZERO" {
+                    println!("Skipping __PAGEZERO segment");
+                    continue;
+                }
+                println!(
+                    "Found Mach-O relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} [{:^16}] with {} sections",
+                    fileoff,
+                    fileoff + filesize,
+                    vmaddr,
+                    vmaddr + vmsize,
+                    segname,
+                    sections.len()
+                );
+                relocations.push(RelocationEntry {
+                    offset_in_file: *fileoff,
+                    size_in_file: *filesize,
+                    offset_in_memory: *vmaddr,
+                    size_in_memory: *vmsize,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    relocations.sort_by_key(|entry| entry.offset_in_memory);
+
+    relocations
+}
+
+struct ScannableMachOFile<'a> {
+    file: &'a mach_object::OFile,
+    offset: u64,
+    #[allow(unused)]
+    size: u64,
+    arch: &'static str,
+}
+
+impl<'a> ScannableMachOFile<'a> {
+    fn from_ofile(ofile: &'a mach_object::OFile, header: &mach_object::MachHeader) -> Self {
+        ScannableMachOFile {
+            file: ofile,
+            offset: 0,
+            size: 0,
+            arch: mach_object::get_arch_name_from_types(header.cputype, header.cpusubtype).unwrap(),
+        }
+    }
+
+    fn from_fat(file: &'a (mach_object::FatArch, mach_object::OFile)) -> Self {
+        ScannableMachOFile {
+            file: &file.1,
+            offset: file.0.offset,
+            size: file.0.size,
+            arch: mach_object::get_arch_name_from_types(file.0.cputype, file.0.cpusubtype).unwrap(),
+        }
+    }
+}
+
+fn find_macho_file<'a>(target_arch: Option<&String>, ofile: &'a mach_object::OFile) -> Option<ScannableMachOFile<'a>> {
+    match ofile {
+        mach_object::OFile::MachFile {
+            commands: _commands,
+            header,
+        } => Some(ScannableMachOFile::from_ofile(ofile, header)),
+        mach_object::OFile::FatFile {
+            magic: _magic,
+            files,
+        } => {
+            println!("Detected Mach-O file as multi-architecture");
+
+            if files.len() == 1 {
+                return Some(ScannableMachOFile::from_fat(&files[0]));
+            }
+
+            for (arch, _file) in files.iter() {
+                println!("Found Mach-O file entry for {}", arch.name().unwrap());
+            }
+
+            if target_arch.is_none() {
+                eprintln!("Mach-O architecture is ambiguous, please specify --arch");
+                return None;
+            }
+
+            let target_file = files.iter().find(|x| x.0.name().unwrap() == target_arch.unwrap().as_str());
+
+            if let Some(target_file) = target_file {
+                Some(ScannableMachOFile::from_fat(target_file))
+            } else {
+                None
+            }
+        }
+        _ => {
+            eprintln!("Unsupported Mach-O format");
+            None
+        }
+    }
+}
+
 pub struct Offsets {
     pub shannon_offset1: usize,
     pub shannon_offset2: usize,
@@ -273,11 +413,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             offsets.shannon_offset2 = shannon_prologue_offsets[1];
 
             Some(offsets)
-        },
+        }
         Target::Windows => {
             eprintln!("Windows is not supported yet");
             None
-        },
+        }
         Target::Android => {
             /*
               Android apps are packaged as APKs. APKs are just zip files with a different extension. When the APK is
@@ -298,7 +438,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
               Tested all signatures on 8.8.12.545 on all architectures
             */
             #[allow(non_snake_case)]
-            let JNI_SHANNON_CONSTANTS = HashMap::from([
+                let JNI_SHANNON_CONSTANTS = HashMap::from([
                 (JNI_X86, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
                 (JNI_X86_64, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
                 /*
@@ -316,7 +456,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 (JNI_ARM64_V8A, scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
             ]);
             #[allow(non_snake_case)]
-            let JNI_SHANNON_PROLOGUES = HashMap::from([
+                let JNI_SHANNON_PROLOGUES = HashMap::from([
                 /*
                   push ebp
                   mov  ebp, esp
@@ -375,7 +515,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for x86");
-                },
+                }
                 JNI_X86_64 => {
                     if elf_file.ehdr.class != elf::file::Class::ELF64 {
                         eprintln!("Expected x86_64 to be 64 bit");
@@ -386,7 +526,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for x86_64");
-                },
+                }
                 JNI_ARMEABI_V7A => {
                     if elf_file.ehdr.class != elf::file::Class::ELF32 {
                         eprintln!("Expected armeabi-v7a to be 32 bit");
@@ -397,7 +537,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for armeabi-v7a");
-                },
+                }
                 JNI_ARM64_V8A => {
                     if elf_file.ehdr.class != elf::file::Class::ELF64 {
                         eprintln!("Expected arm64-v8a to be 64 bit");
@@ -408,11 +548,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                         return None;
                     }
                     println!("Detected JNI for arm64-v8a");
-                },
+                }
                 _ => {
                     eprintln!("Unknown JNI target {}", elf_file.ehdr.e_machine);
                     return None;
-                },
+                }
             }
 
             /*
@@ -522,10 +662,345 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             offsets.shannon_offset2 = shannon_prologue_offsets[1];
 
             Some(offsets)
-        },
+        }
         Target::IOS => {
-            eprintln!("iOS is not supported yet");
-            None
-        },
+            /*
+              Apps on iOS are distributed using .ipa files which are zip archives. When downloaded from the App Store
+              APIs directly they are encrypted and must be decrypted by a device running iOS or macOS. There are
+              various tools that allow this, mostly using mremap_encrypted. Alternatively the decrypted file can be
+              copied from an iOS device using frida-ios-dump or similar. an encrypted IPA will decrypt properly but the
+              Spotify binary will be encrypted and useless to us.
+
+              After unzipping the .ipa file there will be a "Payload" folder which contains a "Spotify.app" folder
+              which itself contains the "Spotify" binary. This is a Mach-O executable which contains all the stuff
+              we're interested in. Mach-O files are a container for executables and other compiled code and have the
+              same purpose as Unix's ELF files. They support multiple architectures, which means one file may contain
+              code for armv7 and armv8, each with different offsets. To account for this we require an extra command
+              line flag to specify which architecture should be used.
+
+              Once we have the image to parse, we read the header magic to determine the bitness and endianness. We
+              then read the rest of the file header to get the CPU type and the number of load commands. Load commands
+              are used to describe segments in the file which we need because some of the segments will be loaded into
+              virtual memory. Using the load commands we can compute our relocation entries and if we parse LC_SEGMENT/
+              LC_SEGMENT64 we can find the sections of the file which can be used to optimise signature scanning
+            */
+
+            #[allow(non_snake_case)]
+                let SHANNON_CONSTANTS = HashMap::from([
+                /*
+                  Constant is embedded after function, and is loaded using offset from PC
+                  000FE750 C4 10 9F E5    ldr r1, [pc, #0xc4]
+                  000FE754 82 01 20 E0    eor r0, r0, r2, lsl #3
+                  ...
+                  000FE81C 3A C5 96 69    0x6996C53A
+                */
+                ("armv6", scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                /*
+                  Registers don't seem to change, might need updating
+                  movw r1, #0xc53a
+                  movt r1, #0x6996
+                */
+                ("armv7", scanner::Signature::from_ida_style("4C F2 3A 51 C6 F6 96 11").unwrap()),
+                /*
+                 Registers can change, so use wildcards
+                 movz w10, #0xc53a
+                 movk w10, #0x6996, lsl #16
+                */
+                ("arm64", scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
+            ]);
+            #[allow(non_snake_case)]
+                let SHANNON_PROLOGUES = HashMap::from([
+                /*
+                  push {r4, r5, r6, r7, lr}
+                  add  r7, sp, #0xc
+                  push {r8, sl, fp}
+                  sub  sp, sp, #8
+                  mov  r4, r0
+                */
+                (
+                    "armv6",
+                    scanner::Signature::from_ida_style("F0 40 2D E9 0C 70 8D E2 00 0D 2D E9 08 D0 4D E2 00 40 A0 E1")
+                        .unwrap(),
+                ),
+                /*
+                  push   {r4, r5, r6, r7, lr}
+                  add    r7, sp, #0xc
+                  push.w {r8, sl, fp}
+                  sub    sp, #8
+                */
+                ("armv7", scanner::Signature::from_ida_style("F0 B5 03 AF 2D E9 00 0D 82 B0").unwrap()),
+                /*
+                  stp x26, x25, [sp, #-0x50]!
+                  stp x24, x23, [sp, #0x10]
+                  stp x22, x21, [sp, #0x20]
+                  stp x20, x19, [sp, #0x30]
+                  stp x29, x30, [sp, #0x40]
+                  add x29, sp, #0x40
+                */
+                (
+                    "arm64",
+                    scanner::Signature::from_ida_style(
+                        "FA 67 BB A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 7B 04 A9 FD 03 01 91",
+                    )
+                        .unwrap(),
+                ),
+            ]);
+
+            let binary = args.get_one::<String>("binary").unwrap();
+            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let target_arch = args.get_one::<String>("macho-architecture");
+
+            println!("Target: ios");
+            println!("Executable: {}", executable);
+            println!("Binary: {}", binary_path.to_str().unwrap());
+
+            let mut binary_data = std::fs::read(binary_path.clone()).unwrap();
+            let mut binary_data_cursor = std::io::Cursor::new(&mut binary_data);
+            let binary_file = mach_object::OFile::parse(&mut binary_data_cursor).expect("Failed to parse Mach-O file");
+            if let Some(scannable_file) = find_macho_file(target_arch, &binary_file) {
+                if SHANNON_CONSTANTS.get(scannable_file.arch).is_none()
+                    || SHANNON_PROLOGUES.get(scannable_file.arch).is_none()
+                {
+                    eprintln!("Architecture {} is not supported", scannable_file.arch);
+                    return None;
+                }
+
+                match scannable_file.file {
+                    mach_object::OFile::MachFile { commands, header } => {
+                        match header.magic {
+                            mach_object::MH_MAGIC => {
+                                println!("Detected Mach-O image as 32-bit Little Endian");
+                                println!(
+                                    "Found Mach-O file header for {} with {} load commands",
+                                    scannable_file.arch, header.ncmds
+                                );
+                            }
+                            mach_object::MH_CIGAM => {
+                                println!("Detected Mach-O image as 32-bit Big Endian");
+                                eprintln!("No implementation for 32-bit Big Endian Mach-O");
+                                return None;
+                            }
+                            mach_object::MH_MAGIC_64 => {
+                                println!("Detected Mach-O image as 64-bit Little Endian");
+                                println!(
+                                    "Found Mach-O file header for {} with {} load commands",
+                                    scannable_file.arch, header.ncmds
+                                );
+                            }
+                            mach_object::MH_CIGAM_64 => {
+                                println!("Detected Mach-O image as 64-bit Big Endian");
+                                eprintln!("No implementation for 64-bit Big Endian Mach-O");
+                                return None;
+                            }
+                            _ => {
+                                eprintln!("Unsupported Mach-O magic {:0x}", header.magic);
+                                return None;
+                            }
+                        }
+
+                        let relocations = parse_mach_o_relocations(commands);
+                        let sections = {
+                            let mut sections = vec![];
+                            for command in commands {
+                                match &command.0 {
+                                    mach_object::LoadCommand::Segment {
+                                        sections: segment_sections,
+                                        ..
+                                    } => {
+                                        sections.extend(segment_sections.to_vec());
+                                    }
+                                    mach_object::LoadCommand::Segment64 {
+                                        sections: segment_sections,
+                                        ..
+                                    } => {
+                                        sections.extend(segment_sections.to_vec());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            sections
+                        };
+
+                        let const_section_header = sections.iter().find(|&x| x.sectname == "__const");
+                        if const_section_header.is_none() {
+                            eprintln!("Failed to find __const section");
+                            return None;
+                        }
+                        let const_section_header = const_section_header.unwrap();
+                        let const_section_start = scannable_file.offset as usize + const_section_header.offset as usize;
+                        let const_section_end: usize = const_section_start + const_section_header.size;
+                        let const_section_data = &binary_data[const_section_start..const_section_end];
+                        let server_key_offsets = SERVER_PUBLIC_KEY_SIGNATURE
+                            .scan_with_offset(const_section_data, const_section_header.offset as usize);
+                        if server_key_offsets.is_empty() {
+                            eprintln!("Failed to find server public key");
+                            return None;
+                        }
+                        for server_key_offset in server_key_offsets {
+                            let relocated_offset = calculate_relocated_offset(&relocations, server_key_offset);
+                            let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
+                            println!(
+                                "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                                binary_path.file_name().unwrap().to_str().unwrap(),
+                                server_key_offset + scannable_file.offset as usize,
+                                relocated_offset,
+                                relocated_address
+                            );
+                            offsets.server_public_key_offset = relocated_offset;
+                        }
+
+                        let text_section_header = sections.iter().find(|&x| x.sectname == "__text");
+                        if text_section_header.is_none() {
+                            eprintln!("Failed to find __text section");
+                            return None;
+                        }
+                        let text_section_header = text_section_header.unwrap();
+                        let text_section_start = scannable_file.offset as usize + text_section_header.offset as usize;
+                        let text_section_end = text_section_start + text_section_header.size;
+                        let text_section_data = &binary_data[text_section_start..text_section_end];
+                        let shannon_constant_signature = SHANNON_CONSTANTS.get(scannable_file.arch).unwrap();
+                        let shannon_constant_offsets = shannon_constant_signature
+                            .scan_with_offset(text_section_data, text_section_header.offset as usize);
+                        if shannon_constant_offsets.is_empty() {
+                            eprintln!("Failed to find shannon constant");
+                            return None;
+                        }
+                        for shannon_constant_offset in &shannon_constant_offsets {
+                            let relocated_offset =
+                                calculate_relocated_offset(&relocations, shannon_constant_offset.clone());
+                            let relocated_address =
+                                calculate_relocated_address(&relocations, shannon_constant_offset.clone());
+                            println!(
+                                "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                                binary_path.file_name().unwrap().to_str().unwrap(),
+                                shannon_constant_offset + scannable_file.offset as usize,
+                                relocated_offset,
+                                relocated_address
+                            );
+                        }
+
+                        /*
+                          shn_finish seems to contain the last instance of the constant however on arm64 it contains
+                          the second instance of six. The encryption/decryption functions are normally above shn_finish
+                          however on arm64 one was above and one was below with some small functions separating them.
+                          The only reliable way to always find the functions is to check before and after all
+                          occurrences of the constant
+                        */
+
+                        let mut push_offset = |offset: usize| -> bool {
+                            if offsets.shannon_offset1 > 0 {
+                                if offsets.shannon_offset1 == offset {
+                                    false
+                                } else {
+                                    offsets.shannon_offset2 = offset;
+                                    true
+                                }
+                            } else {
+                                offsets.shannon_offset1 = offset;
+                                false
+                            }
+                        };
+                        let shannon_prologue_signature = SHANNON_PROLOGUES.get(scannable_file.arch).unwrap();
+                        const SCAN_SIZE: usize = 0x2000;
+                        for shannon_constant_offset in shannon_constant_offsets.iter().rev() {
+                            // Scan above
+                            let scan_start_offset = shannon_constant_offset.saturating_sub(SCAN_SIZE);
+                            let scan_start = scan_start_offset + scannable_file.offset as usize;
+                            let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
+                            let scan_data = &binary_data[scan_start..scan_end];
+                            let scan_results =
+                                shannon_prologue_signature.reverse_scan_with_offset(scan_data, scan_start_offset);
+                            if !scan_results.is_empty() {
+                                let first_offset = scan_results[0];
+                                let first_relocated = calculate_relocated_offset(&relocations, first_offset);
+                                let first_address = calculate_relocated_address(&relocations, first_offset);
+                                println!(
+                                    "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                                    binary_path.file_name().unwrap().to_str().unwrap(),
+                                    first_offset + scannable_file.offset as usize,
+                                    first_relocated,
+                                    first_address
+                                );
+                                if push_offset(first_relocated) {
+                                    return Some(offsets);
+                                }
+                                let scan_start_offset = first_offset.saturating_sub(SCAN_SIZE);
+                                let scan_start = scan_start_offset + scannable_file.offset as usize;
+                                let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
+                                let scan_data = &binary_data[scan_start..scan_end];
+                                let scan_results =
+                                    shannon_prologue_signature.reverse_scan_with_offset(scan_data, scan_start_offset);
+                                if !scan_results.is_empty() {
+                                    let first_offset = scan_results[0];
+                                    let first_relocated = calculate_relocated_offset(&relocations, first_offset);
+                                    let first_address = calculate_relocated_address(&relocations, first_offset);
+                                    println!(
+                                        "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                                        binary_path.file_name().unwrap().to_str().unwrap(),
+                                        first_offset + scannable_file.offset as usize,
+                                        first_relocated,
+                                        first_address
+                                    );
+                                    if push_offset(first_relocated) {
+                                        return Some(offsets);
+                                    }
+                                }
+                            }
+
+                            // Scan below
+                            let scan_start_offset = shannon_constant_offset.clone();
+                            let scan_start = scan_start_offset + scannable_file.offset as usize;
+                            let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
+                            let scan_data = &binary_data[scan_start..scan_end];
+                            let scan_results =
+                                shannon_prologue_signature.scan_with_offset(scan_data, scan_start_offset);
+                            if !scan_results.is_empty() {
+                                let first_offset = scan_results[0];
+                                let first_relocated = calculate_relocated_offset(&relocations, first_offset);
+                                let first_address = calculate_relocated_address(&relocations, first_offset);
+                                println!(
+                                    "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                                    binary_path.file_name().unwrap().to_str().unwrap(),
+                                    first_offset + scannable_file.offset as usize,
+                                    first_relocated,
+                                    first_address
+                                );
+                                if push_offset(first_relocated) {
+                                    return Some(offsets);
+                                }
+                                let scan_start_offset = first_offset;
+                                let scan_start = scan_start_offset + scannable_file.offset as usize;
+                                let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
+                                let scan_data = &binary_data[scan_start..scan_end];
+                                let scan_results =
+                                    shannon_prologue_signature.scan_with_offset(scan_data, scan_start_offset);
+                                if !scan_results.is_empty() {
+                                    let first_offset = scan_results[0];
+                                    let first_relocated = calculate_relocated_offset(&relocations, first_offset);
+                                    let first_address = calculate_relocated_address(&relocations, first_offset);
+                                    println!(
+                                        "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                                        binary_path.file_name().unwrap().to_str().unwrap(),
+                                        first_offset + scannable_file.offset as usize,
+                                        first_relocated,
+                                        first_address
+                                    );
+                                    if push_offset(first_relocated) {
+                                        return Some(offsets);
+                                    }
+                                }
+                            }
+                        }
+
+                        None
+                    }
+                    _ => {
+                        return None;
+                    }
+                }
+            } else {
+                return None;
+            }
+        }
     }
 }

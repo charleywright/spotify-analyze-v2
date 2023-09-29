@@ -8,3 +8,4 @@ edition = "2021"
 clap = { version = "4.4.5", features = ["cargo", "derive"] }
 lazy_static = "1.4.0"
 elf = "0.7.2"
+mach_object = "0.1.17"
