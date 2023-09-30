@@ -135,7 +135,7 @@ This project is split into 3 parts, the injector, the launch wrapper, and the fr
     * Platform backends take care of abstracting away the specifics of each platform such as library loading or base addresses.
     * The parser deals with parsing SPIRC packets, implementing the mercury protocol etc.
 
-The launch wrapper can be replaced by the [Frida crate](https://docs.rs/frida/0.4.1/frida/) and integrated into the injector however spawning processes is currently unsupported (there is [an open PR to add support](https://github.com/frida/frida-rust/pull/110)) so this change will happen at a later date.
+The launch wrapper can be replaced by the [Frida crate](https://docs.rs/frida/0.4.1/frida/) and integrated into the injector once spawning processes is supported (there is [an open PR to add support](https://github.com/frida/frida-rust/pull/110)) and RPC is supported (there is [an open issue](https://github.com/frida/frida-rust/issues/105))
 
 ## Contributing
 
