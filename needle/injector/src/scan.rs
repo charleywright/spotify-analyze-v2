@@ -1,4 +1,6 @@
 use std::collections::{HashMap, VecDeque};
+use std::io::Cursor;
+use std::path::PathBuf;
 
 use lazy_static::lazy_static;
 
@@ -286,7 +288,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             let binary = args.get_one::<String>("binary").unwrap_or(executable);
-            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_path = PathBuf::from(binary).canonicalize().unwrap();
             let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
 
             println!("Target: linux");
@@ -301,8 +303,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             // versions of the app and contains no wildcards
             let rodata_header =
                 elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
-            let rodata_section = &binary_data
-                [rodata_header.sh_offset as usize..rodata_header.sh_offset as usize + rodata_header.sh_size as usize];
+            let rodata_start = rodata_header.sh_offset as usize;
+            let rodata_end = rodata_start + rodata_header.sh_size as usize;
+            let rodata_section = &binary_data[rodata_start..rodata_end];
             let server_key_offsets =
                 SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(rodata_section, rodata_header.sh_offset as usize);
             if server_key_offsets.is_empty() {
@@ -320,8 +323,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             let text_header = elf_file.section_header_by_name(".text").unwrap().expect("Failed to find .text section");
-            let text_section = &binary_data
-                [text_header.sh_offset as usize..text_header.sh_offset as usize + text_header.sh_size as usize];
+            let text_start = text_header.sh_offset as usize;
+            let text_end = text_start + text_header.sh_size as usize;
+            let text_section = &binary_data[text_start..text_end];
             let shannon_constant_offsets =
                 SHANNON_CONSTANT.scan_with_offset(text_section, text_header.sh_offset as usize);
             if shannon_constant_offsets.is_empty() {
@@ -349,9 +353,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             // checking the distance between the address we hit and the constant due to the encryption/decryption
             // functions being quite long.
 
+            const SHANNON_PROLOGUE_SCAN_SIZE: usize = 0x2000;
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
-            let shannon_prologue_scan_size: usize = 0x2000;
-            let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
+            let shannon_prologue_scan_base = last_shannon_constant.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
             let shannon_prologue_scan_end = *last_shannon_constant;
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
             let mut shannon_prologue_offsets = VecDeque::from(
@@ -385,17 +389,13 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     binary_filename, shannon_prologue, relocated_prologue_offset, relocated_prologue_address
                 );
             }
-            shannon_prologue_offsets = shannon_prologue_offsets
-                .iter()
-                .map(|offset| calculate_relocated_offset(&relocations, *offset))
-                .collect();
             if shannon_prologue_offsets.len() < 2 {
                 eprintln!("Found too few prologues");
                 return None;
             }
 
-            offsets.shannon_offset1 = shannon_prologue_offsets[0];
-            offsets.shannon_offset2 = shannon_prologue_offsets[1];
+            offsets.shannon_offset1 = calculate_relocated_offset(&relocations, shannon_prologue_offsets[0]);
+            offsets.shannon_offset2 = calculate_relocated_offset(&relocations, shannon_prologue_offsets[1]);
 
             Some(offsets)
         },
@@ -413,7 +413,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             let binary = args.get_one::<String>("binary").unwrap_or(executable);
-            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_path = PathBuf::from(binary).canonicalize().unwrap();
             let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
 
             println!("Target: windows");
@@ -588,8 +588,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             const SHANNON_PROLOGUE_SCAN_SIZE: usize = 0x4000;
             let first_shannon_constant = shannon_constant_offsets[0];
             let shannon_prologue_scan_base = first_shannon_constant.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
-            let shannon_prologue_scan_end =
-                std::cmp::min(shannon_prologue_scan_base + SHANNON_PROLOGUE_SCAN_SIZE, binary_data.len());
+            let shannon_prologue_scan_end = first_shannon_constant;
             let shannon_prologue_scan_data = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
             let shannon_prologue_offsets =
                 SHANNON_PROLOGUE.reverse_scan_with_offset(shannon_prologue_scan_data, shannon_prologue_scan_base);
@@ -684,7 +683,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             let binary = args.get_one::<String>("binary").unwrap();
-            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_path = PathBuf::from(binary).canonicalize().unwrap();
             let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
 
             println!("Target: android");
@@ -749,8 +748,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             // Same as on Linux, the server key is in .rodata and there is only one instance with no wildcards
             let rodata_header =
                 elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
-            let rodata_section = &binary_data
-                [rodata_header.sh_offset as usize..rodata_header.sh_offset as usize + rodata_header.sh_size as usize];
+            let rodata_start = rodata_header.sh_offset as usize;
+            let rodata_end = rodata_start + rodata_header.sh_size as usize;
+            let rodata_section = &binary_data[rodata_start..rodata_end];
             let server_key_offsets =
                 SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(rodata_section, rodata_header.sh_offset as usize);
             if server_key_offsets.is_empty() {
@@ -768,8 +768,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             let text_header = elf_file.section_header_by_name(".text").unwrap().expect("Failed to find .text section");
-            let text_section = &binary_data
-                [text_header.sh_offset as usize..text_header.sh_offset as usize + text_header.sh_size as usize];
+            let text_start = text_header.sh_offset as usize;
+            let text_end = text_start + text_header.sh_size as usize;
+            let text_section = &binary_data[text_start..text_end];
             let shannon_constant_signature = JNI_SHANNON_CONSTANTS.get(&elf_file.ehdr.e_machine).unwrap();
             let shannon_constant_offsets =
                 shannon_constant_signature.scan_with_offset(text_section, text_header.sh_offset as usize);
@@ -789,9 +790,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             // Same as for Linux, shn_encrypt, shn_decrypt and sometimes shn_finish all have the same prologue. We could
             // probably get away with shorter signatures but these work for now
 
+            const SHANNON_PROLOGUE_SCAN_SIZE: usize = 0x2000;
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
-            let shannon_prologue_scan_size: usize = 0x2000;
-            let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
+            let shannon_prologue_scan_base = last_shannon_constant.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
             let shannon_prologue_scan_end = *last_shannon_constant;
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
             let shannon_prologue_signature = JNI_SHANNON_PROLOGUES.get(&elf_file.ehdr.e_machine).unwrap();
@@ -827,17 +828,13 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     binary_filename, shannon_prologue, relocated_prologue_offset, relocated_prologue_address
                 );
             }
-            shannon_prologue_offsets = shannon_prologue_offsets
-                .iter()
-                .map(|offset| calculate_relocated_offset(&relocations, *offset))
-                .collect();
             if shannon_prologue_offsets.len() < 2 {
                 eprintln!("Found too few prologues");
                 return None;
             }
 
-            offsets.shannon_offset1 = shannon_prologue_offsets[0];
-            offsets.shannon_offset2 = shannon_prologue_offsets[1];
+            offsets.shannon_offset1 = calculate_relocated_offset(&relocations, shannon_prologue_offsets[0]);
+            offsets.shannon_offset2 = calculate_relocated_offset(&relocations, shannon_prologue_offsets[1]);
 
             Some(offsets)
         },
@@ -878,9 +875,9 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     */
                     ("armv7", scanner::Signature::from_ida_style("4C F2 3A 51 C6 F6 96 11").unwrap()),
                     /*
-                     Registers can change, so use wildcards
-                     movz w10, #0xc53a
-                     movk w10, #0x6996, lsl #16
+                      Registers can change, so use wildcards
+                      movz w10, #0xc53a
+                      movk w10, #0x6996, lsl #16
                     */
                     ("arm64", scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
                 ]);
@@ -923,7 +920,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             let binary = args.get_one::<String>("binary").unwrap();
-            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_path = PathBuf::from(binary).canonicalize().unwrap();
             let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
             let target_arch = args.get_one::<String>("macho-architecture");
 
@@ -932,7 +929,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             println!("Binary: {}", binary_path.display());
 
             let mut binary_data = std::fs::read(binary_path.clone()).unwrap();
-            let mut binary_data_cursor = std::io::Cursor::new(&mut binary_data);
+            let mut binary_data_cursor = Cursor::new(&mut binary_data);
             let binary_file = mach_object::OFile::parse(&mut binary_data_cursor).expect("Failed to parse Mach-O file");
             if let Some(scannable_file) = find_macho_file(target_arch, &binary_file) {
                 if SHANNON_CONSTANTS.get(scannable_file.arch).is_none()
@@ -998,17 +995,17 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             sections
                         };
 
-                        let const_section_header = sections.iter().find(|&x| x.sectname == "__const");
-                        if const_section_header.is_none() {
+                        let const_header = sections.iter().find(|&x| x.sectname == "__const");
+                        if const_header.is_none() {
                             eprintln!("Failed to find __const section");
                             return None;
                         }
-                        let const_section_header = const_section_header.unwrap();
-                        let const_section_start = scannable_file.offset as usize + const_section_header.offset as usize;
-                        let const_section_end: usize = const_section_start + const_section_header.size;
-                        let const_section_data = &binary_data[const_section_start..const_section_end];
-                        let server_key_offsets = SERVER_PUBLIC_KEY_SIGNATURE
-                            .scan_with_offset(const_section_data, const_section_header.offset as usize);
+                        let const_header = const_header.unwrap();
+                        let const_start = scannable_file.offset as usize + const_header.offset as usize;
+                        let const_end = const_start + const_header.size;
+                        let const_section = &binary_data[const_start..const_end];
+                        let server_key_offsets =
+                            SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(const_section, const_header.offset as usize);
                         if server_key_offsets.is_empty() {
                             eprintln!("Failed to find server public key");
                             return None;
@@ -1026,18 +1023,18 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             offsets.server_public_key_offset = relocated_offset;
                         }
 
-                        let text_section_header = sections.iter().find(|&x| x.sectname == "__text");
-                        if text_section_header.is_none() {
+                        let text_header = sections.iter().find(|&x| x.sectname == "__text");
+                        if text_header.is_none() {
                             eprintln!("Failed to find __text section");
                             return None;
                         }
-                        let text_section_header = text_section_header.unwrap();
-                        let text_section_start = scannable_file.offset as usize + text_section_header.offset as usize;
-                        let text_section_end = text_section_start + text_section_header.size;
-                        let text_section_data = &binary_data[text_section_start..text_section_end];
+                        let text_header = text_header.unwrap();
+                        let text_start = scannable_file.offset as usize + text_header.offset as usize;
+                        let text_end = text_start + text_header.size;
+                        let text_section = &binary_data[text_start..text_end];
                         let shannon_constant_signature = SHANNON_CONSTANTS.get(scannable_file.arch).unwrap();
-                        let shannon_constant_offsets = shannon_constant_signature
-                            .scan_with_offset(text_section_data, text_section_header.offset as usize);
+                        let shannon_constant_offsets =
+                            shannon_constant_signature.scan_with_offset(text_section, text_header.offset as usize);
                         if shannon_constant_offsets.is_empty() {
                             eprintln!("Failed to find shannon constant");
                             return None;
@@ -1074,91 +1071,117 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             }
                         };
                         let shannon_prologue_signature = SHANNON_PROLOGUES.get(scannable_file.arch).unwrap();
-                        const SCAN_SIZE: usize = 0x2000;
+                        const SHANNON_PROLOGUE_SCAN_SIZE: usize = 0x2000;
                         for shannon_constant_offset in shannon_constant_offsets.iter().rev() {
                             // Scan above
-                            let scan_start_offset = shannon_constant_offset.saturating_sub(SCAN_SIZE);
-                            let scan_start = scan_start_offset + scannable_file.offset as usize;
-                            let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
-                            let scan_data = &binary_data[scan_start..scan_end];
-                            let scan_results =
-                                shannon_prologue_signature.reverse_scan_with_offset(scan_data, scan_start_offset);
-                            if !scan_results.is_empty() {
-                                let first_offset = scan_results[0];
-                                let first_relocated = calculate_relocated_offset(&relocations, first_offset);
-                                let first_address = calculate_relocated_address(&relocations, first_offset);
+                            let shannon_prologue_scan_offset =
+                                shannon_constant_offset.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
+                            let shannon_prologue_scan_base =
+                                shannon_prologue_scan_offset + scannable_file.offset as usize;
+                            let shannon_prologue_scan_end = *shannon_constant_offset;
+                            let shannon_prologue_scan_section =
+                                &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+                            let shannon_prologue_offsets = shannon_prologue_signature
+                                .reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_offset);
+                            if !shannon_prologue_offsets.is_empty() {
+                                let first_prologue_offset = shannon_prologue_offsets[0];
+                                let first_prologue_relocated_offset =
+                                    calculate_relocated_offset(&relocations, first_prologue_offset);
+                                let first_prologue_relocated_address =
+                                    calculate_relocated_address(&relocations, first_prologue_offset);
                                 println!(
                                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                                     binary_filename,
-                                    first_offset + scannable_file.offset as usize,
-                                    first_relocated,
-                                    first_address
+                                    first_prologue_offset + scannable_file.offset as usize,
+                                    first_prologue_relocated_offset,
+                                    first_prologue_relocated_address
                                 );
-                                if push_offset(first_relocated) {
+                                if push_offset(first_prologue_relocated_offset) {
                                     return Some(offsets);
                                 }
-                                let scan_start_offset = first_offset.saturating_sub(SCAN_SIZE);
-                                let scan_start = scan_start_offset + scannable_file.offset as usize;
-                                let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
-                                let scan_data = &binary_data[scan_start..scan_end];
-                                let scan_results =
-                                    shannon_prologue_signature.reverse_scan_with_offset(scan_data, scan_start_offset);
-                                if !scan_results.is_empty() {
-                                    let first_offset = scan_results[0];
-                                    let first_relocated = calculate_relocated_offset(&relocations, first_offset);
-                                    let first_address = calculate_relocated_address(&relocations, first_offset);
+                                let shannon_prologue_scan_offset =
+                                    first_prologue_offset.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
+                                let shannon_prologue_scan_base =
+                                    shannon_prologue_scan_offset + scannable_file.offset as usize;
+                                let shannon_prologue_scan_end = first_prologue_offset + scannable_file.offset as usize;
+                                let shannon_prologue_scan_section =
+                                    &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+                                let shannon_prologue_offsets = shannon_prologue_signature.reverse_scan_with_offset(
+                                    shannon_prologue_scan_section,
+                                    shannon_prologue_scan_offset,
+                                );
+                                if !shannon_prologue_offsets.is_empty() {
+                                    let first_prologue_offset = shannon_prologue_offsets[0];
+                                    let first_prologue_relocated_offset =
+                                        calculate_relocated_offset(&relocations, first_prologue_offset);
+                                    let first_prologue_relocated_address =
+                                        calculate_relocated_address(&relocations, first_prologue_offset);
                                     println!(
                                         "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                                         binary_filename,
-                                        first_offset + scannable_file.offset as usize,
-                                        first_relocated,
-                                        first_address
+                                        first_prologue_offset + scannable_file.offset as usize,
+                                        first_prologue_relocated_offset,
+                                        first_prologue_relocated_address
                                     );
-                                    if push_offset(first_relocated) {
+                                    if push_offset(first_prologue_relocated_offset) {
                                         return Some(offsets);
                                     }
                                 }
                             }
 
                             // Scan below
-                            let scan_start_offset = *shannon_constant_offset;
-                            let scan_start = scan_start_offset + scannable_file.offset as usize;
-                            let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
-                            let scan_data = &binary_data[scan_start..scan_end];
-                            let scan_results =
-                                shannon_prologue_signature.scan_with_offset(scan_data, scan_start_offset);
-                            if !scan_results.is_empty() {
-                                let first_offset = scan_results[0];
-                                let first_relocated = calculate_relocated_offset(&relocations, first_offset);
-                                let first_address = calculate_relocated_address(&relocations, first_offset);
+                            let shannon_prologue_scan_offset = *shannon_constant_offset;
+                            let shannon_prologue_scan_base =
+                                shannon_prologue_scan_offset + scannable_file.offset as usize;
+                            let shannon_prologue_scan_end = std::cmp::min(
+                                shannon_prologue_scan_base + SHANNON_PROLOGUE_SCAN_SIZE,
+                                binary_data.len(),
+                            );
+                            let shannon_prologue_scan_section =
+                                &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+                            let shannon_prologue_offsets = shannon_prologue_signature
+                                .scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_offset);
+                            if !shannon_prologue_offsets.is_empty() {
+                                let first_prologue_offset = shannon_prologue_offsets[0];
+                                let first_prologue_relocated_offset =
+                                    calculate_relocated_offset(&relocations, first_prologue_offset);
+                                let first_prologue_relocated_address =
+                                    calculate_relocated_address(&relocations, first_prologue_offset);
                                 println!(
                                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                                     binary_filename,
-                                    first_offset + scannable_file.offset as usize,
-                                    first_relocated,
-                                    first_address
+                                    first_prologue_offset + scannable_file.offset as usize,
+                                    first_prologue_relocated_offset,
+                                    first_prologue_relocated_address
                                 );
-                                if push_offset(first_relocated) {
+                                if push_offset(first_prologue_relocated_offset) {
                                     return Some(offsets);
                                 }
-                                let scan_start_offset = first_offset;
-                                let scan_start = scan_start_offset + scannable_file.offset as usize;
-                                let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
-                                let scan_data = &binary_data[scan_start..scan_end];
-                                let scan_results =
-                                    shannon_prologue_signature.scan_with_offset(scan_data, scan_start_offset);
-                                if !scan_results.is_empty() {
-                                    let first_offset = scan_results[0];
-                                    let first_relocated = calculate_relocated_offset(&relocations, first_offset);
-                                    let first_address = calculate_relocated_address(&relocations, first_offset);
+                                let shannon_prologue_scan_offset = first_prologue_offset;
+                                let shannon_prologue_scan_base =
+                                    shannon_prologue_scan_offset + scannable_file.offset as usize;
+                                let shannon_prologue_scan_end = std::cmp::min(
+                                    shannon_prologue_scan_base + SHANNON_PROLOGUE_SCAN_SIZE,
+                                    binary_data.len(),
+                                );
+                                let shannon_prologue_scan_section =
+                                    &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+                                let shannon_prologue_offsets = shannon_prologue_signature
+                                    .scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_offset);
+                                if !shannon_prologue_offsets.is_empty() {
+                                    let first_prologue_offset = shannon_prologue_offsets[0];
+                                    let first_prologue_relocated_offset =
+                                        calculate_relocated_offset(&relocations, first_prologue_offset);
+                                    let first_prologue_relocated_address =
+                                        calculate_relocated_address(&relocations, first_prologue_offset);
                                     println!(
                                         "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                                         binary_filename,
-                                        first_offset + scannable_file.offset as usize,
-                                        first_relocated,
-                                        first_address
+                                        first_prologue_offset + scannable_file.offset as usize,
+                                        first_prologue_relocated_offset,
+                                        first_prologue_relocated_address
                                     );
-                                    if push_offset(first_relocated) {
+                                    if push_offset(first_prologue_relocated_offset) {
                                         return Some(offsets);
                                     }
                                 }
