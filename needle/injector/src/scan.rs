@@ -400,8 +400,216 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             Some(offsets)
         },
         Target::Windows => {
-            eprintln!("Windows is not supported yet");
-            None
+            // Executables on Windows use the PE format. There is an amazing tool we can use to look at PE files called
+            // PE-Bear (https://github.com/hasherezade/pe-bear). We are interested in the image base which is in the
+            // optional header and the section headers so we can compute the correct relocations for the offsets we
+            // find
+
+            lazy_static! {
+                static ref SHANNON_CONSTANT: scanner::Signature =
+                    scanner::Signature::from_ida_style("3A C5 96 69").unwrap();
+                static ref SHANNON_PROLOGUE: scanner::Signature =
+                    scanner::Signature::from_ida_style("48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18").unwrap();
+            }
+
+            let binary = args.get_one::<String>("binary").unwrap_or(executable);
+            let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
+            let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
+
+            println!("Target: windows");
+            println!("Executable: {}", executable);
+            println!("Binary: {}", binary_path.display());
+
+            let binary_data = std::fs::read(&binary_path).unwrap();
+            let pe_file = pe_parser::pe::parse_portable_executable(&binary_data);
+            if pe_file.is_err() {
+                eprintln!("Failed to parse executable file");
+                return None;
+            }
+            let pe_file = pe_file.ok().unwrap();
+
+            // calculate_relocated_offset uses the first relocation entry to determine the base address to be used.
+            // Since this is subtracted from any virtual address the number itself doesn't matter so long as it is
+            // correct relative to the virtual addresses specified in the section headers. On Linux we simply read the
+            // PT_LOAD segment headers and build a vector of file to virtual memory mappings, using the first one as
+            // the base. Doing the same on Windows using the section headers (as segments don't exist in PE files) does
+            // not work however as all offsets are off by 0x1000. Using VMMap from SysInternals it becomes apparent
+            // that the first bit of memory-mapped data is the IMAGE_DOS_HEADER itself, NOT the first section. The
+            // header is only 64 bytes long, but since a section alignment of 0x1000 is specified, the header is padded
+            // to that length. This means the first section is loaded at 0x1000 which is indeed the value of it's
+            // virtual address, however that is not what our calculation code uses as the module base. To fix this we
+            // could either calculate the size of the padded DOS header then subtract that from every section's virtual
+            // address or add a dummy section with a virtual address of 0 to represent the DOS header. The dummy
+            // section seems like a cleaner solution, so that is what we are using
+
+            // To find all our relocations we need the image base & section alignment from the optional header as well
+            // as the section headers
+
+            let mut relocations = vec![];
+            let image_base;
+            let section_alignment;
+            if let Some(optional_header) = pe_file.optional_header_32 {
+                image_base = optional_header.image_base as usize;
+                section_alignment = optional_header.section_alignment as usize;
+            } else if let Some(optional_header) = pe_file.optional_header_64 {
+                image_base = optional_header.image_base as usize;
+                section_alignment = optional_header.section_alignment as usize;
+            } else {
+                eprintln!("No optional header in executable");
+                return None;
+            }
+            {
+                let dummy_section = RelocationEntry {
+                    offset_in_file: 0,
+                    size_in_file: 64,
+                    offset_in_memory: image_base,
+                    size_in_memory: 64,
+                };
+                let aligned_vaddr_start = dummy_section.offset_in_memory & !(section_alignment - 1);
+                let aligned_vaddr_end =
+                    (dummy_section.offset_in_memory + dummy_section.size_in_memory + section_alignment - 1)
+                        & !(section_alignment - 1);
+                println!(
+                    "Found PE relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x}) [{:^10}]",
+                    dummy_section.offset_in_file,
+                    dummy_section.offset_in_file + dummy_section.size_in_file,
+                    dummy_section.offset_in_memory,
+                    dummy_section.offset_in_memory + dummy_section.size_in_memory,
+                    aligned_vaddr_start,
+                    aligned_vaddr_end,
+                    ".dummy"
+                );
+                relocations.push(dummy_section);
+            }
+            for section_header in &pe_file.section_table {
+                let entry = RelocationEntry {
+                    offset_in_file: section_header.pointer_to_raw_data as usize,
+                    size_in_file: section_header.size_of_raw_data as usize,
+                    offset_in_memory: image_base + section_header.virtual_address as usize,
+                    size_in_memory: section_header.virtual_size as usize,
+                };
+                let aligned_vaddr_start = entry.offset_in_memory & !(section_alignment - 1);
+                let aligned_vaddr_end =
+                    (entry.offset_in_memory + entry.size_in_memory + section_alignment - 1) & !(section_alignment - 1);
+                println!(
+                    "Found PE relocation {:#012x}-{:#012x} -> {:#012x}-{:#012x} ({:#012x} - {:#012x}) [{:^10}]",
+                    entry.offset_in_file,
+                    entry.offset_in_file + entry.size_in_file,
+                    entry.offset_in_memory,
+                    entry.offset_in_memory + entry.size_in_memory,
+                    aligned_vaddr_start,
+                    aligned_vaddr_end,
+                    section_header.get_name().unwrap_or("<none>".to_string()).trim_matches(char::from(0))
+                );
+                relocations.push(entry);
+            }
+
+            // Server key is read only data thus is in .rdata
+            let rdata_header = pe_file
+                .section_table
+                .iter()
+                .find(|header| {
+                    if let Some(name) = header.get_name() {
+                        name.trim_matches(char::from(0)) == ".rdata"
+                    } else {
+                        false
+                    }
+                })
+                .expect("Failed to find .rdata section");
+            let rdata_start = rdata_header.pointer_to_raw_data as usize;
+            let rdata_end = rdata_start + rdata_header.size_of_raw_data as usize;
+            let rdata_section = &binary_data[rdata_start..rdata_end];
+            let server_key_offsets = SERVER_PUBLIC_KEY_SIGNATURE.scan_with_offset(rdata_section, rdata_start);
+            if server_key_offsets.is_empty() {
+                eprintln!("Failed to find server public key");
+                return None;
+            }
+            for server_key_offset in server_key_offsets {
+                let relocated_offset = calculate_relocated_offset(&relocations, server_key_offset);
+                let relocated_address = calculate_relocated_address(&relocations, server_key_offset);
+                println!(
+                    "Found server public key at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_filename, server_key_offset, relocated_offset, relocated_address
+                );
+                offsets.server_public_key_offset = relocated_offset;
+            }
+
+            // Constants and functions are in .text as they are code
+            let text_header = pe_file
+                .section_table
+                .iter()
+                .find(|header| {
+                    if let Some(name) = header.get_name() {
+                        name.trim_matches(char::from(0)) == ".text"
+                    } else {
+                        false
+                    }
+                })
+                .expect("Failed to find .text section");
+            let text_start = text_header.pointer_to_raw_data as usize;
+            let text_end = text_start + text_header.size_of_raw_data as usize;
+            let text_section = &binary_data[text_start..text_end];
+            let shannon_constant_offsets = SHANNON_CONSTANT.scan_with_offset(text_section, text_start);
+            if shannon_constant_offsets.is_empty() {
+                eprintln!("Failed to find shannon constant");
+                return None;
+            }
+            for shannon_constant_offset in &shannon_constant_offsets {
+                let relocated_offset = calculate_relocated_offset(&relocations, *shannon_constant_offset);
+                let relocated_address = calculate_relocated_address(&relocations, *shannon_constant_offset);
+                println!(
+                    "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_filename, shannon_constant_offset, relocated_offset, relocated_address
+                );
+            }
+
+            // On Windows sometimes shn_diffuse can be found between the encryption/decryption functions. This doesn't
+            // appear to cause issues though as the function prologue is quite different:
+            //
+            //   shn_encrypt:
+            //     48 89 5C 24 08      mov     [rsp+arg_0], rbx
+            //     48 89 6C 24 10      mov     [rsp+arg_8], rbp
+            //     48 89 74 24 18      mov     [rsp+arg_10], rsi
+            //
+            //   shn_decrypt:
+            //     48 89 5C 24 08      mov     [rsp+arg_0], rbx
+            //     48 89 6C 24 10      mov     [rsp+arg_8], rbp
+            //     48 89 74 24 18      mov     [rsp+arg_10], rsi
+            //
+            //   shn_diffuse:
+            //     48 89 4C 24 08      mov     [rsp+arg_0], rcx
+            //     53                  push    rbx
+            //
+            // The other difference on Windows is shn_finish contains the first instance of the constant instead of the
+            // last. If this changes in the future, we can always try scanning backwards from each occurrence of the
+            // constant however that is not ideal. shn_finish also has a different prologue to the other functions so
+            // no need to deal with hitting that.
+
+            const SHANNON_PROLOGUE_SCAN_SIZE: usize = 0x4000;
+            let first_shannon_constant = shannon_constant_offsets[0];
+            let shannon_prologue_scan_base = first_shannon_constant.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
+            let shannon_prologue_scan_end =
+                std::cmp::min(shannon_prologue_scan_base + SHANNON_PROLOGUE_SCAN_SIZE, binary_data.len());
+            let shannon_prologue_scan_data = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
+            let shannon_prologue_offsets =
+                SHANNON_PROLOGUE.reverse_scan_with_offset(shannon_prologue_scan_data, shannon_prologue_scan_base);
+            for shannon_prologue_offset in &shannon_prologue_offsets {
+                let relocated_prologue_offset = calculate_relocated_offset(&relocations, *shannon_prologue_offset);
+                let relocated_prologue_address = calculate_relocated_address(&relocations, *shannon_prologue_offset);
+                println!(
+                    "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
+                    binary_filename, shannon_prologue_offset, relocated_prologue_offset, relocated_prologue_address
+                );
+            }
+
+            if shannon_prologue_offsets.len() < 2 {
+                eprintln!("Found too few prologues");
+                return None;
+            }
+
+            offsets.shannon_offset1 = calculate_relocated_offset(&relocations, shannon_prologue_offsets[0]);
+            offsets.shannon_offset2 = calculate_relocated_offset(&relocations, shannon_prologue_offsets[1]);
+            Some(offsets)
         },
         Target::Android => {
             // Android apps are packaged as APKs. APKs are just zip files with a different extension. When the APK is
