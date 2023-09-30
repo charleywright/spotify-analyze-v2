@@ -30,7 +30,7 @@ fn calculate_relocated_offset(relocations: &Vec<RelocationEntry>, position: usiz
             return offset_from_base + offset_from_segment;
         }
     }
-    return position;
+    position
 }
 
 /// Take a position in a file and calculate the offset in virtual memory where the data at that
@@ -43,7 +43,7 @@ fn calculate_relocated_address(relocations: &Vec<RelocationEntry>, position: usi
             return relocation.offset_in_memory + offset_from_segment;
         }
     }
-    return position;
+    position
 }
 
 /// Parse the ELF segment headers to find the segments that will be loaded into memory. Use these to build a vector of
@@ -122,7 +122,7 @@ fn parse_elf_relocations(elf_file: &mut elf::ElfBytes<elf::endian::NativeEndian>
 
     relocations.sort_by_key(|entry| entry.offset_in_memory);
 
-    return relocations;
+    relocations
 }
 
 fn parse_mach_o_relocations(commands: &Vec<mach_object::MachCommand>) -> Vec<RelocationEntry> {
@@ -252,11 +252,7 @@ fn find_macho_file<'a>(target_arch: Option<&String>, ofile: &'a mach_object::OFi
 
             let target_file = files.iter().find(|x| x.0.name().unwrap() == target_arch.unwrap().as_str());
 
-            if let Some(target_file) = target_file {
-                Some(ScannableMachOFile::from_fat(target_file))
-            } else {
-                None
-            }
+            target_file.map(ScannableMachOFile::from_fat)
         },
         _ => {
             eprintln!("Unsupported Mach-O format");
@@ -339,8 +335,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 return None;
             }
             for shannon_constant_offset in &shannon_constant_offsets {
-                let relocated_offset = calculate_relocated_offset(&relocations, shannon_constant_offset.clone());
-                let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
+                let relocated_offset = calculate_relocated_offset(&relocations, *shannon_constant_offset);
+                let relocated_address = calculate_relocated_address(&relocations, *shannon_constant_offset);
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                     binary_filename, shannon_constant_offset, relocated_offset, relocated_address
@@ -364,7 +360,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
             let shannon_prologue_scan_size: usize = 0x2000;
             let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
-            let shannon_prologue_scan_end = last_shannon_constant.clone();
+            let shannon_prologue_scan_end = *last_shannon_constant;
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
             let mut shannon_prologue_offsets = VecDeque::from(
                 SHANNON_PROLOGUE.reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_base),
@@ -390,8 +386,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             for shannon_prologue in &shannon_prologue_offsets {
-                let relocated_prologue_offset = calculate_relocated_offset(&relocations, shannon_prologue.clone());
-                let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
+                let relocated_prologue_offset = calculate_relocated_offset(&relocations, *shannon_prologue);
+                let relocated_prologue_address = calculate_relocated_address(&relocations, *shannon_prologue);
                 println!(
                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                     binary_filename, shannon_prologue, relocated_prologue_offset, relocated_prologue_address
@@ -399,7 +395,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
             shannon_prologue_offsets = shannon_prologue_offsets
                 .iter()
-                .map(|offset| calculate_relocated_offset(&relocations, offset.clone()))
+                .map(|offset| calculate_relocated_offset(&relocations, *offset))
                 .collect();
             if shannon_prologue_offsets.len() < 2 {
                 eprintln!("Found too few prologues");
@@ -588,8 +584,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 return None;
             }
             for shannon_constant_offset in &shannon_constant_offsets {
-                let relocated_offset = calculate_relocated_offset(&relocations, shannon_constant_offset.clone());
-                let relocated_address = calculate_relocated_address(&relocations, shannon_constant_offset.clone());
+                let relocated_offset = calculate_relocated_offset(&relocations, *shannon_constant_offset);
+                let relocated_address = calculate_relocated_address(&relocations, *shannon_constant_offset);
                 println!(
                     "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                     binary_filename, shannon_constant_offset, relocated_offset, relocated_address
@@ -604,7 +600,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
             let shannon_prologue_scan_size: usize = 0x2000;
             let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
-            let shannon_prologue_scan_end = last_shannon_constant.clone();
+            let shannon_prologue_scan_end = *last_shannon_constant;
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
             let shannon_prologue_signature = JNI_SHANNON_PROLOGUES.get(&elf_file.ehdr.e_machine).unwrap();
             let mut shannon_prologue_offsets = VecDeque::from(
@@ -632,8 +628,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
 
             for shannon_prologue in &shannon_prologue_offsets {
-                let relocated_prologue_offset = calculate_relocated_offset(&relocations, shannon_prologue.clone());
-                let relocated_prologue_address = calculate_relocated_address(&relocations, shannon_prologue.clone());
+                let relocated_prologue_offset = calculate_relocated_offset(&relocations, *shannon_prologue);
+                let relocated_prologue_address = calculate_relocated_address(&relocations, *shannon_prologue);
                 println!(
                     "Found function prologue at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                     binary_filename, shannon_prologue, relocated_prologue_offset, relocated_prologue_address
@@ -641,7 +637,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             }
             shannon_prologue_offsets = shannon_prologue_offsets
                 .iter()
-                .map(|offset| calculate_relocated_offset(&relocations, offset.clone()))
+                .map(|offset| calculate_relocated_offset(&relocations, *offset))
                 .collect();
             if shannon_prologue_offsets.len() < 2 {
                 eprintln!("Found too few prologues");
@@ -857,10 +853,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             return None;
                         }
                         for shannon_constant_offset in &shannon_constant_offsets {
-                            let relocated_offset =
-                                calculate_relocated_offset(&relocations, shannon_constant_offset.clone());
-                            let relocated_address =
-                                calculate_relocated_address(&relocations, shannon_constant_offset.clone());
+                            let relocated_offset = calculate_relocated_offset(&relocations, *shannon_constant_offset);
+                            let relocated_address = calculate_relocated_address(&relocations, *shannon_constant_offset);
                             println!(
                                 "Found shannon constant at {}:{:#012x} Offset: {:#012x} Address: {:#012x}",
                                 binary_filename,
@@ -939,7 +933,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             }
 
                             // Scan below
-                            let scan_start_offset = shannon_constant_offset.clone();
+                            let scan_start_offset = *shannon_constant_offset;
                             let scan_start = scan_start_offset + scannable_file.offset as usize;
                             let scan_end = std::cmp::min(scan_start + SCAN_SIZE, binary_data.len());
                             let scan_data = &binary_data[scan_start..scan_end];
@@ -985,12 +979,10 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
 
                         None
                     },
-                    _ => {
-                        return None;
-                    },
+                    _ => None,
                 }
             } else {
-                return None;
+                None
             }
         },
     }
