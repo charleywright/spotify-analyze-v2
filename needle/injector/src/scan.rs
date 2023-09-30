@@ -49,51 +49,49 @@ fn calculate_relocated_address(relocations: &Vec<RelocationEntry>, position: usi
 /// Parse the ELF segment headers to find the segments that will be loaded into memory. Use these to build a vector of
 /// relocation rules for varying offsets in the file to the offsets in memory.
 fn parse_elf_relocations(elf_file: &mut elf::ElfBytes<elf::endian::NativeEndian>) -> Vec<RelocationEntry> {
-    /*
-      These are offsets of the shannon constant using a binary file scan:
-        0x0001a6ed47
-        0x0001a6f0aa
-        0x0001a70887
-      These are the offsets when the binary is loaded into memory:
-        0x0001c6fd47
-        0x0001c700aa
-        0x0001c71887
-      The difference is 0x201000, this is due to relocations. When an executable is loaded from disk it is memory-mapped
-      into virtual memory according to the segments defined in the file. In an ELF file the segments to be loaded are
-      defined in the program header table with p_type being PT_LOAD. We can look at these headers using readelf:
-
-        readelf --wide --segments /opt/spotify/spotify
-        Type           Offset    VirtAddr           PhysAddr           FileSiz   MemSiz    Flg Align
-        PHDR           0x000040  0x0000000000200040 0x0000000000200040 0x0002a0  0x0002a0  R   0x8
-        INTERP         0x0002e0  0x00000000002002e0 0x00000000002002e0 0x00001c  0x00001c  R   0x1
-        LOAD           0x000000  0x0000000000200000 0x0000000000200000 0x930b54  0x930b54  R   0x1000
-        LOAD           0x930b60  0x0000000000b31b60 0x0000000000b31b60 0x13fab50 0x13fab50 R E 0x1000
-        LOAD           0x1d2b6c0 0x0000000001f2d6c0 0x0000000001f2d6c0 0x00aaa8  0x00aaa8  RW  0x1000
-        LOAD           0x1d36170 0x0000000001f39170 0x0000000001f39170 0x52dd48  0x55c2a8  RWE 0x1000
-        TLS            0x1d2b6c0 0x0000000001f2d6c0 0x0000000001f2d6c0 0x000040  0x001439  R   0x40
-        DYNAMIC        0x1d35df8 0x0000000001f37df8 0x0000000001f37df8 0x000350  0x000350  RW  0x8
-        GNU_RELRO      0x1d2b6c0 0x0000000001f2d6c0 0x0000000001f2d6c0 0x00aaa8  0x00b940  R   0x1
-        GNU_EH_FRAME   0x4424d0  0x00000000006424d0 0x00000000006424d0 0x0cf804  0x0cf804  R   0x4
-        GNU_STACK      0x000000  0x0000000000000000 0x0000000000000000 0x000000  0x000000  RW  0
-        NOTE           0x0002fc  0x00000000002002fc 0x00000000002002fc 0x000020  0x000020  R   0x4
-
-      There are 4 LOAD segments and use an alignment of 0x1000 bytes. Looking at /proc/<pid>/maps it appears to match:
-
-        address           perms offset   dev    inode  pathname
-        00200000-00b31000 r--p  00000000 103:07 933385 /opt/spotify/spotify
-        00b31000-01f2d000 r-xp  00930000 103:07 933385 /opt/spotify/spotify
-        01f2d000-01f39000 r--p  01d2b000 103:07 933385 /opt/spotify/spotify
-        01f39000-02467000 rwxp  01d36000 103:07 933385 /opt/spotify/spotify
-
-      The addresses used for loading don't exactly match the program headers, but after taking alignment into consideration
-      they match. If the segment start and/or end don't lie on page boundaries the linker looks backwards in the file and
-      reads the bytes behind the current position to pad the segment. The same occurs after the segment, and if no data is
-      available (EOF) the segment is padded with zeroes. This allows the segment to be mapped with only a single continuous
-      read from the file and the segment's data is mapped to the correct location. This causes the segments in
-      /proc/pid/maps to not be the same size nor have the same base address as the program headers but the data is in the
-      expected location. There are some resources about the ELF format linked at the top of elf.hpp and for learning about
-      linkers there are a few very good videos in a playlist called "CS 361 Systems Programming" on YouTube.
-    */
+    // These are offsets of the shannon constant using a binary file scan:
+    //   0x0001a6ed47
+    //   0x0001a6f0aa
+    //   0x0001a70887
+    // These are the offsets when the binary is loaded into memory:
+    //   0x0001c6fd47
+    //   0x0001c700aa
+    //   0x0001c71887
+    // The difference is 0x201000, this is due to relocations. When an executable is loaded from disk it is memory-mapped
+    // into virtual memory according to the segments defined in the file. In an ELF file the segments to be loaded are
+    // defined in the program header table with p_type being PT_LOAD. We can look at these headers using readelf:
+    //
+    //   readelf --wide --segments /opt/spotify/spotify
+    //   Type           Offset    VirtAddr           PhysAddr           FileSiz   MemSiz    Flg Align
+    //   PHDR           0x000040  0x0000000000200040 0x0000000000200040 0x0002a0  0x0002a0  R   0x8
+    //   INTERP         0x0002e0  0x00000000002002e0 0x00000000002002e0 0x00001c  0x00001c  R   0x1
+    //   LOAD           0x000000  0x0000000000200000 0x0000000000200000 0x930b54  0x930b54  R   0x1000
+    //   LOAD           0x930b60  0x0000000000b31b60 0x0000000000b31b60 0x13fab50 0x13fab50 R E 0x1000
+    //   LOAD           0x1d2b6c0 0x0000000001f2d6c0 0x0000000001f2d6c0 0x00aaa8  0x00aaa8  RW  0x1000
+    //   LOAD           0x1d36170 0x0000000001f39170 0x0000000001f39170 0x52dd48  0x55c2a8  RWE 0x1000
+    //   TLS            0x1d2b6c0 0x0000000001f2d6c0 0x0000000001f2d6c0 0x000040  0x001439  R   0x40
+    //   DYNAMIC        0x1d35df8 0x0000000001f37df8 0x0000000001f37df8 0x000350  0x000350  RW  0x8
+    //   GNU_RELRO      0x1d2b6c0 0x0000000001f2d6c0 0x0000000001f2d6c0 0x00aaa8  0x00b940  R   0x1
+    //   GNU_EH_FRAME   0x4424d0  0x00000000006424d0 0x00000000006424d0 0x0cf804  0x0cf804  R   0x4
+    //   GNU_STACK      0x000000  0x0000000000000000 0x0000000000000000 0x000000  0x000000  RW  0
+    //   NOTE           0x0002fc  0x00000000002002fc 0x00000000002002fc 0x000020  0x000020  R   0x4
+    //
+    // There are 4 LOAD segments and use an alignment of 0x1000 bytes. Looking at /proc/<pid>/maps it appears to match:
+    //
+    //   address           perms offset   dev    inode  pathname
+    //   00200000-00b31000 r--p  00000000 103:07 933385 /opt/spotify/spotify
+    //   00b31000-01f2d000 r-xp  00930000 103:07 933385 /opt/spotify/spotify
+    //   01f2d000-01f39000 r--p  01d2b000 103:07 933385 /opt/spotify/spotify
+    //   01f39000-02467000 rwxp  01d36000 103:07 933385 /opt/spotify/spotify
+    //
+    // The addresses used for loading don't exactly match the program headers, but after taking alignment into consideration
+    // they match. If the segment start and/or end don't lie on page boundaries the linker looks backwards in the file and
+    // reads the bytes behind the current position to pad the segment. The same occurs after the segment, and if no data is
+    // available (EOF) the segment is padded with zeroes. This allows the segment to be mapped with only a single continuous
+    // read from the file and the segment's data is mapped to the correct location. This causes the segments in
+    // /proc/pid/maps to not be the same size nor have the same base address as the program headers but the data is in the
+    // expected location. There are some resources about the ELF format linked at the top of elf.hpp and for learning about
+    // linkers there are a few very good videos in a playlist called "CS 361 Systems Programming" on YouTube.
     let mut relocations: Vec<RelocationEntry> = Vec::new();
 
     let segments = elf_file.segments().expect("Failed to parse ELF segments");
@@ -277,10 +275,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
 
     match target {
         Target::Linux => {
-            /*
-              On Linux the spotify binary is an ELF file. We can parse this file to significantly reduce the scanning
-              area and find the relocation entries for the binary
-            */
+            // On Linux the spotify binary is an ELF file. We can parse this file to significantly reduce the scanning
+            // area and find the relocation entries for the binary
 
             lazy_static! {
                 static ref SHANNON_CONSTANT: scanner::Signature =
@@ -301,10 +297,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let mut elf_file = elf::ElfBytes::<elf::endian::NativeEndian>::minimal_parse(&binary_data).unwrap();
             let relocations = parse_elf_relocations(&mut elf_file);
 
-            /*
-              The server key is easy to find, it's stored in the .rodata section and is always the same across all
-              versions of the app and contains no wildcards
-            */
+            // The server key is easy to find, it's stored in the .rodata section and is always the same across all
+            // versions of the app and contains no wildcards
             let rodata_header =
                 elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
             let rodata_section = &binary_data
@@ -343,19 +337,17 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 );
             }
 
-            /*
-              shn_encrypt, shn_decrypt and shn_finish all have the same prologue:
-              shn_encrypt 55 48 89 E5 41 56 53 83 BF CC 00 00 00 00 74 64                  start=0x0000000001C700D0 end=0x0000000001C70C07 size=0xB37
-              shn_decrypt 55 48 89 E5 41 56 53 83 BF CC 00 00 00 00 74 73                  start=0x0000000001C70C10 end=0x0000000001C7177F size=0xB6F
-              shn_finish  55 48 89 E5 41 57 41 56 41 54 53 41 89 D7 49 89 F6 48 89 FB 44   start=0x0000000001C71790 end=0x0000000001C719B0 size=0x220
-
-              55         push    rbp
-              48 89 E5   mov     rbp, rsp
-
-              Since this is a very common prologue it should be very reliable. We can discount shn_finish by
-              checking the distance between the address we hit and the constant due to the encryption/decryption
-              functions being quite long.
-            */
+            // shn_encrypt, shn_decrypt and shn_finish all have the same prologue:
+            // shn_encrypt 55 48 89 E5 41 56 53 83 BF CC 00 00 00 00 74 64                  start=0x0000000001C700D0 end=0x0000000001C70C07 size=0xB37
+            // shn_decrypt 55 48 89 E5 41 56 53 83 BF CC 00 00 00 00 74 73                  start=0x0000000001C70C10 end=0x0000000001C7177F size=0xB6F
+            // shn_finish  55 48 89 E5 41 57 41 56 41 54 53 41 89 D7 49 89 F6 48 89 FB 44   start=0x0000000001C71790 end=0x0000000001C719B0 size=0x220
+            //
+            // 55         push    rbp
+            // 48 89 E5   mov     rbp, rsp
+            //
+            // Since this is a very common prologue it should be very reliable. We can discount shn_finish by
+            // checking the distance between the address we hit and the constant due to the encryption/decryption
+            // functions being quite long.
 
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
             let shannon_prologue_scan_size: usize = 0x2000;
@@ -412,15 +404,13 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             None
         },
         Target::Android => {
-            /*
-              Android apps are packaged as APKs. APKs are just zip files with a different extension. When the APK is
-              extracted there is a libs folder which contains JNI libraries (Java Native Interface). These are
-              libraries written in a compiled language such as C, C++ or Rust that can be called from Java. Since
-              phones can have different architectures, Spotify ships multiple builds of the library: x86, x86_64,
-              armeabi-v7a, arm64-v8a. These are different binaries with different instruction sets therefore have
-              different signatures and offsets. We could ask the user to specify however since they are all shared
-              libraries (.so files) we can read the ELF header to find the architecture.
-            */
+            // Android apps are packaged as APKs. APKs are just zip files with a different extension. When the APK is
+            // extracted there is a libs folder which contains JNI libraries (Java Native Interface). These are
+            // libraries written in a compiled language such as C, C++ or Rust that can be called from Java. Since
+            // phones can have different architectures, Spotify ships multiple builds of the library: x86, x86_64,
+            // armeabi-v7a, arm64-v8a. These are different binaries with different instruction sets therefore have
+            // different signatures and offsets. We could ask the user to specify however since they are all shared
+            // libraries (.so files) we can read the ELF header to find the architecture.
 
             // These seem to be the JNI library machine types for android
             const JNI_X86: u16 = elf::abi::EM_386;
@@ -428,9 +418,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             const JNI_ARMEABI_V7A: u16 = elf::abi::EM_ARM;
             const JNI_ARM64_V8A: u16 = elf::abi::EM_AARCH64;
 
-            /*
-              Tested all signatures on 8.8.12.545 on all architectures
-            */
+            // Tested all signatures on 8.8.12.545 on all architectures
             lazy_static! {
                 static ref JNI_SHANNON_CONSTANTS: HashMap<u16, scanner::Signature> = HashMap::from([
                     (JNI_X86, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
@@ -550,9 +538,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 },
             }
 
-            /*
-              Same as on Linux, the server key is in .rodata and there is only one instance with no wildcards
-            */
+            // Same as on Linux, the server key is in .rodata and there is only one instance with no wildcards
             let rodata_header =
                 elf_file.section_header_by_name(".rodata").unwrap().expect("Failed to find .rodata section");
             let rodata_section = &binary_data
@@ -592,10 +578,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                 );
             }
 
-            /*
-              Same as for Linux, shn_encrypt, shn_decrypt and sometimes shn_finish all have the same prologue. We could
-              probably get away with shorter signatures but these work for now
-            */
+            // Same as for Linux, shn_encrypt, shn_decrypt and sometimes shn_finish all have the same prologue. We could
+            // probably get away with shorter signatures but these work for now
 
             let last_shannon_constant = shannon_constant_offsets.last().unwrap();
             let shannon_prologue_scan_size: usize = 0x2000;
@@ -650,26 +634,24 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             Some(offsets)
         },
         Target::IOS => {
-            /*
-              Apps on iOS are distributed using .ipa files which are zip archives. When downloaded from the App Store
-              APIs directly they are encrypted and must be decrypted by a device running iOS or macOS. There are
-              various tools that allow this, mostly using mremap_encrypted. Alternatively the decrypted file can be
-              copied from an iOS device using frida-ios-dump or similar. an encrypted IPA will decrypt properly but the
-              Spotify binary will be encrypted and useless to us.
-
-              After unzipping the .ipa file there will be a "Payload" folder which contains a "Spotify.app" folder
-              which itself contains the "Spotify" binary. This is a Mach-O executable which contains all the stuff
-              we're interested in. Mach-O files are a container for executables and other compiled code and have the
-              same purpose as Unix's ELF files. They support multiple architectures, which means one file may contain
-              code for armv7 and armv8, each with different offsets. To account for this we require an extra command
-              line flag to specify which architecture should be used.
-
-              Once we have the image to parse, we read the header magic to determine the bitness and endianness. We
-              then read the rest of the file header to get the CPU type and the number of load commands. Load commands
-              are used to describe segments in the file which we need because some of the segments will be loaded into
-              virtual memory. Using the load commands we can compute our relocation entries and if we parse LC_SEGMENT/
-              LC_SEGMENT64 we can find the sections of the file which can be used to optimise signature scanning
-            */
+            // Apps on iOS are distributed using .ipa files which are zip archives. When downloaded from the App Store
+            // APIs directly they are encrypted and must be decrypted by a device running iOS or macOS. There are
+            // various tools that allow this, mostly using mremap_encrypted. Alternatively the decrypted file can be
+            // copied from an iOS device using frida-ios-dump or similar. an encrypted IPA will decrypt properly but the
+            // Spotify binary will be encrypted and useless to us.
+            //
+            // After unzipping the .ipa file there will be a "Payload" folder which contains a "Spotify.app" folder
+            // which itself contains the "Spotify" binary. This is a Mach-O executable which contains all the stuff
+            // we're interested in. Mach-O files are a container for executables and other compiled code and have the
+            // same purpose as Unix's ELF files. They support multiple architectures, which means one file may contain
+            // code for armv7 and armv8, each with different offsets. To account for this we require an extra command
+            // line flag to specify which architecture should be used.
+            //
+            // Once we have the image to parse, we read the header magic to determine the bitness and endianness. We
+            // then read the rest of the file header to get the CPU type and the number of load commands. Load commands
+            // are used to describe segments in the file which we need because some of the segments will be loaded into
+            // virtual memory. Using the load commands we can compute our relocation entries and if we parse LC_SEGMENT/
+            // LC_SEGMENT64 we can find the sections of the file which can be used to optimise signature scanning
 
             lazy_static! {
                 static ref SHANNON_CONSTANTS: HashMap<&'static str, scanner::Signature> = HashMap::from([
@@ -864,13 +846,11 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                             );
                         }
 
-                        /*
-                          shn_finish seems to contain the last instance of the constant however on arm64 it contains
-                          the second instance of six. The encryption/decryption functions are normally above shn_finish
-                          however on arm64 one was above and one was below with some small functions separating them.
-                          The only reliable way to always find the functions is to check before and after all
-                          occurrences of the constant
-                        */
+                        // shn_finish seems to contain the last instance of the constant however on arm64 it contains
+                        // the second instance of six. The encryption/decryption functions are normally above shn_finish
+                        // however on arm64 one was above and one was below with some small functions separating them.
+                        // The only reliable way to always find the functions is to check before and after all
+                        // occurrences of the constant
 
                         let mut push_offset = |offset: usize| -> bool {
                             if offsets.shannon_offset1 > 0 {
