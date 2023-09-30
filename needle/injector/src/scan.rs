@@ -285,6 +285,14 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
               On Linux the spotify binary is an ELF file. We can parse this file to significantly reduce the scanning
               area and find the relocation entries for the binary
             */
+
+            lazy_static! {
+                static ref SHANNON_CONSTANT: scanner::Signature =
+                    scanner::Signature::from_ida_style("3A C5 96 69").unwrap();
+                static ref SHANNON_PROLOGUE: scanner::Signature =
+                    scanner::Signature::from_ida_style("55 48 89 E5").unwrap();
+            }
+
             let binary = args.get_one::<String>("binary").unwrap_or(executable);
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
             let binary_filename = binary_path.file_name().unwrap().to_str().unwrap();
@@ -324,9 +332,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let text_header = elf_file.section_header_by_name(".text").unwrap().expect("Failed to find .text section");
             let text_section = &binary_data
                 [text_header.sh_offset as usize..text_header.sh_offset as usize + text_header.sh_size as usize];
-            let shannon_constant_signature = scanner::Signature::from_ida_style("3A C5 96 69").unwrap();
             let shannon_constant_offsets =
-                shannon_constant_signature.scan_with_offset(text_section, text_header.sh_offset as usize);
+                SHANNON_CONSTANT.scan_with_offset(text_section, text_header.sh_offset as usize);
             if shannon_constant_offsets.is_empty() {
                 eprintln!("Failed to find shannon constant");
                 return None;
@@ -359,10 +366,8 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let shannon_prologue_scan_base = last_shannon_constant - shannon_prologue_scan_size;
             let shannon_prologue_scan_end = last_shannon_constant.clone();
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
-            let shannon_prologue_signature = scanner::Signature::from_ida_style("55 48 89 E5").unwrap();
             let mut shannon_prologue_offsets = VecDeque::from(
-                shannon_prologue_signature
-                    .reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_base),
+                SHANNON_PROLOGUE.reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_base),
             );
             if shannon_prologue_offsets.is_empty() {
                 eprintln!("Failed to find shn_encrypt/shn_decrypt prologue");
@@ -426,64 +431,65 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             const JNI_X86_64: u16 = elf::abi::EM_X86_64;
             const JNI_ARMEABI_V7A: u16 = elf::abi::EM_ARM;
             const JNI_ARM64_V8A: u16 = elf::abi::EM_AARCH64;
+
             /*
               Tested all signatures on 8.8.12.545 on all architectures
             */
-            #[allow(non_snake_case)]
-            let JNI_SHANNON_CONSTANTS = HashMap::from([
-                (JNI_X86, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
-                (JNI_X86_64, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
-                /*
-                  Constant is embedded after function, and is loaded using offset from PC
-                  .text:00C7B410                 LDR             R2, [PC, #0xAC]
-                  ...
-                  .text:00C7B4C4 dword_C7B4C4    DCD 0x6996C53A
-                */
-                (JNI_ARMEABI_V7A, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
-                /*
-                  Registers can change, so use wildcards
-                  movz w11, #0xc53a
-                  movk w11, #0x6996, lsl #16
-                */
-                (JNI_ARM64_V8A, scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
-            ]);
-            #[allow(non_snake_case)]
-            let JNI_SHANNON_PROLOGUES = HashMap::from([
-                /*
-                  push ebp
-                  mov  ebp, esp
-                  push ebx
-                  push edi
-                  push esi
-                  and  esp, 0xfffffff0
-                  sub  esp, ??
-                  call 0x5
-                */
-                (
-                    JNI_X86,
-                    scanner::Signature::from_ida_style("55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00").unwrap(),
-                ),
-                /*
-                  push rbp
-                  mov  rbp, rsp
-                */
-                (JNI_X86_64, scanner::Signature::from_ida_style("55 48 89 E5").unwrap()),
-                /*
-                  push {r4, r5, r6, r7, r8, sl, fp, lr}
-                  add  fp, sp, #0x18
-                */
-                (JNI_ARMEABI_V7A, scanner::Signature::from_ida_style("F0 4D 2D E9 18 B0 8D E2").unwrap()),
-                /*
-                  str x23, [sp, #-0x40]!
-                  stp x22, x21, [sp, #0x10]
-                  stp x20, x19, [sp, #0x20]
-                  stp x29, x30, [sp, #0x30]
-                */
-                (
-                    JNI_ARM64_V8A,
-                    scanner::Signature::from_ida_style("F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9").unwrap(),
-                ),
-            ]);
+            lazy_static! {
+                static ref JNI_SHANNON_CONSTANTS: HashMap<u16, scanner::Signature> = HashMap::from([
+                    (JNI_X86, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                    (JNI_X86_64, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                    /*
+                      Constant is embedded after function, and is loaded using offset from PC
+                      .text:00C7B410                 LDR             R2, [PC, #0xAC]
+                      ...
+                      .text:00C7B4C4 dword_C7B4C4    DCD 0x6996C53A
+                    */
+                    (JNI_ARMEABI_V7A, scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                    /*
+                      Registers can change, so use wildcards
+                      movz w11, #0xc53a
+                      movk w11, #0x6996, lsl #16
+                    */
+                    (JNI_ARM64_V8A, scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
+                ]);
+                static ref JNI_SHANNON_PROLOGUES: HashMap<u16, scanner::Signature> =HashMap::from([
+                    /*
+                      push ebp
+                      mov  ebp, esp
+                      push ebx
+                      push edi
+                      push esi
+                      and  esp, 0xfffffff0
+                      sub  esp, ??
+                      call 0x5
+                    */
+                    (
+                        JNI_X86,
+                        scanner::Signature::from_ida_style("55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00").unwrap(),
+                    ),
+                    /*
+                      push rbp
+                      mov  rbp, rsp
+                    */
+                    (JNI_X86_64, scanner::Signature::from_ida_style("55 48 89 E5").unwrap()),
+                    /*
+                      push {r4, r5, r6, r7, r8, sl, fp, lr}
+                      add  fp, sp, #0x18
+                    */
+                    (JNI_ARMEABI_V7A, scanner::Signature::from_ida_style("F0 4D 2D E9 18 B0 8D E2").unwrap()),
+                    /*
+                      str x23, [sp, #-0x40]!
+                      stp x22, x21, [sp, #0x10]
+                      stp x20, x19, [sp, #0x20]
+                      stp x29, x30, [sp, #0x30]
+                    */
+                    (
+                        JNI_ARM64_V8A,
+                        scanner::Signature::from_ida_style("F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9").unwrap(),
+                    ),
+                ]);
+            }
 
             let binary = args.get_one::<String>("binary").unwrap();
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
@@ -669,66 +675,66 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
               LC_SEGMENT64 we can find the sections of the file which can be used to optimise signature scanning
             */
 
-            #[allow(non_snake_case)]
-            let SHANNON_CONSTANTS = HashMap::from([
-                /*
-                  Constant is embedded after function, and is loaded using offset from PC
-                  000FE750 C4 10 9F E5    ldr r1, [pc, #0xc4]
-                  000FE754 82 01 20 E0    eor r0, r0, r2, lsl #3
-                  ...
-                  000FE81C 3A C5 96 69    0x6996C53A
-                */
-                ("armv6", scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
-                /*
-                  Registers don't seem to change, might need updating
-                  movw r1, #0xc53a
-                  movt r1, #0x6996
-                */
-                ("armv7", scanner::Signature::from_ida_style("4C F2 3A 51 C6 F6 96 11").unwrap()),
-                /*
-                 Registers can change, so use wildcards
-                 movz w10, #0xc53a
-                 movk w10, #0x6996, lsl #16
-                */
-                ("arm64", scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
-            ]);
-            #[allow(non_snake_case)]
-            let SHANNON_PROLOGUES = HashMap::from([
-                /*
-                  push {r4, r5, r6, r7, lr}
-                  add  r7, sp, #0xc
-                  push {r8, sl, fp}
-                  sub  sp, sp, #8
-                  mov  r4, r0
-                */
-                (
-                    "armv6",
-                    scanner::Signature::from_ida_style("F0 40 2D E9 0C 70 8D E2 00 0D 2D E9 08 D0 4D E2 00 40 A0 E1")
+            lazy_static! {
+                static ref SHANNON_CONSTANTS: HashMap<&'static str, scanner::Signature> = HashMap::from([
+                    /*
+                      Constant is embedded after function, and is loaded using offset from PC
+                      000FE750 C4 10 9F E5    ldr r1, [pc, #0xc4]
+                      000FE754 82 01 20 E0    eor r0, r0, r2, lsl #3
+                      ...
+                      000FE81C 3A C5 96 69    0x6996C53A
+                    */
+                    ("armv6", scanner::Signature::from_ida_style("3A C5 96 69").unwrap()),
+                    /*
+                      Registers don't seem to change, might need updating
+                      movw r1, #0xc53a
+                      movt r1, #0x6996
+                    */
+                    ("armv7", scanner::Signature::from_ida_style("4C F2 3A 51 C6 F6 96 11").unwrap()),
+                    /*
+                     Registers can change, so use wildcards
+                     movz w10, #0xc53a
+                     movk w10, #0x6996, lsl #16
+                    */
+                    ("arm64", scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
+                ]);
+                static ref SHANNON_PROLOGUES: HashMap<&'static str, scanner::Signature> = HashMap::from([
+                    /*
+                      push {r4, r5, r6, r7, lr}
+                      add  r7, sp, #0xc
+                      push {r8, sl, fp}
+                      sub  sp, sp, #8
+                      mov  r4, r0
+                    */
+                    (
+                        "armv6",
+                        scanner::Signature::from_ida_style("F0 40 2D E9 0C 70 8D E2 00 0D 2D E9 08 D0 4D E2 00 40 A0 E1")
+                            .unwrap(),
+                    ),
+                    /*
+                      push   {r4, r5, r6, r7, lr}
+                      add    r7, sp, #0xc
+                      push.w {r8, sl, fp}
+                      sub    sp, #8
+                    */
+                    ("armv7", scanner::Signature::from_ida_style("F0 B5 03 AF 2D E9 00 0D 82 B0").unwrap()),
+                    /*
+                      stp x26, x25, [sp, #-0x50]!
+                      stp x24, x23, [sp, #0x10]
+                      stp x22, x21, [sp, #0x20]
+                      stp x20, x19, [sp, #0x30]
+                      stp x29, x30, [sp, #0x40]
+                      add x29, sp, #0x40
+                    */
+                    (
+                        "arm64",
+                        scanner::Signature::from_ida_style(
+                            "FA 67 BB A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 7B 04 A9 FD 03 01 91",
+                        )
                         .unwrap(),
-                ),
-                /*
-                  push   {r4, r5, r6, r7, lr}
-                  add    r7, sp, #0xc
-                  push.w {r8, sl, fp}
-                  sub    sp, #8
-                */
-                ("armv7", scanner::Signature::from_ida_style("F0 B5 03 AF 2D E9 00 0D 82 B0").unwrap()),
-                /*
-                  stp x26, x25, [sp, #-0x50]!
-                  stp x24, x23, [sp, #0x10]
-                  stp x22, x21, [sp, #0x20]
-                  stp x20, x19, [sp, #0x30]
-                  stp x29, x30, [sp, #0x40]
-                  add x29, sp, #0x40
-                */
-                (
-                    "arm64",
-                    scanner::Signature::from_ida_style(
-                        "FA 67 BB A9 F8 5F 01 A9 F6 57 02 A9 F4 4F 03 A9 FD 7B 04 A9 FD 03 01 91",
-                    )
-                    .unwrap(),
-                ),
-            ]);
+                    ),
+                ]);
+            }
 
             let binary = args.get_one::<String>("binary").unwrap();
             let binary_path = std::path::PathBuf::from(binary).canonicalize().unwrap();
