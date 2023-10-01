@@ -1,13 +1,26 @@
+use std::fmt;
+use std::fmt::Formatter;
+
 mod scan;
 mod scanner;
 mod script;
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Clone, clap::ValueEnum)]
 pub enum Target {
     Linux,
     Windows,
     Android,
     IOS,
+}
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Target::Linux => write!(f, "linux"),
+            Target::Windows => write!(f, "windows"),
+            Target::Android => write!(f, "android"),
+            Target::IOS => write!(f, "ios"),
+        }
+    }
 }
 
 fn main() {
@@ -87,4 +100,6 @@ fn main() {
             println!("Compiled Frida script")
         }
     }
+
+    script::bootstrap(target, &matches, &script_dir, &offsets);
 }
