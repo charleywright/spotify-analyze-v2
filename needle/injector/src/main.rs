@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fmt::Formatter;
 
+mod kill;
 mod scan;
 mod scanner;
 mod script;
@@ -99,6 +100,10 @@ fn main() {
         } else {
             println!("Compiled Frida script")
         }
+    }
+
+    if matches.get_flag("kill") {
+        kill::kill_process_using_executable(matches.get_one::<String>("executable").unwrap());
     }
 
     script::bootstrap(target, &matches, &script_dir, &offsets);
