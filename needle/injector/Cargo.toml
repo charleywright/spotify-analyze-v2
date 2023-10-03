@@ -12,3 +12,4 @@ mach_object = "0.1.17"
 package_json_schema = "0.2.1"
 pe-parser = "0.5.0"
 nix = { version = "0.27.1", default-features = false, features = ["signal"] }
+winsafe = { version = "0.0.18", features = ["kernel"] }
