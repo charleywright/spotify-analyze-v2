@@ -6,12 +6,30 @@ use package_json_schema::PackageJson;
 use super::scan::Offsets;
 use super::Target;
 
+fn run_command(cmd: &str, dir: Option<&PathBuf>) -> std::io::Result<std::process::ExitStatus> {
+    if cfg!(windows) {
+        let mut command = std::process::Command::new("cmd");
+        command.arg("/C").arg(cmd);
+        if dir.is_some() {
+            command.current_dir(dir.unwrap());
+        }
+        command.status()
+    } else {
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(cmd);
+        if dir.is_some() {
+            command.current_dir(dir.unwrap());
+        }
+        command.status()
+    }
+}
+
 pub fn locate_script_dir() -> Option<PathBuf> {
     let executable = std::env::current_exe();
     if executable.is_err() {
         return None;
     }
-    let executable = executable.unwrap().canonicalize().expect("Failed to canonicalize executable path");
+    let executable = executable.unwrap();
     let executable_dir = executable.parent().expect("Failed to get executable parent directory");
     let mut parent_dir = executable_dir.parent();
     let mut package_path = PathBuf::new();
@@ -58,23 +76,17 @@ pub fn locate_script_dir() -> Option<PathBuf> {
 }
 
 pub fn compile_script(script_dir: &PathBuf) -> bool {
-    let have_yarn = std::process::Command::new("yarn").arg("--version").status().is_ok();
-    let have_npm = std::process::Command::new("npm").arg("--version").status().is_ok();
+    let have_yarn = run_command("yarn --version", None).is_ok();
+    let have_npm = run_command("npm --version", None).is_ok();
 
     if have_yarn {
         println!("Using yarn");
 
-        if std::process::Command::new("yarn").arg("install").current_dir(script_dir).status().is_err() {
+        if run_command("yarn install", Some(script_dir)).is_err() {
             return false;
         }
 
-        if std::process::Command::new("yarn")
-            .arg("run")
-            .arg("compile")
-            .current_dir(script_dir)
-            .status()
-            .is_err()
-        {
+        if run_command("yarn run compile", Some(script_dir)).is_err() {
             return false;
         }
 
@@ -82,17 +94,11 @@ pub fn compile_script(script_dir: &PathBuf) -> bool {
     } else if have_npm {
         println!("Using npm");
 
-        if std::process::Command::new("npm").arg("install").current_dir(script_dir).status().is_err() {
+        if run_command("npm install", Some(script_dir)).is_err() {
             return false;
         }
 
-        if std::process::Command::new("npm")
-            .arg("run")
-            .arg("compile")
-            .current_dir(script_dir)
-            .status()
-            .is_err()
-        {
+        if run_command("npm run compile", Some(script_dir)).is_err() {
             return false;
         }
 
@@ -110,21 +116,21 @@ pub fn bootstrap(target: &Target, args: &ArgMatches, script_dir: &PathBuf, offse
         return false;
     }
 
-    let have_node = std::process::Command::new("node").arg("--version").status().is_ok();
+    let have_node = run_command("node --version", None).is_ok();
     if !have_node {
         eprintln!("Failed to find node");
         return false;
     }
 
-    let have_yarn = std::process::Command::new("yarn").arg("--version").status().is_ok();
-    let have_npm = std::process::Command::new("npm").arg("--version").status().is_ok();
+    let have_yarn = run_command("yarn --version", None).is_ok();
+    let have_npm = run_command("npm --version", None).is_ok();
     if have_yarn {
-        if std::process::Command::new("yarn").arg("install").current_dir(script_dir).status().is_err() {
+        if run_command("yarn install", Some(script_dir)).is_err() {
             eprintln!("Failed to install bootstrap dependencies");
             return false;
         }
     } else if have_npm {
-        if std::process::Command::new("npm").arg("install").current_dir(script_dir).status().is_err() {
+        if run_command("npm install", Some(script_dir)).is_err() {
             eprintln!("Failed to install bootstrap dependencies");
             return false;
         }
