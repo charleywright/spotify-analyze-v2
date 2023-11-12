@@ -1,3 +1,5 @@
+use itertools::izip;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum MaskType {
     Wildcard,
@@ -61,6 +63,25 @@ impl Signature {
         })
     }
 
+    fn check(&self, data: &[u8]) -> bool {
+        if data.len() != self.bytes.len() {
+            return false;
+        }
+
+        for (byte, mask, data) in izip!(&self.bytes, &self.mask, data) {
+            match mask {
+                MaskType::Wildcard => continue,
+                MaskType::Byte => {
+                    if data != byte {
+                        return false;
+                    }
+                },
+            }
+        }
+
+        true
+    }
+
     #[allow(dead_code)]
     pub fn scan(&self, data: &[u8]) -> Vec<usize> {
         self.scan_with_offset(data, 0)
@@ -70,19 +91,7 @@ impl Signature {
         let mut results = vec![];
 
         for i in 0..(data.len() - self.bytes.len()) {
-            let mut found = true;
-            for j in 0..self.bytes.len() {
-                match self.mask[j] {
-                    MaskType::Wildcard => continue,
-                    MaskType::Byte => {
-                        if data[i + j] != self.bytes[j] {
-                            found = false;
-                            break;
-                        }
-                    },
-                }
-            }
-            if found {
+            if self.check(&data[i..(i + self.bytes.len())]) {
                 results.push(i + offset);
             }
         }
@@ -99,19 +108,7 @@ impl Signature {
         let mut results = vec![];
 
         for i in (0..(data.len() - self.bytes.len())).rev() {
-            let mut found = true;
-            for j in 0..self.bytes.len() {
-                match self.mask[j] {
-                    MaskType::Wildcard => continue,
-                    MaskType::Byte => {
-                        if data[i + j] != self.bytes[j] {
-                            found = false;
-                            break;
-                        }
-                    },
-                }
-            }
-            if found {
+            if self.check(&data[i..(i + self.bytes.len())]) {
                 results.push(i + offset);
             }
         }

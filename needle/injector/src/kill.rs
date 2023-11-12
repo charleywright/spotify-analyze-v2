@@ -47,7 +47,7 @@ pub fn kill_process_using_executable(executable: &String) -> bool {
                 let proc_id = nix::unistd::Pid::from_raw(proc_id.unwrap());
                 nix::sys::signal::kill(proc_id, nix::sys::signal::SIGTERM).expect("Failed to send SIGTERM");
                 std::thread::sleep(Duration::from_millis(500));
-                // Ignore result because its okay for this to fail if the process has already cleanly exited
+                // Ignore result because it's okay for this to fail if the process has already cleanly exited
                 let _ = nix::sys::signal::kill(proc_id, nix::sys::signal::SIGKILL);
             }
         }

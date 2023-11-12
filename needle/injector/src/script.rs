@@ -1,6 +1,6 @@
-use clap::ArgMatches;
 use std::path::PathBuf;
 
+use clap::ArgMatches;
 use package_json_schema::PackageJson;
 
 use super::scan::Offsets;
@@ -10,15 +10,15 @@ fn run_command(cmd: &str, dir: Option<&PathBuf>) -> std::io::Result<std::process
     if cfg!(windows) {
         let mut command = std::process::Command::new("cmd");
         command.arg("/C").arg(cmd);
-        if dir.is_some() {
-            command.current_dir(dir.unwrap());
+        if let Some(dir) = dir {
+            command.current_dir(dir);
         }
         command.status()
     } else {
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg(cmd);
-        if dir.is_some() {
-            command.current_dir(dir.unwrap());
+        if let Some(dir) = dir {
+            command.current_dir(dir);
         }
         command.status()
     }
