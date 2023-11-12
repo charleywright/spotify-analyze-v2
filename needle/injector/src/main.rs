@@ -47,6 +47,8 @@ fn main() {
             .help("Kill the target process before injecting. Only needed on Windows & Linux"))
         .arg(clap::Arg::new("enable-debug").long("enable-debug").required(false).action(clap::ArgAction::SetTrue)
             .help("Enable the internal app's logging features on desktop platforms"))
+        .arg(clap::Arg::new("android-user").long("user").required(false)
+            .help("Spawn the app as a specific user on Android. Can be used with work profiles"))
         .arg(clap::Arg::new("flags").last(true).allow_hyphen_values(true).num_args(0..)
             .help("Flags to pass to the Frida script. Possible values:\n\
                    \x20\x20shannonLogCallStacks=true       - Log a call stack for SPIRC packet encryption\n\

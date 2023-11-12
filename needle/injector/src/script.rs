@@ -146,6 +146,11 @@ pub fn bootstrap(target: &Target, args: &ArgMatches, script_dir: &PathBuf, offse
     if args.get_flag("enable-debug") {
         bootstrap_command.arg("--enable-debug");
     }
+    if let Target::Android = target {
+        if let Some(android_id) = args.get_one::<String>("android-user") {
+            bootstrap_command.arg("--android-user").arg(android_id);
+        }
+    }
     bootstrap_command.arg("--");
     // Everything after "--" is passed to the Frida script through RPC
     bootstrap_command.arg(format!("serverKey={:#x}", offsets.server_public_key_offset));

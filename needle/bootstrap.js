@@ -78,7 +78,11 @@ function onOutput(pid, fd, data) {
     }
     case "android": {
       const device = await frida.getUsbDevice();
-      const pid = await device.spawn(exec);
+      const options = {};
+      if (args["android-user"]) {
+        options.uid = +args["android-user"];
+      }
+      const pid = await device.spawn(exec, options);
       console.log(`Spawned process ${pid}`);
       const session = await device.attach(pid);
       const script = await session.createScript(scriptSrc);
