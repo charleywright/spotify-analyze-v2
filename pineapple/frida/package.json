@@ -1,6 +1,6 @@
 {
   "type": "module",
-  "name": "apple-music",
+  "name": "spotify-analyze-v2",
   "main": "src/index.ts",
   "scripts": {
     "build": "frida-compile index.ts -o compiled.js -c",
