@@ -5,7 +5,7 @@ https://codebrowser.dev/
 TODO: IPv6
 */
 
-const TARGET_IP = `192.168.12.1`;
+const TARGET_IP = `192.168.1.120`;
 const TARGET_PORT = 4070;
 
 export function callStack() {
