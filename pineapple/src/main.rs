@@ -13,8 +13,7 @@ fn handle_client(mut downstream: TcpStream) -> std::io::Result<()> {
     }
 
     // Connect to real AP
-    let mut upstream =
-        TcpStream::connect("ap.spotify.com:4070").expect("Failed to connect to Spotify AP");
+    let mut upstream = TcpStream::connect("ap.spotify.com:4070").expect("Failed to connect to Spotify AP");
 
     // Read ClientHello from downstream
     let mut client_hello_length_bytes = [0; 4];
@@ -26,15 +25,9 @@ fn handle_client(mut downstream: TcpStream) -> std::io::Result<()> {
     println!("ClientHello: {}", hex::encode(client_hello_bytes.clone()));
 
     // Write ClientHello to upstream
-    upstream
-        .write(&starting_magic_bytes)
-        .expect("Failed to write magic bytes");
-    upstream
-        .write(&client_hello_length_bytes)
-        .expect("Failed to write ClientHello length");
-    upstream
-        .write(&client_hello_bytes[..])
-        .expect("Failed to write ClientHello");
+    upstream.write_all(&starting_magic_bytes).expect("Failed to write magic bytes");
+    upstream.write_all(&client_hello_length_bytes).expect("Failed to write ClientHello length");
+    upstream.write_all(&client_hello_bytes[..]).expect("Failed to write ClientHello");
 
     // Read APResponseMessage from upstream
     let mut ap_response_length_bytes = [0; 4];
@@ -43,50 +36,33 @@ fn handle_client(mut downstream: TcpStream) -> std::io::Result<()> {
     println!("APResponseMessage protobuf size: {}", ap_response_length);
     let mut ap_response_bytes: Vec<u8> = vec![0; ap_response_length as usize - 4];
     upstream.read_exact(&mut ap_response_bytes[..])?;
-    println!(
-        "APResponseMessage: {}",
-        hex::encode(ap_response_bytes.clone())
-    );
+    println!("APResponseMessage: {}", hex::encode(ap_response_bytes.clone()));
 
     // Write APResponseMessage to downstream
-    downstream
-        .write(&ap_response_length_bytes)
-        .expect("Failed to write APResponseMessage length");
-    downstream
-        .write(&ap_response_bytes[..])
-        .expect("Failed to write APResponseMessage");
+    downstream.write_all(&ap_response_length_bytes).expect("Failed to write APResponseMessage length");
+    downstream.write_all(&ap_response_bytes[..]).expect("Failed to write APResponseMessage");
 
     // Read ClientResponsePlaintext from downstream
     let mut client_response_plaintext_length_bytes = [0; 4];
     downstream.read_exact(&mut client_response_plaintext_length_bytes)?;
-    let client_response_plaintext_length =
-        u32::from_be_bytes(client_response_plaintext_length_bytes);
-    println!(
-        "ClientResponsePlaintext protobuf size: {}",
-        client_response_plaintext_length
-    );
-    let mut client_response_plaintext: Vec<u8> =
-        vec![0; client_response_plaintext_length as usize - 4];
+    let client_response_plaintext_length = u32::from_be_bytes(client_response_plaintext_length_bytes);
+    println!("ClientResponsePlaintext protobuf size: {}", client_response_plaintext_length);
+    let mut client_response_plaintext: Vec<u8> = vec![0; client_response_plaintext_length as usize - 4];
     downstream.read_exact(&mut client_response_plaintext[..])?;
-    println!(
-        "ClientResponsePlaintext: {}",
-        hex::encode(client_response_plaintext.clone())
-    );
+    println!("ClientResponsePlaintext: {}", hex::encode(client_response_plaintext.clone()));
 
     // Write ClientResponsePlaintext to upstream
     upstream
-        .write(&client_response_plaintext_length_bytes)
+        .write_all(&client_response_plaintext_length_bytes)
         .expect("Failed to write ClientResponsePlaintext length");
-    upstream
-        .write(&client_response_plaintext[..])
-        .expect("Failed to write ClientResponsePlaintext");
+    upstream.write_all(&client_response_plaintext[..]).expect("Failed to write ClientResponsePlaintext");
 
     Ok(())
 }
 
 fn main() -> io::Result<()> {
     let host = "192.168.1.120:4070";
-    let listener = TcpListener::bind(host).expect(format!("Failed to listen on {}", host).as_str());
+    let listener = TcpListener::bind(host).unwrap_or_else(|_| panic!("Failed to bind to {}", host));
     println!("Listening on {}", host);
 
     for stream in listener.incoming() {
