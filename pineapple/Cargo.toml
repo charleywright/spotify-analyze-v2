@@ -3,5 +3,19 @@ name = "pineapple"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
+[[bin]]
+name = "pineapple"
+path = "src/main.rs"
+
+[dependencies.pineapple-proto]
+path = "proto"
+version = "1.0.0"
+
 [dependencies]
 hex = "0.4.3"
+num-bigint-dig = "0.8.4"
+protobuf = "3.3.0"
+rand = "0.8.5"
+rsa = { version = "0.9.4", features = ["sha1", "pem"] }

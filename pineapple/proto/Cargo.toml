@@ -1,0 +1,11 @@
+[package]
+name = "pineapple-proto"
+version = "1.0.0"
+build = "build.rs"
+edition = "2021"
+
+[dependencies]
+protobuf = "3"
+
+[build-dependencies]
+protobuf-codegen = "3"
