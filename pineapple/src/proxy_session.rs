@@ -1,5 +1,6 @@
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
 use super::dh;
 use dh::DiffieHellman;
@@ -450,22 +451,33 @@ impl ProxySession {
         if downstream_client_response.login_crypto_response.diffie_hellman.hmac() != downstream_hmac {
             return Err(Error::new(ErrorKind::InvalidData, "Client has mismatched HMAC"));
         }
-        println!(
-            "[D] WE ARE ALL GOOD, SEND={} RECV={}",
-            hex::encode(self.downstream_send_key),
-            hex::encode(self.downstream_recv_key)
-        );
 
         self.send_upstream_client_hello(downstream_client_hello.build_info)?;
         let upstream_ap_response = self.read_upstream_ap_response()?;
         let upstream_hmac = self.validate_upstream_ap_response(&upstream_ap_response)?;
         self.send_upstream_client_response(&upstream_hmac)?;
-        println!(
-            "[U] WE ARE ALL GOOD, SEND={} RECV={}",
-            hex::encode(self.upstream_send_key),
-            hex::encode(self.upstream_recv_key)
-        );
 
         Ok(())
+    }
+
+    pub fn run(&mut self) {
+        if let Err(error) = self.downstream.set_read_timeout(Some(Duration::from_millis(250))) {
+            println!("Failed to set downstream socket timeout: {}", error);
+            return;
+        }
+        if let Err(error) = self.upstream.set_read_timeout(Some(Duration::from_millis(250))) {
+            println!("Failed to set upstream socket timeout: {}", error);
+            return;
+        }
+        // TODO: This is horrible. Replace with a poll-based implementation soon
+        loop {
+            let mut header = [0u8; 3];
+            if self.downstream.read_exact(&mut header).is_ok() {
+                println!("[D] Read header {}", hex::encode(header));
+            }
+            if self.upstream.read_exact(&mut header).is_ok() {
+                println!("[U] Read header {}", hex::encode(header));
+            }
+        }
     }
 }
