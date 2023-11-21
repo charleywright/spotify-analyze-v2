@@ -3,15 +3,20 @@ use std::net::TcpStream;
 
 use super::dh;
 use dh::DiffieHellman;
+use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
 use num_bigint_dig::BigUint;
-use pineapple_proto::keyexchange_old as keyexchange;
+use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo};
 use protobuf::Message;
 use rand::RngCore;
+use rsa::Pkcs1v15Sign;
 use rsa::{
     pkcs8::{DecodePrivateKey, DecodePublicKey},
     RsaPrivateKey, RsaPublicKey,
 };
+use sha1::{Digest, Sha1};
+
+type HmacSha1 = Hmac<Sha1>;
 
 // Pineapple's development key pair. TODO: Generate on startup and save locally
 static OUR_PRIVATE_KEY: &str = r#"
@@ -103,15 +108,24 @@ vQIDAQAB
 -----END PUBLIC KEY-----
 "#;
 
+// Spotify currently only use one key
+const SERVER_KEY_IDX: i32 = 0;
+
+const SPIRC_MAGIC: [u8; 2] = [0x00, 0x04];
+
 pub struct ProxySession {
     downstream_accumulator: Vec<u8>,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
+    downstream_send_key: [u8; 32],
+    downstream_recv_key: [u8; 32],
     downstream: TcpStream,
 
     upstream_accumulator: Vec<u8>,
     upstream_dh: DiffieHellman,
     upstream_public_key: RsaPublicKey,
+    upstream_send_key: [u8; 32],
+    upstream_recv_key: [u8; 32],
     upstream: TcpStream,
 }
 
@@ -157,122 +171,300 @@ impl ProxySession {
             downstream_accumulator: Vec::<u8>::new(),
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
+            downstream_send_key: [0; 32],
+            downstream_recv_key: [0; 32],
 
+            upstream,
             upstream_accumulator: Vec::<u8>::new(),
             upstream_dh: DiffieHellman::random(),
             upstream_public_key,
-            upstream,
+            upstream_send_key: [0; 32],
+            upstream_recv_key: [0; 32],
         }
     }
 
-    pub fn start(&mut self) -> Result<(), Error> {
-        {
-            // Check magic
-            let mut starting_magic_bytes = [0; 2];
-            self.downstream.read_exact(&mut starting_magic_bytes)?;
-            if starting_magic_bytes != [0x0, 0x4] {
-                return Err(Error::new(ErrorKind::InvalidData, "Invalid magic bytes"));
-            }
-            self.downstream_accumulator.extend_from_slice(&starting_magic_bytes);
+    fn check_downstream_magic(&mut self) -> Result<(), Error> {
+        let mut starting_magic_bytes = [0; 2];
+        self.downstream.read_exact(&mut starting_magic_bytes)?;
+        if starting_magic_bytes != SPIRC_MAGIC {
+            return Err(Error::new(ErrorKind::InvalidData, "Invalid magic bytes"));
         }
+        self.downstream_accumulator.extend_from_slice(&starting_magic_bytes);
+        Ok(())
+    }
 
-        // Read downstream ClientHello
-        let downstream_client_hello = {
-            // Read ClientHello from downstream
-            let mut client_hello_length_bytes = [0; 4];
-            self.downstream.read_exact(&mut client_hello_length_bytes)?;
-            let client_hello_length = u32::from_be_bytes(client_hello_length_bytes);
-            self.downstream_accumulator.extend_from_slice(&client_hello_length_bytes);
-            println!("[D] ClientHello protobuf size: {}", client_hello_length - 6);
+    fn read_downstream_client_hello(&mut self) -> Result<ClientHello, Error> {
+        let mut client_hello_length_bytes = [0; 4];
+        self.downstream.read_exact(&mut client_hello_length_bytes)?;
+        let client_hello_length = u32::from_be_bytes(client_hello_length_bytes);
+        self.downstream_accumulator.extend_from_slice(&client_hello_length_bytes);
+        println!(
+            "[D] Read ClientHello size {}, protobuf: {}",
+            client_hello_length,
+            client_hello_length - 6
+        );
 
-            let mut client_hello_bytes: Vec<u8> = vec![0; client_hello_length as usize - 6];
-            self.downstream.read_exact(&mut client_hello_bytes)?;
-            self.downstream_accumulator.extend_from_slice(&client_hello_bytes);
-            println!("[D] ClientHello: {}", hex::encode(&client_hello_bytes));
-            ClientHello::parse_from_bytes(&client_hello_bytes).expect("Failed to parse ClientHello")
-        };
+        let mut client_hello_bytes: Vec<u8> = vec![0; client_hello_length as usize - 6];
+        self.downstream.read_exact(&mut client_hello_bytes)?;
+        self.downstream_accumulator.extend(&client_hello_bytes);
+        println!("[D] Read ClientHello: {}", hex::encode(&client_hello_bytes));
+        ClientHello::parse_from_bytes(&client_hello_bytes).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
+    }
 
-        // Create and write ClientHello to upstream
-        let mut upstream_client_hello = ClientHello {
-            build_info: downstream_client_hello.build_info,
+    fn send_downstream_ap_response(&mut self) -> Result<(), Error> {
+        let mut downstream_ap_response = APResponseMessage::default();
+        downstream_ap_response
+            .challenge
+            .mut_or_insert_default()
+            .fingerprint_challenge
+            .mut_or_insert_default();
+        downstream_ap_response.challenge.mut_or_insert_default().pow_challenge.mut_or_insert_default();
+        downstream_ap_response.challenge.mut_or_insert_default().crypto_challenge.mut_or_insert_default();
+        downstream_ap_response
+            .challenge
+            .mut_or_insert_default()
+            .login_crypto_challenge
+            .mut_or_insert_default()
+            .diffie_hellman
+            .mut_or_insert_default()
+            .set_server_signature_key(SERVER_KEY_IDX);
+        {
+            let mut server_nonce = vec![0u8; 16];
+            rand::thread_rng().fill_bytes(&mut server_nonce);
+            downstream_ap_response.challenge.mut_or_insert_default().set_server_nonce(server_nonce);
+        }
+        {
+            let public_key_bytes = self.downstream_dh.public_bytes();
+            let digest = Sha1::digest(&public_key_bytes);
+            let padding = Pkcs1v15Sign::new::<Sha1>();
+            let signature =
+                self.downstream_private_key.sign(padding, &digest).expect("Failed to sign downstream DH key");
+            downstream_ap_response
+                .challenge
+                .mut_or_insert_default()
+                .login_crypto_challenge
+                .mut_or_insert_default()
+                .diffie_hellman
+                .mut_or_insert_default()
+                .set_gs(public_key_bytes);
+            downstream_ap_response
+                .challenge
+                .mut_or_insert_default()
+                .login_crypto_challenge
+                .mut_or_insert_default()
+                .diffie_hellman
+                .mut_or_insert_default()
+                .set_gs_signature(signature);
+        }
+        {
+            let downstream_ap_response_len = downstream_ap_response.compute_size() as u32 + 4;
+            let downstream_ap_response_len_bytes = downstream_ap_response_len.to_be_bytes();
+            self.downstream
+                .write_all(&downstream_ap_response_len_bytes)
+                .expect("Failed to write APResponse length");
+            self.downstream_accumulator.extend_from_slice(&downstream_ap_response_len_bytes);
+            println!(
+                "[D] Sent APResponse size {} protobuf {}",
+                downstream_ap_response_len,
+                downstream_ap_response_len - 4
+            );
+
+            let downstream_ap_response_bytes =
+                downstream_ap_response.write_to_bytes().expect("Failed to serialize APResponse");
+            self.downstream.write_all(&downstream_ap_response_bytes).expect("Failed to write APResponse");
+            println!("[D] Sent APResponse {}", hex::encode(&downstream_ap_response_bytes));
+            self.downstream_accumulator.extend(downstream_ap_response_bytes);
+        }
+        Ok(())
+    }
+
+    fn compute_downstream_keys(&mut self, client_key: &[u8]) -> Result<[u8; 20], Error> {
+        self.downstream_dh.compute_shared(client_key);
+        let shared_key = self.downstream_dh.shared_bytes();
+        let mut data = vec![];
+        for i in 1u8..6u8 {
+            let mut hmac = HmacSha1::new_from_slice(&shared_key)
+                .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+            hmac.update(&self.downstream_accumulator);
+            hmac.update(&[i]);
+            data.extend_from_slice(&hmac.finalize().into_bytes());
+        }
+        let hmac_key = &data[0x00..0x14];
+        let send_key = &data[0x14..0x34];
+        let recv_key = &data[0x34..0x54];
+
+        self.downstream_send_key.copy_from_slice(send_key);
+        self.downstream_recv_key.copy_from_slice(recv_key);
+
+        let mut hmac = HmacSha1::new_from_slice(hmac_key)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+        hmac.update(&self.downstream_accumulator);
+        Ok(hmac.finalize().into_bytes().into())
+    }
+
+    fn read_downstream_client_response(&mut self) -> Result<ClientResponsePlaintext, Error> {
+        let mut client_response_length_bytes = [0; 4];
+        self.downstream.read_exact(&mut client_response_length_bytes)?;
+        let client_response_length = u32::from_be_bytes(client_response_length_bytes);
+        println!(
+            "[D] Read ClientResponsePlaintext size {}, protobuf: {}",
+            client_response_length,
+            client_response_length - 4
+        );
+
+        let mut client_response_bytes: Vec<u8> = vec![0; client_response_length as usize - 4];
+        self.downstream.read_exact(&mut client_response_bytes)?;
+        println!("[D] Read ClientResponsePlaintext: {}", hex::encode(&client_response_bytes));
+        ClientResponsePlaintext::parse_from_bytes(&client_response_bytes)
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
+    }
+
+    fn send_upstream_client_hello(&mut self, build_info: protobuf::MessageField<BuildInfo>) -> Result<(), Error> {
+        let mut client_hello = ClientHello {
+            build_info,
             ..Default::default()
         };
-        upstream_client_hello
-            .cryptosuites_supported
-            .push(keyexchange::Cryptosuite::CRYPTO_SUITE_SHANNON.into());
+        client_hello.cryptosuites_supported.push(keyexchange::Cryptosuite::CRYPTO_SUITE_SHANNON.into());
         {
             let mut nonce = vec![0; 16];
             rand::thread_rng().fill_bytes(&mut nonce);
-            upstream_client_hello.set_client_nonce(nonce);
+            client_hello.set_client_nonce(nonce);
         }
-        upstream_client_hello.set_padding(vec![0x01]);
-        upstream_client_hello
+        {
+            // Make sure the accumulator is different even for identical messages
+            // The server padding already makes sure of this, no harm doing it here too
+            let mut padding = vec![0; 64];
+            rand::thread_rng().fill_bytes(&mut padding);
+            client_hello.set_padding(padding);
+        }
+        client_hello
             .login_crypto_hello
             .mut_or_insert_default()
             .diffie_hellman
             .mut_or_insert_default()
-            .set_server_keys_known(1 << 0);
-        upstream_client_hello
+            .set_server_keys_known(1 << SERVER_KEY_IDX);
+        client_hello
             .login_crypto_hello
             .mut_or_insert_default()
             .diffie_hellman
             .mut_or_insert_default()
             .set_gc(self.upstream_dh.public_bytes());
-        self.upstream_accumulator.extend_from_slice(&[0x00, 0x04]);
-        self.upstream_accumulator
-            .extend_from_slice(&(2 + 4 + upstream_client_hello.compute_size()).to_be_bytes()[4..8]);
-        self.upstream_accumulator
-            .extend(upstream_client_hello.write_to_bytes().expect("Failed to serialize upstream ClientHello"));
-        self.upstream.write_all(&self.upstream_accumulator).expect("Failed to write upstream ClientHello");
-        println!("[U] Sent {}", hex::encode(&self.upstream_accumulator));
 
-        // Read APResponseMessage from upstream
-        let upstream_ap_response = {
-            let mut ap_response_length_bytes = [0; 4];
-            self.upstream.read_exact(&mut ap_response_length_bytes)?;
-            let ap_response_length = u32::from_be_bytes(ap_response_length_bytes);
-            println!("[U] APResponseMessage protobuf size: {}", ap_response_length);
-            let mut ap_response_bytes: Vec<u8> = vec![0; ap_response_length as usize - 4];
-            self.upstream.read_exact(&mut ap_response_bytes)?;
-            println!("[U] APResponseMessage: {}", hex::encode(&ap_response_bytes));
-            APResponseMessage::parse_from_bytes(&ap_response_bytes).expect("Failed to parse upstream APResponseMessage")
-        };
+        self.upstream.write_all(&SPIRC_MAGIC)?;
+        self.upstream_accumulator.extend_from_slice(&SPIRC_MAGIC);
 
-        // // Parse and edit APResponseMessage
-        // let mut ap_response_message =
-        //     APResponseMessage::parse_from_bytes(&ap_response_bytes).expect("Failed to parse APResponseMessage");
-        // println!("{}", ap_response_message);
+        let client_hello_len = 2 + 4 + client_hello.compute_size() as u32;
+        let client_hello_len_bytes = client_hello_len.to_be_bytes();
+        self.upstream.write_all(&client_hello_len_bytes)?;
+        self.upstream_accumulator.extend_from_slice(&client_hello_len_bytes);
+        println!(
+            "[U] Sent ClientHello size {} protobuf {}",
+            client_hello_len,
+            client_hello_len - 2 - 4
+        );
 
-        // // Write APResponseMessage to downstream
-        // self.downstream
-        //     .write_all(&ap_response_length_bytes)
-        //     .expect("Failed to write APResponseMessage length");
-        // self.downstream.write_all(&ap_response_bytes).expect("Failed to write APResponseMessage");
+        let client_hello_bytes = client_hello.write_to_bytes()?;
+        self.upstream.write_all(&client_hello_bytes)?;
+        println!("[U] Sent ClientHello {}", hex::encode(&client_hello_bytes));
+        self.upstream_accumulator.extend(client_hello_bytes);
+        Ok(())
+    }
 
-        // // Read ClientResponsePlaintext from downstream
-        // let mut client_response_plaintext_length_bytes = [0; 4];
-        // self.downstream.read_exact(&mut client_response_plaintext_length_bytes)?;
-        // let client_response_plaintext_length = u32::from_be_bytes(client_response_plaintext_length_bytes);
-        // println!("ClientResponsePlaintext protobuf size: {}", client_response_plaintext_length);
-        // let mut client_response_plaintext_bytes: Vec<u8> = vec![0; client_response_plaintext_length as usize - 4];
-        // self.downstream.read_exact(&mut client_response_plaintext_bytes)?;
-        // println!(
-        //     "ClientResponsePlaintext: {}",
-        //     hex::encode(client_response_plaintext_bytes.clone())
-        // );
+    fn read_upstream_ap_response(&mut self) -> Result<APResponseMessage, Error> {
+        let mut ap_response_length_bytes = [0; 4];
+        self.upstream.read_exact(&mut ap_response_length_bytes)?;
+        let ap_response_length = u32::from_be_bytes(ap_response_length_bytes);
+        self.upstream_accumulator.extend_from_slice(&ap_response_length_bytes);
+        println!("[U] APResponseMessage protobuf size: {}", ap_response_length);
+        let mut ap_response_bytes: Vec<u8> = vec![0; ap_response_length as usize - 4];
+        self.upstream.read_exact(&mut ap_response_bytes)?;
+        self.upstream_accumulator.extend(&ap_response_bytes);
+        println!("[U] APResponseMessage: {}", hex::encode(&ap_response_bytes));
+        APResponseMessage::parse_from_bytes(&ap_response_bytes).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
+    }
 
-        // // Parse and edit ClientResponsePlaintext
-        // let mut client_response_plaintext = ClientResponsePlaintext::parse_from_bytes(&client_response_plaintext_bytes)
-        //     .expect("Failed to parse ClientResponsePlaintext");
-        // println!("{}", client_response_plaintext);
+    fn validate_upstream_ap_response(&mut self, ap_response: &APResponseMessage) -> Result<[u8; 20], Error> {
+        let remote_key = ap_response.challenge.login_crypto_challenge.diffie_hellman.gs();
+        let signature = ap_response.challenge.login_crypto_challenge.diffie_hellman.gs_signature();
+        let remote_key_hash = Sha1::digest(remote_key);
+        let scheme = Pkcs1v15Sign::new::<Sha1>();
+        self.upstream_public_key
+            .verify(scheme, &remote_key_hash, signature)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "RSA Verification of upstream failed"))?;
 
-        // // Write ClientResponsePlaintext to upstream
-        // self.upstream
-        //     .write_all(&client_response_plaintext_length_bytes)
-        //     .expect("Failed to write ClientResponsePlaintext length");
-        // self.upstream
-        //     .write_all(&client_response_plaintext_bytes)
-        //     .expect("Failed to write ClientResponsePlaintext");
+        self.upstream_dh.compute_shared(remote_key);
+        let shared_key = self.upstream_dh.shared_bytes();
+        let mut data = vec![];
+        for i in 1u8..6u8 {
+            let mut hmac = HmacSha1::new_from_slice(&shared_key)
+                .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+            hmac.update(&self.upstream_accumulator);
+            hmac.update(&[i]);
+            data.extend_from_slice(&hmac.finalize().into_bytes());
+        }
+        let hmac_key = &data[0x00..0x14];
+        let send_key = &data[0x14..0x34];
+        let recv_key = &data[0x34..0x54];
+
+        self.upstream_send_key.copy_from_slice(send_key);
+        self.upstream_recv_key.copy_from_slice(recv_key);
+
+        let mut hmac = HmacSha1::new_from_slice(hmac_key)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+        hmac.update(&self.upstream_accumulator);
+        Ok(hmac.finalize().into_bytes().into())
+    }
+
+    fn send_upstream_client_response(&mut self, upstream_hmac: &[u8]) -> Result<(), Error> {
+        let mut client_response = ClientResponsePlaintext::new();
+        client_response
+            .login_crypto_response
+            .mut_or_insert_default()
+            .diffie_hellman
+            .mut_or_insert_default()
+            .set_hmac(upstream_hmac.into());
+        client_response.pow_response.mut_or_insert_default();
+        client_response.crypto_response.mut_or_insert_default();
+        let client_response_len = 4 + client_response.compute_size() as u32;
+        let client_response_len_bytes = client_response_len.to_be_bytes();
+        self.upstream.write_all(&client_response_len_bytes)?;
+        println!(
+            "[U] Sent ClientResponsePlaintext size {} protobuf {}",
+            client_response_len,
+            client_response_len - 4
+        );
+
+        let client_response_bytes = client_response.write_to_bytes()?;
+        self.upstream.write_all(&client_response_bytes)?;
+        println!("[U] Sent ClientResponsePlaintext {}", hex::encode(&client_response_bytes));
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), Error> {
+        self.check_downstream_magic()?;
+        let downstream_client_hello = self.read_downstream_client_hello()?;
+        self.send_downstream_ap_response()?;
+        let downstream_hmac =
+            self.compute_downstream_keys(downstream_client_hello.login_crypto_hello.diffie_hellman.gc())?;
+        let downstream_client_response = self.read_downstream_client_response()?;
+        if downstream_client_response.login_crypto_response.diffie_hellman.hmac() != downstream_hmac {
+            return Err(Error::new(ErrorKind::InvalidData, "Client has mismatched HMAC"));
+        }
+        println!(
+            "[D] WE ARE ALL GOOD, SEND={} RECV={}",
+            hex::encode(self.downstream_send_key),
+            hex::encode(self.downstream_recv_key)
+        );
+
+        self.send_upstream_client_hello(downstream_client_hello.build_info)?;
+        let upstream_ap_response = self.read_upstream_ap_response()?;
+        let upstream_hmac = self.validate_upstream_ap_response(&upstream_ap_response)?;
+        self.send_upstream_client_response(&upstream_hmac)?;
+        println!(
+            "[U] WE ARE ALL GOOD, SEND={} RECV={}",
+            hex::encode(self.upstream_send_key),
+            hex::encode(self.upstream_recv_key)
+        );
 
         Ok(())
     }
