@@ -308,6 +308,7 @@ dependencies = [
  "rand",
  "rsa",
  "sha1",
+ "shannon",
 ]
 
 [[package]]
@@ -545,6 +546,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shannon"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ea5b41c9427b56caa7b808cb548a04fb50bb5b9e98590b53f28064ff4174561"
+dependencies = [
+ "byteorder",
 ]
 
 [[package]]

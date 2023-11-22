@@ -21,3 +21,4 @@ protobuf = "3.3.0"
 rand = "0.8.5"
 rsa = { version = "0.9.4", features = ["sha1", "pem"] }
 sha1 = "0.10.6"
+shannon = "0.2.0"

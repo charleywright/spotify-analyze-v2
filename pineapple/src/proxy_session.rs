@@ -3,6 +3,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use super::dh;
+use super::shannon::{DecryptResult, DecryptState, ShannonCipher};
 use dh::DiffieHellman;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
@@ -118,15 +119,15 @@ pub struct ProxySession {
     downstream_accumulator: Vec<u8>,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
-    downstream_send_key: [u8; 32],
-    downstream_recv_key: [u8; 32],
+    downstream_cipher: Option<ShannonCipher>,
+    downstream_decrypt_len: u16,
     downstream: TcpStream,
 
     upstream_accumulator: Vec<u8>,
     upstream_dh: DiffieHellman,
     upstream_public_key: RsaPublicKey,
-    upstream_send_key: [u8; 32],
-    upstream_recv_key: [u8; 32],
+    upstream_cipher: Option<ShannonCipher>,
+    upstream_decrypt_len: u16,
     upstream: TcpStream,
 }
 
@@ -172,15 +173,15 @@ impl ProxySession {
             downstream_accumulator: Vec::<u8>::new(),
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
-            downstream_send_key: [0; 32],
-            downstream_recv_key: [0; 32],
+            downstream_cipher: None,
+            downstream_decrypt_len: 0,
 
             upstream,
             upstream_accumulator: Vec::<u8>::new(),
             upstream_dh: DiffieHellman::random(),
             upstream_public_key,
-            upstream_send_key: [0; 32],
-            upstream_recv_key: [0; 32],
+            upstream_cipher: None,
+            upstream_decrypt_len: 0,
         }
     }
 
@@ -291,11 +292,10 @@ impl ProxySession {
             data.extend_from_slice(&hmac.finalize().into_bytes());
         }
         let hmac_key = &data[0x00..0x14];
-        let send_key = &data[0x14..0x34];
-        let recv_key = &data[0x34..0x54];
+        let client_key = &data[0x14..0x34];
+        let proxy_key = &data[0x34..0x54];
 
-        self.downstream_send_key.copy_from_slice(send_key);
-        self.downstream_recv_key.copy_from_slice(recv_key);
+        self.downstream_cipher = ShannonCipher::new(proxy_key, client_key).into();
 
         let mut hmac = HmacSha1::new_from_slice(hmac_key)
             .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
@@ -404,11 +404,10 @@ impl ProxySession {
             data.extend_from_slice(&hmac.finalize().into_bytes());
         }
         let hmac_key = &data[0x00..0x14];
-        let send_key = &data[0x14..0x34];
-        let recv_key = &data[0x34..0x54];
+        let proxy_key = &data[0x14..0x34];
+        let server_key = &data[0x34..0x54];
 
-        self.upstream_send_key.copy_from_slice(send_key);
-        self.upstream_recv_key.copy_from_slice(recv_key);
+        self.upstream_cipher = ShannonCipher::new(proxy_key, server_key).into();
 
         let mut hmac = HmacSha1::new_from_slice(hmac_key)
             .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
@@ -469,14 +468,55 @@ impl ProxySession {
             println!("Failed to set upstream socket timeout: {}", error);
             return;
         }
+
         // TODO: This is horrible. Replace with a poll-based implementation soon
         loop {
-            let mut header = [0u8; 3];
-            if self.downstream.read_exact(&mut header).is_ok() {
-                println!("[D] Read header {}", hex::encode(header));
+            if let Some(cipher) = self.downstream_cipher.as_mut() {
+                match cipher.state() {
+                    DecryptState::Header => {
+                        let mut enc_header = [0; 3];
+                        if self.downstream.read_exact(&mut enc_header).is_err() {
+                            continue;
+                        }
+                        if let DecryptResult::Header(packet_type, packet_len) = cipher.decrypt(&enc_header) {
+                            self.downstream_decrypt_len = packet_len;
+                            println!("[D] Read {:#0x} of len {}", packet_type, packet_len);
+                        }
+                    },
+                    DecryptState::Body => {
+                        let mut enc_body = vec![0; self.downstream_decrypt_len as usize];
+                        if self.downstream.read_exact(&mut enc_body).is_err() {
+                            continue;
+                        }
+                        if let DecryptResult::Body(packet_body) = cipher.decrypt(&enc_body) {
+                            println!("[D] Read {}", hex::encode(&packet_body));
+                        }
+                    },
+                }
             }
-            if self.upstream.read_exact(&mut header).is_ok() {
-                println!("[U] Read header {}", hex::encode(header));
+
+            if let Some(cipher) = self.upstream_cipher.as_mut() {
+                match cipher.state() {
+                    DecryptState::Header => {
+                        let mut enc_header = [0; 3];
+                        if self.upstream.read_exact(&mut enc_header).is_err() {
+                            continue;
+                        }
+                        if let DecryptResult::Header(packet_type, packet_len) = cipher.decrypt(&enc_header) {
+                            self.upstream_decrypt_len = packet_len;
+                            println!("[U] Read {:#0x} of len {}", packet_type, packet_len);
+                        }
+                    },
+                    DecryptState::Body => {
+                        let mut enc_body = vec![0; self.upstream_decrypt_len as usize];
+                        if self.upstream.read_exact(&mut enc_body).is_err() {
+                            continue;
+                        }
+                        if let DecryptResult::Body(packet_body) = cipher.decrypt(&enc_body) {
+                            println!("[U] Read {}", hex::encode(&packet_body));
+                        }
+                    },
+                }
             }
         }
     }
