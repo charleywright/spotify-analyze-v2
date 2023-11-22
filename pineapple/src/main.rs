@@ -6,6 +6,7 @@ use std::{
 
 mod dh;
 mod proxy_session;
+mod shannon;
 use proxy_session::ProxySession;
 
 fn main() -> io::Result<()> {
