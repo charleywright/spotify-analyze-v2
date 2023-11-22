@@ -59,11 +59,20 @@ impl ShannonCipher {
                 DecryptResult::Header(packet_type, packet_len)
             },
             DecryptState::Body => {
+                if input.len() < 4 {
+                    panic!("Expected body to contain HMAC");
+                }
                 let mut data = vec![];
                 data.extend_from_slice(input);
+                let expected_hmac: Vec<u8> = data.drain((data.len() - 4)..).collect();
                 self.decrypt_ctx.decrypt(&mut data);
+                let mut hmac = vec![0; 4];
+                self.decrypt_ctx.finish(&mut hmac);
                 self.decrypt_nonce += 1;
                 self.decrypt_state = DecryptState::Header;
+                if expected_hmac != hmac {
+                    println!("Failed hmac test: {} != {}", hex::encode(&hmac), hex::encode(&expected_hmac));
+                }
                 DecryptResult::Body(data)
             },
         }
