@@ -1,9 +1,13 @@
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::pcap::IfaceType;
+
 use super::dh;
+use super::pcap::PcapWriter;
 use super::shannon::{DecryptResult, DecryptState, ShannonCipher};
 use dh::DiffieHellman;
 use hmac::{Hmac, Mac};
@@ -123,6 +127,8 @@ pub struct ProxySession {
     downstream_cipher: Option<ShannonCipher>,
     downstream_decrypt_type: u8,
     downstream_decrypt_len: u16,
+    downstream_send_iface: u32,
+    downstream_recv_iface: u32,
     downstream: TcpStream,
 
     upstream_accumulator: Vec<u8>,
@@ -131,11 +137,15 @@ pub struct ProxySession {
     upstream_cipher: Option<ShannonCipher>,
     upstream_decrypt_type: u8,
     upstream_decrypt_len: u16,
+    upstream_send_iface: u32,
+    upstream_recv_iface: u32,
     upstream: TcpStream,
+
+    pcap_writer: Arc<Mutex<PcapWriter>>,
 }
 
 impl ProxySession {
-    pub fn new(downstream: TcpStream, upstream: TcpStream) -> Self {
+    pub fn new(pcap_writer: Arc<Mutex<PcapWriter>>, downstream: TcpStream, upstream: TcpStream) -> Self {
         let downstream_private_key =
             RsaPrivateKey::from_pkcs8_pem(OUR_PRIVATE_KEY).expect("Failed to parse pineapple private key");
         #[cfg(debug_assertions)]
@@ -171,6 +181,16 @@ impl ProxySession {
             );
         }
 
+        let (downstream_send_iface, downstream_recv_iface, upstream_send_iface, upstream_recv_iface) = {
+            let mut writer = pcap_writer.lock().expect("Failed to lock PCAP writer");
+            (
+                writer.create_interface(IfaceType::DownstreamSend, downstream.local_addr().unwrap()),
+                writer.create_interface(IfaceType::DownstreamRecv, downstream.peer_addr().unwrap()),
+                writer.create_interface(IfaceType::UpstreamSend, upstream.local_addr().unwrap()),
+                writer.create_interface(IfaceType::UpstreamRecv, upstream.peer_addr().unwrap()),
+            )
+        };
+
         ProxySession {
             downstream,
             downstream_accumulator: Vec::<u8>::new(),
@@ -179,6 +199,8 @@ impl ProxySession {
             downstream_cipher: None,
             downstream_decrypt_type: 0,
             downstream_decrypt_len: 0,
+            downstream_send_iface,
+            downstream_recv_iface,
 
             upstream,
             upstream_accumulator: Vec::<u8>::new(),
@@ -187,7 +209,16 @@ impl ProxySession {
             upstream_cipher: None,
             upstream_decrypt_type: 0,
             upstream_decrypt_len: 0,
+            upstream_send_iface,
+            upstream_recv_iface,
+
+            pcap_writer,
         }
+    }
+
+    fn write(&self, iface_idx: u32, bytes: &[u8]) {
+        let mut writer = self.pcap_writer.lock().unwrap();
+        writer.write_data(iface_idx, bytes.into());
     }
 
     fn check_downstream_magic(&mut self) -> Result<(), Error> {
@@ -197,6 +228,7 @@ impl ProxySession {
             return Err(Error::new(ErrorKind::InvalidData, "Invalid magic bytes"));
         }
         self.downstream_accumulator.extend_from_slice(&starting_magic_bytes);
+        self.write(self.downstream_recv_iface, &starting_magic_bytes);
         Ok(())
     }
 
@@ -215,6 +247,12 @@ impl ProxySession {
         self.downstream.read_exact(&mut client_hello_bytes)?;
         self.downstream_accumulator.extend(&client_hello_bytes);
         println!("[D] Read ClientHello: {}", hex::encode(&client_hello_bytes));
+
+        let mut packet = vec![];
+        packet.extend_from_slice(&client_hello_length_bytes);
+        packet.extend(&client_hello_bytes);
+        self.write(self.downstream_recv_iface, &packet);
+
         ClientHello::parse_from_bytes(&client_hello_bytes).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
     }
 
@@ -280,7 +318,12 @@ impl ProxySession {
                 downstream_ap_response.write_to_bytes().expect("Failed to serialize APResponse");
             self.downstream.write_all(&downstream_ap_response_bytes).expect("Failed to write APResponse");
             println!("[D] Sent APResponse {}", hex::encode(&downstream_ap_response_bytes));
-            self.downstream_accumulator.extend(downstream_ap_response_bytes);
+            self.downstream_accumulator.extend(&downstream_ap_response_bytes);
+
+            let mut packet = vec![];
+            packet.extend_from_slice(&downstream_ap_response_len_bytes);
+            packet.extend(&downstream_ap_response_bytes);
+            self.write(self.downstream_send_iface, &packet);
         }
         Ok(())
     }
@@ -321,6 +364,12 @@ impl ProxySession {
         let mut client_response_bytes: Vec<u8> = vec![0; client_response_length as usize - 4];
         self.downstream.read_exact(&mut client_response_bytes)?;
         println!("[D] Read ClientResponsePlaintext: {}", hex::encode(&client_response_bytes));
+
+        let mut packet = vec![];
+        packet.extend_from_slice(&client_response_length_bytes);
+        packet.extend(&client_response_bytes);
+        self.write(self.downstream_recv_iface, &packet);
+
         ClientResponsePlaintext::parse_from_bytes(&client_response_bytes)
             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
     }
@@ -372,7 +421,13 @@ impl ProxySession {
         let client_hello_bytes = client_hello.write_to_bytes()?;
         self.upstream.write_all(&client_hello_bytes)?;
         println!("[U] Sent ClientHello {}", hex::encode(&client_hello_bytes));
-        self.upstream_accumulator.extend(client_hello_bytes);
+        self.upstream_accumulator.extend(&client_hello_bytes);
+
+        let mut packet = vec![];
+        packet.extend_from_slice(&client_hello_len_bytes);
+        packet.extend(&client_hello_bytes);
+        self.write(self.upstream_send_iface, &packet);
+
         Ok(())
     }
 
@@ -386,6 +441,12 @@ impl ProxySession {
         self.upstream.read_exact(&mut ap_response_bytes)?;
         self.upstream_accumulator.extend(&ap_response_bytes);
         println!("[U] APResponseMessage: {}", hex::encode(&ap_response_bytes));
+
+        let mut packet = vec![];
+        packet.extend_from_slice(&ap_response_length_bytes);
+        packet.extend(&ap_response_bytes);
+        self.write(self.upstream_recv_iface, &packet);
+
         APResponseMessage::parse_from_bytes(&ap_response_bytes).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
     }
 
@@ -442,6 +503,12 @@ impl ProxySession {
         let client_response_bytes = client_response.write_to_bytes()?;
         self.upstream.write_all(&client_response_bytes)?;
         println!("[U] Sent ClientResponsePlaintext {}", hex::encode(&client_response_bytes));
+
+        let mut packet = vec![];
+        packet.extend_from_slice(&client_response_len_bytes);
+        packet.extend(&client_response_bytes);
+        self.write(self.upstream_send_iface, &packet);
+
         Ok(())
     }
 
@@ -491,7 +558,16 @@ impl ProxySession {
                         packet_body.len(),
                         hex::encode(&packet_body)
                     );
-                    let encrypted = upstream_cipher.encrypt(packet_type, &packet_body);
+                    let mut packet = vec![];
+                    packet.push(packet_type);
+                    packet.extend_from_slice(&(packet_body.len() as u16).to_be_bytes());
+                    packet.extend(packet_body);
+                    {
+                        let mut writer = self.pcap_writer.lock().unwrap();
+                        writer.write_data(self.downstream_recv_iface, (&packet).into());
+                        writer.write_data(self.upstream_send_iface, (&packet).into());
+                    }
+                    let encrypted = upstream_cipher.encrypt(packet);
                     if let Err(error) = self.upstream.write_all(&encrypted) {
                         println!("Failed to proxy message to upstream: {}", error);
                         return false;
@@ -529,7 +605,16 @@ impl ProxySession {
                         packet_body.len(),
                         hex::encode(&packet_body)
                     );
-                    let encrypted = downstream_cipher.encrypt(packet_type, &packet_body);
+                    let mut packet = vec![];
+                    packet.push(packet_type);
+                    packet.extend_from_slice(&(packet_body.len() as u16).to_be_bytes());
+                    packet.extend(packet_body);
+                    {
+                        let mut writer = self.pcap_writer.lock().unwrap();
+                        writer.write_data(self.upstream_recv_iface, (&packet).into());
+                        writer.write_data(self.downstream_send_iface, (&packet).into());
+                    }
+                    let encrypted = downstream_cipher.encrypt(packet);
                     if let Err(error) = self.downstream.write_all(&encrypted) {
                         println!("Failed to proxy message to downstream: {}", error);
                         return false;
