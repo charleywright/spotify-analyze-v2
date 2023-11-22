@@ -121,6 +121,7 @@ pub struct ProxySession {
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
     downstream_cipher: Option<ShannonCipher>,
+    downstream_decrypt_type: u8,
     downstream_decrypt_len: u16,
     downstream: TcpStream,
 
@@ -128,6 +129,7 @@ pub struct ProxySession {
     upstream_dh: DiffieHellman,
     upstream_public_key: RsaPublicKey,
     upstream_cipher: Option<ShannonCipher>,
+    upstream_decrypt_type: u8,
     upstream_decrypt_len: u16,
     upstream: TcpStream,
 }
@@ -175,6 +177,7 @@ impl ProxySession {
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
             downstream_cipher: None,
+            downstream_decrypt_type: 0,
             downstream_decrypt_len: 0,
 
             upstream,
@@ -182,6 +185,7 @@ impl ProxySession {
             upstream_dh: DiffieHellman::random(),
             upstream_public_key,
             upstream_cipher: None,
+            upstream_decrypt_type: 0,
             upstream_decrypt_len: 0,
         }
     }
@@ -460,6 +464,82 @@ impl ProxySession {
         Ok(())
     }
 
+    fn check_downstream(&mut self) -> bool {
+        let downstream_cipher = self.downstream_cipher.as_mut().unwrap();
+        let upstream_cipher = self.upstream_cipher.as_mut().unwrap();
+        match downstream_cipher.state() {
+            DecryptState::Header => {
+                let mut enc_header = [0; 3];
+                if self.downstream.read_exact(&mut enc_header).is_err() {
+                    return true;
+                }
+                if let DecryptResult::Header(packet_type, packet_len) = downstream_cipher.decrypt(&enc_header) {
+                    self.downstream_decrypt_type = packet_type;
+                    self.downstream_decrypt_len = packet_len;
+                }
+            },
+            DecryptState::Body => {
+                let mut enc_body = vec![0; self.downstream_decrypt_len as usize + 4];
+                if self.downstream.read_exact(&mut enc_body).is_err() {
+                    return true;
+                }
+                if let DecryptResult::Body(packet_body) = downstream_cipher.decrypt(&enc_body) {
+                    let packet_type = self.downstream_decrypt_type;
+                    println!(
+                        "[D] Read type {:#0x} len {} data {}",
+                        packet_type,
+                        packet_body.len(),
+                        hex::encode(&packet_body)
+                    );
+                    let encrypted = upstream_cipher.encrypt(packet_type, &packet_body);
+                    if let Err(error) = self.upstream.write_all(&encrypted) {
+                        println!("Failed to proxy message to upstream: {}", error);
+                        return false;
+                    }
+                }
+            },
+        }
+        true
+    }
+
+    fn check_upstream(&mut self) -> bool {
+        let downstream_cipher = self.downstream_cipher.as_mut().unwrap();
+        let upstream_cipher = self.upstream_cipher.as_mut().unwrap();
+        match upstream_cipher.state() {
+            DecryptState::Header => {
+                let mut enc_header = [0; 3];
+                if self.upstream.read_exact(&mut enc_header).is_err() {
+                    return true;
+                }
+                if let DecryptResult::Header(packet_type, packet_len) = upstream_cipher.decrypt(&enc_header) {
+                    self.upstream_decrypt_type = packet_type;
+                    self.upstream_decrypt_len = packet_len;
+                }
+            },
+            DecryptState::Body => {
+                let mut enc_body = vec![0; self.upstream_decrypt_len as usize + 4];
+                if self.upstream.read_exact(&mut enc_body).is_err() {
+                    return true;
+                }
+                if let DecryptResult::Body(packet_body) = upstream_cipher.decrypt(&enc_body) {
+                    let packet_type = self.upstream_decrypt_type;
+                    println!(
+                        "[U] Read type {:#0x} len {} data {}",
+                        packet_type,
+                        packet_body.len(),
+                        hex::encode(&packet_body)
+                    );
+                    let encrypted = downstream_cipher.encrypt(packet_type, &packet_body);
+                    if let Err(error) = self.downstream.write_all(&encrypted) {
+                        println!("Failed to proxy message to downstream: {}", error);
+                        return false;
+                    }
+                }
+            },
+        }
+        true
+    }
+
     pub fn run(&mut self) {
         if let Err(error) = self.downstream.set_read_timeout(Some(Duration::from_millis(250))) {
             println!("Failed to set downstream socket timeout: {}", error);
@@ -470,56 +550,17 @@ impl ProxySession {
             return;
         }
 
-        // TODO: This is horrible. Replace with a poll-based implementation soon
+        // TODO: Replace with a poll-based implementation soon
         loop {
             thread::sleep(Duration::from_millis(50));
-
-            if let Some(cipher) = self.downstream_cipher.as_mut() {
-                match cipher.state() {
-                    DecryptState::Header => {
-                        let mut enc_header = [0; 3];
-                        if self.downstream.read_exact(&mut enc_header).is_err() {
-                            continue;
-                        }
-                        if let DecryptResult::Header(packet_type, packet_len) = cipher.decrypt(&enc_header) {
-                            self.downstream_decrypt_len = packet_len;
-                            println!("[D] Read {:#0x} of len {}", packet_type, packet_len);
-                        }
-                    },
-                    DecryptState::Body => {
-                        let mut enc_body = vec![0; self.downstream_decrypt_len as usize + 4];
-                        if self.downstream.read_exact(&mut enc_body).is_err() {
-                            continue;
-                        }
-                        if let DecryptResult::Body(packet_body) = cipher.decrypt(&enc_body) {
-                            println!("[D] Read {}", hex::encode(&packet_body));
-                        }
-                    },
-                }
+            if self.downstream_cipher.is_none() || self.upstream_cipher.is_none() {
+                continue;
             }
-
-            if let Some(cipher) = self.upstream_cipher.as_mut() {
-                match cipher.state() {
-                    DecryptState::Header => {
-                        let mut enc_header = [0; 3];
-                        if self.upstream.read_exact(&mut enc_header).is_err() {
-                            continue;
-                        }
-                        if let DecryptResult::Header(packet_type, packet_len) = cipher.decrypt(&enc_header) {
-                            self.upstream_decrypt_len = packet_len;
-                            println!("[U] Read {:#0x} of len {}", packet_type, packet_len);
-                        }
-                    },
-                    DecryptState::Body => {
-                        let mut enc_body = vec![0; self.upstream_decrypt_len as usize + 4];
-                        if self.upstream.read_exact(&mut enc_body).is_err() {
-                            continue;
-                        }
-                        if let DecryptResult::Body(packet_body) = cipher.decrypt(&enc_body) {
-                            println!("[U] Read {}", hex::encode(&packet_body));
-                        }
-                    },
-                }
+            if !self.check_downstream() {
+                return;
+            }
+            if !self.check_upstream() {
+                return;
             }
         }
     }
