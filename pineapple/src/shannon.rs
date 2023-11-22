@@ -32,11 +32,17 @@ impl ShannonCipher {
         }
     }
 
-    pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
+    pub fn encrypt(&mut self, packet_type: u8, body: &[u8]) -> Vec<u8> {
         let mut ciphertext = vec![];
-        ciphertext.extend_from_slice(data);
+        ciphertext.push(packet_type);
+        let body_len = body.len() as u16;
+        ciphertext.extend_from_slice(&body_len.to_be_bytes());
+        ciphertext.extend_from_slice(body);
         self.encrypt_ctx.nonce_u32(self.encrypt_nonce);
         self.encrypt_ctx.encrypt(&mut ciphertext);
+        let mut hmac = vec![0; 4];
+        self.encrypt_ctx.finish(&mut hmac);
+        ciphertext.append(&mut hmac);
         self.encrypt_nonce += 1;
 
         ciphertext
