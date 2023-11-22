@@ -1,5 +1,6 @@
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
+use std::thread;
 use std::time::Duration;
 
 use super::dh;
@@ -471,6 +472,8 @@ impl ProxySession {
 
         // TODO: This is horrible. Replace with a poll-based implementation soon
         loop {
+            thread::sleep(Duration::from_millis(50));
+
             if let Some(cipher) = self.downstream_cipher.as_mut() {
                 match cipher.state() {
                     DecryptState::Header => {
@@ -484,7 +487,7 @@ impl ProxySession {
                         }
                     },
                     DecryptState::Body => {
-                        let mut enc_body = vec![0; self.downstream_decrypt_len as usize];
+                        let mut enc_body = vec![0; self.downstream_decrypt_len as usize + 4];
                         if self.downstream.read_exact(&mut enc_body).is_err() {
                             continue;
                         }
@@ -508,7 +511,7 @@ impl ProxySession {
                         }
                     },
                     DecryptState::Body => {
-                        let mut enc_body = vec![0; self.upstream_decrypt_len as usize];
+                        let mut enc_body = vec![0; self.upstream_decrypt_len as usize + 4];
                         if self.upstream.read_exact(&mut enc_body).is_err() {
                             continue;
                         }
