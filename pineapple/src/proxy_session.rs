@@ -1,6 +1,6 @@
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -625,7 +625,7 @@ impl ProxySession {
         true
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self, is_running: Arc<RwLock<bool>>) {
         if let Err(error) = self.downstream.set_read_timeout(Some(Duration::from_millis(250))) {
             println!("Failed to set downstream socket timeout: {}", error);
             return;
@@ -637,6 +637,11 @@ impl ProxySession {
 
         // TODO: Replace with a poll-based implementation soon
         loop {
+            {
+                if !*is_running.read().unwrap() {
+                    return;
+                }
+            }
             thread::sleep(Duration::from_millis(50));
             if self.downstream_cipher.is_none() || self.upstream_cipher.is_none() {
                 continue;
