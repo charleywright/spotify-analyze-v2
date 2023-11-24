@@ -407,6 +407,7 @@ impl ProxySession {
 
         self.upstream.write_all(&SPIRC_MAGIC)?;
         self.upstream_accumulator.extend_from_slice(&SPIRC_MAGIC);
+        self.write(self.upstream_send_iface, &SPIRC_MAGIC);
 
         let client_hello_len = 2 + 4 + client_hello.compute_size() as u32;
         let client_hello_len_bytes = client_hello_len.to_be_bytes();
