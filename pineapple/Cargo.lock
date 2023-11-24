@@ -352,9 +352,11 @@ dependencies = [
 name = "pineapple"
 version = "0.1.0"
 dependencies = [
+ "byteorder",
  "ctrlc",
  "hex",
  "hmac",
+ "lazy_static",
  "num-bigint-dig",
  "pcap-file",
  "pineapple-proto",

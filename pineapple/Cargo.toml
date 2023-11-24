@@ -14,9 +14,11 @@ path = "proto"
 version = "1.0.0"
 
 [dependencies]
+byteorder = "1.5.0"
 ctrlc = { version = "3.4.1", features = ["termination"] }
 hex = "0.4.3"
 hmac = "0.12.1"
+lazy_static = "1.4.0"
 num-bigint-dig = "0.8.4"
 pcap-file = "2.0.0"
 protobuf = "3.3.0"

@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::pcap::IfaceType;
+use crate::pow;
 
 use super::dh;
 use super::pcap::PcapWriter;
@@ -380,6 +381,7 @@ impl ProxySession {
             ..Default::default()
         };
         client_hello.cryptosuites_supported.push(keyexchange::Cryptosuite::CRYPTO_SUITE_SHANNON.into());
+        client_hello.powschemes_supported.push(keyexchange::Powscheme::POW_HASH_CASH.into());
         {
             let mut nonce = vec![0; 16];
             rand::thread_rng().fill_bytes(&mut nonce);
@@ -482,7 +484,9 @@ impl ProxySession {
         Ok(hmac.finalize().into_bytes().into())
     }
 
-    fn send_upstream_client_response(&mut self, upstream_hmac: &[u8]) -> Result<(), Error> {
+    fn send_upstream_client_response(
+        &mut self, ap_response: &APResponseMessage, upstream_hmac: &[u8],
+    ) -> Result<(), Error> {
         let mut client_response = ClientResponsePlaintext::new();
         client_response
             .login_crypto_response
@@ -490,8 +494,17 @@ impl ProxySession {
             .diffie_hellman
             .mut_or_insert_default()
             .set_hmac(upstream_hmac.into());
-        client_response.pow_response.mut_or_insert_default();
-        client_response.crypto_response.mut_or_insert_default();
+        if let Some(hashcash_challenge) = ap_response.challenge.pow_challenge.hash_cash.as_ref() {
+            if let Ok(suffix) = pow::solve_hashcash(&self.upstream_accumulator, hashcash_challenge) {
+                client_response
+                    .pow_response
+                    .mut_or_insert_default()
+                    .hash_cash
+                    .mut_or_insert_default()
+                    .set_hash_suffix(suffix);
+            }
+        }
+        client_response.crypto_response.mut_or_insert_default().shannon.mut_or_insert_default();
         let client_response_len = 4 + client_response.compute_size() as u32;
         let client_response_len_bytes = client_response_len.to_be_bytes();
         self.upstream.write_all(&client_response_len_bytes)?;
@@ -527,7 +540,7 @@ impl ProxySession {
         self.send_upstream_client_hello(downstream_client_hello.build_info)?;
         let upstream_ap_response = self.read_upstream_ap_response()?;
         let upstream_hmac = self.validate_upstream_ap_response(&upstream_ap_response)?;
-        self.send_upstream_client_response(&upstream_hmac)?;
+        self.send_upstream_client_response(&upstream_ap_response, &upstream_hmac)?;
 
         Ok(())
     }
