@@ -14,8 +14,8 @@ use dh::DiffieHellman;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
 use num_bigint_dig::BigUint;
-use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo};
-use protobuf::Message;
+use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Powscheme};
+use protobuf::{EnumOrUnknown, Message};
 use rand::RngCore;
 use rsa::Pkcs1v15Sign;
 use rsa::{
@@ -257,14 +257,26 @@ impl ProxySession {
         ClientHello::parse_from_bytes(&client_hello_bytes).map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
     }
 
-    fn send_downstream_ap_response(&mut self) -> Result<(), Error> {
+    fn send_downstream_ap_response(&mut self, client_hello: &ClientHello) -> Result<APResponseMessage, Error> {
         let mut downstream_ap_response = APResponseMessage::default();
+        {
+            let pow_challenge =
+                downstream_ap_response.challenge.mut_or_insert_default().pow_challenge.mut_or_insert_default();
+            // TODO: There must be better syntax for this
+            if client_hello.powschemes_supported.contains(&EnumOrUnknown::new(Powscheme::POW_HASH_CASH)) {
+                let hash_cash_challenge = pow_challenge.hash_cash.mut_or_insert_default();
+                hash_cash_challenge.set_length(15);
+                let mut prefix = vec![0; 16];
+                rand::thread_rng().fill_bytes(&mut prefix);
+                hash_cash_challenge.set_prefix(prefix);
+                hash_cash_challenge.set_target((rand::thread_rng().next_u32() & 0x7FF) as i32);
+            }
+        }
         downstream_ap_response
             .challenge
             .mut_or_insert_default()
             .fingerprint_challenge
             .mut_or_insert_default();
-        downstream_ap_response.challenge.mut_or_insert_default().pow_challenge.mut_or_insert_default();
         downstream_ap_response.challenge.mut_or_insert_default().crypto_challenge.mut_or_insert_default();
         downstream_ap_response
             .challenge
@@ -326,7 +338,7 @@ impl ProxySession {
             packet.extend(&downstream_ap_response_bytes);
             self.write(self.downstream_send_iface, &packet);
         }
-        Ok(())
+        Ok(downstream_ap_response)
     }
 
     fn compute_downstream_keys(&mut self, client_key: &[u8]) -> Result<[u8; 20], Error> {
@@ -373,6 +385,36 @@ impl ProxySession {
 
         ClientResponsePlaintext::parse_from_bytes(&client_response_bytes)
             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))
+    }
+
+    fn validate_downstream_client_response(
+        &self, ap_response: &APResponseMessage, client_response: &ClientResponsePlaintext, target_hmac: &[u8],
+    ) -> Result<(), Error> {
+        let client_hmac = client_response.login_crypto_response.diffie_hellman.hmac();
+        if client_hmac != target_hmac {
+            return Err(Error::new(ErrorKind::InvalidData, "Client sent an invalid Diffie Hellman HMAC"));
+        }
+
+        if ap_response.challenge.pow_challenge.hash_cash.has_prefix() {
+            if !client_response.pow_response.hash_cash.has_hash_suffix() {
+                return Err(Error::new(ErrorKind::InvalidData, "Client failed to solve HashCash"));
+            }
+            let client_suffix = client_response.pow_response.hash_cash.hash_suffix();
+            let challenge = ap_response.challenge.pow_challenge.hash_cash.as_ref().unwrap();
+            let suffix = pow::solve_hashcash(&self.downstream_accumulator, challenge)?;
+            if client_suffix != suffix {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "Client HashCash solution invalid: Server={} Client={}",
+                        hex::encode(&suffix),
+                        hex::encode(client_suffix)
+                    ),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     fn send_upstream_client_hello(&mut self, build_info: protobuf::MessageField<BuildInfo>) -> Result<(), Error> {
@@ -529,13 +571,15 @@ impl ProxySession {
     pub fn start(&mut self) -> Result<(), Error> {
         self.check_downstream_magic()?;
         let downstream_client_hello = self.read_downstream_client_hello()?;
-        self.send_downstream_ap_response()?;
+        let downstream_ap_response = self.send_downstream_ap_response(&downstream_client_hello)?;
         let downstream_hmac =
             self.compute_downstream_keys(downstream_client_hello.login_crypto_hello.diffie_hellman.gc())?;
         let downstream_client_response = self.read_downstream_client_response()?;
-        if downstream_client_response.login_crypto_response.diffie_hellman.hmac() != downstream_hmac {
-            return Err(Error::new(ErrorKind::InvalidData, "Client has mismatched HMAC"));
-        }
+        self.validate_downstream_client_response(
+            &downstream_ap_response,
+            &downstream_client_response,
+            &downstream_hmac,
+        )?;
 
         self.send_upstream_client_hello(downstream_client_hello.build_info)?;
         let upstream_ap_response = self.read_upstream_ap_response()?;
