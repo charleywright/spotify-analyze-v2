@@ -11,6 +11,15 @@ lazy_static! {
     static ref SERVER_PUBLIC_KEY_SIGNATURE: scanner::Signature = scanner::Signature::from_ida_style("ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd").unwrap();
 }
 
+#[allow(dead_code)]
+fn scan_multiple(signatures: &[scanner::Signature], data: &[u8], offset: usize) -> Vec<usize> {
+    signatures.iter().flat_map(|sig| sig.scan_with_offset(data, offset)).collect()
+}
+
+fn reverse_scan_multiple(signatures: &[scanner::Signature], data: &[u8], offset: usize) -> Vec<usize> {
+    signatures.iter().flat_map(|sig| sig.reverse_scan_with_offset(data, offset)).collect()
+}
+
 struct RelocationEntry {
     offset_in_file: usize,
     size_in_file: usize,
@@ -644,7 +653,7 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     */
                     (JNI_ARM64_V8A, scanner::Signature::from_ida_style("?? A7 98 52 ?? 32 AD 72").unwrap()),
                 ]);
-                static ref JNI_SHANNON_PROLOGUES: HashMap<u16, scanner::Signature> =HashMap::from([
+                static ref JNI_SHANNON_PROLOGUES: HashMap<u16, Vec<scanner::Signature>> = HashMap::from([
                     /*
                       push ebp
                       mov  ebp, esp
@@ -657,27 +666,47 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
                     */
                     (
                         JNI_X86,
-                        scanner::Signature::from_ida_style("55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00").unwrap(),
+                        vec![scanner::Signature::from_ida_style("55 89 E5 53 57 56 83 E4 ?? 83 EC ?? E8 00 00 00 00").unwrap()],
                     ),
                     /*
                       push rbp
                       mov  rbp, rsp
                     */
-                    (JNI_X86_64, scanner::Signature::from_ida_style("55 48 89 E5").unwrap()),
-                    /*
-                      push {r4, r5, r6, r7, r8, sl, fp, lr}
-                      add  fp, sp, #0x18
-                    */
-                    (JNI_ARMEABI_V7A, scanner::Signature::from_ida_style("F0 4D 2D E9 18 B0 8D E2").unwrap()),
-                    /*
-                      str x23, [sp, #-0x40]!
-                      stp x22, x21, [sp, #0x10]
-                      stp x20, x19, [sp, #0x20]
-                      stp x29, x30, [sp, #0x30]
-                    */
+                    (JNI_X86_64, vec![scanner::Signature::from_ida_style("55 48 89 E5").unwrap()]),
+                    (
+                        JNI_ARMEABI_V7A,
+                        vec![
+                            /*
+                              push {r4, r5, r6, r7, r8, sl, fp, lr}
+                              add  fp, sp, #0x18
+                            */
+                            scanner::Signature::from_ida_style("F0 4D 2D E9 18 B0 8D E2").unwrap(),
+                            /*
+                              Added for 8.8.90.893
+                              push.w {r4, r5, r6, r7, r8, lr}
+                              mov    r5, r0
+                            */
+                            scanner::Signature::from_ida_style("2D E9 F0 41 05 46").unwrap()
+                        ]
+                    ),
                     (
                         JNI_ARM64_V8A,
-                        scanner::Signature::from_ida_style("F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9").unwrap(),
+                        vec![
+                            /*
+                              str x23, [sp, #-0x40]!
+                              stp x22, x21, [sp, #0x10]
+                              stp x20, x19, [sp, #0x20]
+                              stp x29, x30, [sp, #0x30]
+                            */
+                            scanner::Signature::from_ida_style("F7 0F 1C F8 F6 57 01 A9 F4 4F 02 A9 FD 7B 03 A9").unwrap(),
+                            /*
+                              Added for 8.8.90.893
+                              stp x23, x22, [sp, #-0x30]!
+                              stp x21, x20, [sp, #0x10]
+                              stp x19, x30, [sp, #0x20]
+                            */
+                            scanner::Signature::from_ida_style("F7 5B BD A9 F5 53 01 A9 F3 7B 02 A9").unwrap(),
+                        ],
                     ),
                 ]);
             }
@@ -795,11 +824,12 @@ pub fn scan_binary(target: &Target, args: &clap::ArgMatches) -> Option<Offsets> 
             let shannon_prologue_scan_base = last_shannon_constant.saturating_sub(SHANNON_PROLOGUE_SCAN_SIZE);
             let shannon_prologue_scan_end = *last_shannon_constant;
             let shannon_prologue_scan_section = &binary_data[shannon_prologue_scan_base..shannon_prologue_scan_end];
-            let shannon_prologue_signature = JNI_SHANNON_PROLOGUES.get(&elf_file.ehdr.e_machine).unwrap();
-            let mut shannon_prologue_offsets = VecDeque::from(
-                shannon_prologue_signature
-                    .reverse_scan_with_offset(shannon_prologue_scan_section, shannon_prologue_scan_base),
-            );
+            let shannon_prologue_signatures = JNI_SHANNON_PROLOGUES.get(&elf_file.ehdr.e_machine).unwrap();
+            let mut shannon_prologue_offsets = VecDeque::from(reverse_scan_multiple(
+                shannon_prologue_signatures,
+                shannon_prologue_scan_section,
+                shannon_prologue_scan_base,
+            ));
             if shannon_prologue_offsets.is_empty() {
                 eprintln!("Failed to find shn_encrypt/shn_decrypt prologue");
                 return None;
