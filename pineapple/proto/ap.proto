@@ -1,0 +1,375 @@
+syntax = "proto3";
+
+package spotify.protocol.ap;
+
+message ClientHello {
+  BuildInfo build_info = 10;
+  repeated FingerprintTypes fingerprints_supported = 20;
+  repeated CryptoSuiteTypes cryptosuites_supported = 30;
+  repeated PoWTypes powschemes_supported = 40;
+  LoginCryptoHelloUnion login_crypto_hello = 50;
+  bytes client_nonce = 60;
+  bytes padding = 70;
+  FeatureSet feature_set = 80;
+}
+
+enum Product {
+  PRODUCT_CLIENT = 0x0;
+  PRODUCT_LIBSPOTIFY = 0x1;
+  PRODUCT_MOBILE = 0x2;
+  PRODUCT_PARTNER = 0x3;
+  PRODUCT_LIBSPOTIFY_EMBEDDED = 0x5;
+}
+
+enum ProductFlags {
+  PRODUCT_FLAG_NONE = 0x0;
+  PRODUCT_FLAG_DEV_BUILD = 0x1;
+}
+
+enum Platform {
+  PLATFORM_WIN32_X86 = 0x0;
+  PLATFORM_OSX_X86 = 0x1;
+  PLATFORM_LINUX_X86 = 0x2;
+  PLATFORM_IPHONE_ARM = 0x3;
+  PLATFORM_S60_ARM = 0x4;
+  PLATFORM_OSX_PPC = 0x5;
+  PLATFORM_ANDROID_ARM = 0x6;
+  PLATFORM_WINDOWS_CE_ARM = 0x7;
+  PLATFORM_LINUX_X86_64 = 0x8;
+  PLATFORM_OSX_X86_64 = 0x9;
+  PLATFORM_PALM_ARM = 0xa;
+  PLATFORM_LINUX_SH = 0xb;
+  PLATFORM_FREEBSD_X86 = 0xc;
+  PLATFORM_FREEBSD_X86_64 = 0xd;
+  PLATFORM_BLACKBERRY_ARM = 0xe;
+  PLATFORM_SONOS = 0xf;
+  PLATFORM_LINUX_MIPS = 0x10;
+  PLATFORM_LINUX_ARM = 0x11;
+  PLATFORM_LOGITECH_ARM = 0x12;
+  PLATFORM_LINUX_BLACKFIN = 0x13;
+  PLATFORM_WP7_ARM = 0x14;
+  PLATFORM_ONKYO_ARM = 0x15;
+  PLATFORM_QNXNTO_ARM = 0x16;
+  PLATFORM_BCO_ARM = 0x17;
+  PLATFORM_WEBPLAYER = 0x18;
+  PLATFORM_WP8_ARM = 0x19;
+  PLATFORM_WP8_X86 = 0x1a;
+  PLATFORM_WINRT_ARM = 0x1b;
+  PLATFORM_WINRT_X86 = 0x1c;
+  PLATFORM_WINRT_X86_64 = 0x1d;
+  PLATFORM_FRONTIER = 0x1e;
+  PLATFORM_AMIGA_PPC = 0x1f;
+  PLATFORM_NANRADIO_NRX901 = 0x20;
+  PLATFORM_HARMAN_ARM = 0x21;
+  PLATFORM_SONY_PS3 = 0x22;
+  PLATFORM_SONY_PS4 = 0x23;
+  PLATFORM_IPHONE_ARM64 = 0x24;
+  PLATFORM_RTEMS_PPC = 0x25;
+  PLATFORM_GENERIC_PARTNER = 0x26;
+  PLATFORM_WIN32_X86_64 = 0x27;
+  PLATFORM_WATCHOS = 0x28;
+}
+
+message BuildInfo {
+  Product product = 10;
+  repeated ProductFlags product_flags = 20;
+  Platform platform = 30;
+  uint64 version = 40;
+}
+
+enum FingerprintTypes {
+  FINGERPRINT_GRAIN = 0x0;
+  FINGERPRINT_HMAC_RIPEMD = 0x1;
+}
+
+enum CryptoSuiteTypes {
+  CRYPTO_SUITE_SHANNON = 0x0;
+  CRYPTO_SUITE_RC4_SHA1_HMAC = 0x1;
+}
+
+enum PoWTypes {
+  POW_HASH_CASH = 0x0;
+}
+
+message LoginCryptoHelloUnion {
+  LoginCryptoDiffieHellmanHello diffie_hellman = 10;
+}
+
+message LoginCryptoDiffieHellmanHello {
+  bytes gc = 10;
+  uint32 server_keys_known = 20;
+}
+
+message FeatureSet {
+  bool autoupdate2 = 1;
+  bool unk_2 = 2;
+  StreamingRules supported_streaming_rules = 3;
+  bool unk_4 = 4;
+  Trial trial = 5;
+}
+
+message StreamingRules {
+  bool dmca_radio = 1;
+  bool unk_2 = 2;
+  bool shuffle_mode = 3;
+  bool unk_4 = 4;
+}
+
+message Trial {
+  bool no_autostart = 1;
+}
+
+message APResponseMessage {
+  APChallenge challenge = 10;
+  UpgradeRequiredMessage upgrade = 20;
+  APLoginFailed login_failed = 30;
+}
+
+message APChallenge {
+  LoginCryptoChallengeUnion login_crypto_challenge = 10;
+  FingerprintChallengeUnion fingerprint_challenge = 20;
+  PoWChallengeUnion pow_challenge = 30;
+  CryptoChallengeUnion crypto_challenge = 40;
+  bytes server_nonce = 50;
+  bytes padding = 60;
+}
+
+message LoginCryptoChallengeUnion {
+  LoginCryptoDiffieHellmanChallenge diffie_hellman = 10;
+}
+
+message LoginCryptoDiffieHellmanChallenge {
+  bytes gs = 10; // Always 96 bytes
+  int32 server_signature_key = 20; // int8
+  bytes gs_signature = 30; // Always 256 bytes
+}
+
+message FingerprintChallengeUnion {
+  FingerprintGrainChallenge grain = 10;
+  FingerprintHmacRipemdChallenge hmac_ripemd = 20;
+}
+
+message FingerprintGrainChallenge {
+  bytes kek = 10; // Always 16 bytes
+}
+
+message FingerprintHmacRipemdChallenge {
+  bytes unk_10 = 10; // Always 16 bytes
+}
+
+message PoWChallengeUnion {
+  PoWHashCashChallenge hash_cash = 10;
+}
+
+message PoWHashCashChallenge {
+  bytes prefix = 10; // Always 16 bytes
+  int32 length = 20; // int8
+  int32 target = 30;
+}
+
+message CryptoChallengeUnion {
+  CryptoShannonChallenge shannon = 10;
+  CryptoRc4Sha1HmacChallenge rc4_sha1_hmac = 20;
+}
+
+message CryptoShannonChallenge {
+  // No fields
+}
+
+message CryptoRc4Sha1HmacChallenge {
+  // No fields
+}
+
+message UpgradeRequiredMessage {
+  string unk_10 = 10;
+  string unk_20 = 20;
+  string unk_30 = 30;
+}
+
+message APLoginFailed {
+  enum ErrorCode {
+    UNK_0 = 0;
+    /* 0,1,2,3,4,5,6,7,9,11,12,13,14,15,16,17 */
+  }
+  ErrorCode error_code = 10;
+  int32 retry_delay = 20;
+  int32 expiry = 30;
+  string error_description = 40;
+  LoginErrorFacebook fb = 50;
+}
+
+message LoginErrorFacebook {
+  string machine_id = 1;
+}
+
+message ClientResponsePlaintext {
+  LoginCryptoResponseUnion login_crypto_response = 10;
+  PoWResponseUnion pow_response = 20;
+  CryptoResponseUnion crypto_response = 30;
+}
+
+message LoginCryptoResponseUnion {
+  LoginCryptoDiffieHellmanResponse diffie_hellman = 10;
+}
+
+message LoginCryptoDiffieHellmanResponse {
+  bytes hmac = 10; // Always 20 bytes
+}
+
+message PoWResponseUnion {
+  PoWHashCashResponse hash_cash = 10;
+}
+
+message PoWHashCashResponse {
+  bytes hash_suffix = 10; // Always 16 bytes
+}
+
+message CryptoResponseUnion {
+  CryptoShannonResponse shannon = 10;
+  CryptoRc4Sha1HmacResponse rc4_sha1_hmac = 20;
+}
+
+message CryptoShannonResponse {
+  uint32 unk_1 = 1; // uint8
+}
+
+message CryptoRc4Sha1HmacResponse {
+  uint32 unk_1 = 1; // uint8
+}
+
+message ClientResponseEncrypted {
+  LoginCredentials login_credentials = 10;
+  string referrer = 11;
+  AccountCreationPolicy account_creation = 20;
+  FingerprintResponseUnion fingerprint_response = 30;
+  PeerTicketUnion peer_ticket = 40;
+  SystemInfo system_info = 50;
+  string platform_model = 60;
+  string version_string = 70;
+  LibspotifyAppKey appkey = 80;
+  ClientInfo client_info = 90;
+}
+
+enum AuthenticationType {
+  AUTHENTICATION_USER_PASS = 0x0;
+  AUTHENTICATION_STORED_SPOTIFY_CREDENTIALS = 0x1;
+  AUTHENTICATION_STORED_FACEBOOK_CREDENTIALS = 0x2;
+  AUTHENTICATION_SPOTIFY_TOKEN = 0x3;
+  AUTHENTICATION_FACEBOOK_TOKEN = 0x4;
+}
+
+message LoginCredentials {
+  string username = 10;
+  AuthenticationType type = 20;
+  string auth_data = 30;
+}
+
+enum AccountCreationPolicy {
+  ACCOUNT_CREATION_UNKNOWN = 0x0;
+  ACCOUNT_CREATION_ALWAYS_PROMPT = 0x1;
+  ACCOUNT_CREATION_ALWAYS_CREATE = 0x3;
+}
+
+message FingerprintResponseUnion {
+  FingerprintGrainResponse grain = 10;
+  FingerprintHmacRipemdResponse hmac_ripemd = 20;
+}
+
+message FingerprintGrainResponse {
+  bytes encrypted_key = 10; // Always 16 bytes
+}
+
+message FingerprintHmacRipemdResponse {
+  bytes unk_20 = 20; // Always 20 bytes
+}
+
+message PeerTicketUnion {
+  PeerTicketPublicKey public_key = 10;
+  PeerTicketOld old_ticket = 20;
+}
+
+message PeerTicketPublicKey {
+  bytes key = 10; // Always 128 bytes
+}
+
+message PeerTicketOld {
+  string peer_ticket = 10;
+  bytes peer_ticket_signature = 20; // Always 128 bytes
+}
+
+message SystemInfo {
+  CpuFamily cpu_family = 10;
+  uint32 cpu_subtype = 20;
+  uint32 cpu_ext = 30;
+  Brand brand = 40;
+  uint32 brand_flags = 50;
+  OS os = 60;
+  uint32 os_version = 70;
+  uint32 os_ext = 80;
+  string system_information_string = 90;
+  string device_id = 100;
+}
+
+enum CpuFamily {
+  CPU_UNKNOWN = 0x0;
+  CPU_X86 = 0x1;
+  CPU_X86_64 = 0x2;
+  CPU_PPC = 0x3;
+  CPU_PPC_64 = 0x4;
+  CPU_ARM = 0x5;
+  CPU_IA64 = 0x6;
+  CPU_SH = 0x7;
+  CPU_MIPS = 0x8;
+  CPU_BLACKFIN = 0x9;
+}
+
+enum Brand {
+  BRAND_UNBRANDED = 0x0;
+  BRAND_INQ = 0x1;
+  BRAND_HTC = 0x2;
+  BRAND_NOKIA = 0x3;
+}
+
+enum OS {
+  OS_UNKNOWN = 0x0;
+  OS_WINDOWS = 0x1;
+  OS_OSX = 0x2;
+  OS_IPHONE = 0x3;
+  OS_S60 = 0x4;
+  OS_LINUX = 0x5;
+  OS_WINDOWS_CE = 0x6;
+  OS_ANDROID = 0x7;
+  OS_PALM = 0x8;
+  OS_FREEBSD = 0x9;
+  OS_BLACKBERRY = 0xa;
+  OS_SONOS = 0xb;
+  OS_LOGITECH = 0xc;
+  OS_WP7 = 0xd;
+  OS_ONKYO = 0xe;
+  OS_PHILIPS = 0xf;
+  OS_WD = 0x10;
+  OS_VOLVO = 0x11;
+  OS_TIVO = 0x12;
+  OS_AWOX = 0x13;
+  OS_MEEGO = 0x14;
+  OS_QNXNTO = 0x15;
+  OS_BCO = 0x16;
+}
+
+message LibspotifyAppKey {
+  uint32 version = 1;
+  bytes devkey = 2; // Always 128 bytes
+  bytes signature = 3; // Always 192 bytes
+  string useragent = 4;
+  bytes callback_hash = 5; // Always 20 bytes
+}
+
+message ClientInfo {
+  bool limited = 1;
+  ClientInfoFacebook fb = 2;
+  string language = 3;
+}
+
+message ClientInfoFacebook {
+  string machine_id = 1;
+}
