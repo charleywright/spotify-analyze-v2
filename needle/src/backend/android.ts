@@ -31,6 +31,30 @@ function hookDlopen() {
   });
 }
 
+function overrideProxy(proxy_host: string, proxy_port: number) {
+  function proxy_2_str(proxy: Java.Wrapper<{}>) {
+    return proxy == null
+      ? "<NONE>"
+      : `${proxy["getHost"]()}:${proxy["getPort"]()}`;
+  }
+
+  Java.perform(() => {
+    const ConnectivityManager = Java.use("android.net.ConnectivityManager");
+    const ProxyInfo = Java.use("android.net.ProxyInfo");
+
+    ConnectivityManager["getDefaultProxy"].implementation = function () {
+      let system_proxy = this["getDefaultProxy"]();
+      let new_proxy = ProxyInfo["buildDirectProxy"](proxy_host, proxy_port);
+      console.log(
+        `[PROXY] Overriding ${proxy_2_str(system_proxy)} with ${proxy_2_str(
+          new_proxy
+        )}`
+      );
+      return new_proxy;
+    };
+  });
+}
+
 export function androidInit(launchArgs: any) {
   preInit(launchArgs);
   /*
