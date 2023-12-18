@@ -1,18 +1,14 @@
-use std::io::{Error, ErrorKind, Read, Write};
-use std::net::TcpStream;
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
-use std::time::Duration;
-
-use crate::pcap::IfaceType;
-use crate::pow;
-
 use super::dh;
 use super::pcap::PcapWriter;
 use super::shannon::{DecryptResult, DecryptState, ShannonCipher};
+use crate::pcap::IfaceType;
+use crate::pow;
 use dh::DiffieHellman;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
+use mio::event::Event;
+use mio::net::{SocketAddr, TcpStream};
+use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
 use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Powscheme};
@@ -24,6 +20,14 @@ use rsa::{
     RsaPrivateKey, RsaPublicKey,
 };
 use sha1::{Digest, Sha1};
+use std::cell::RefCell;
+use std::fmt::Display;
+use std::io::{Error, ErrorKind, Read, Write};
+use std::net::ToSocketAddrs;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::time::Duration;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -124,10 +128,158 @@ vQIDAQAB
 
 // Spotify currently only use one key
 const SERVER_KEY_IDX: i32 = 0;
-
+// First bytes sent to identify spirc
 const SPIRC_MAGIC: [u8; 2] = [0x00, 0x04];
 
 pub struct ProxySession {
+    pub downstream: TcpStream,
+    pub downstream_token: Token,
+    downstream_cipher: Option<ShannonCipher>,
+    downstream_decrypt_type: u8,
+    downstream_decrypt_len: u16,
+    downstream_send_iface: u32,
+    downstream_recv_iface: u32,
+
+    pub upstream: TcpStream,
+    pub upstream_token: Token,
+    upstream_cipher: Option<ShannonCipher>,
+    upstream_decrypt_type: u8,
+    upstream_decrypt_len: u16,
+    upstream_send_iface: u32,
+    upstream_recv_iface: u32,
+
+    pcap_writer: Rc<RefCell<PcapWriter>>,
+    state: ProxySessionState,
+}
+
+impl ProxySession {
+    pub fn new(
+        downstream: TcpStream, downstream_token: Token, upstream: TcpStream, upstream_token: Token,
+        pcap_writer: Rc<RefCell<PcapWriter>>,
+    ) -> Self {
+        ProxySession {
+            downstream,
+            downstream_token,
+            downstream_cipher: None,
+            downstream_decrypt_type: 0,
+            downstream_decrypt_len: 0,
+            downstream_send_iface: 0,
+            downstream_recv_iface: 0,
+
+            upstream,
+            upstream_token,
+            upstream_cipher: None,
+            upstream_decrypt_type: 0,
+            upstream_decrypt_len: 0,
+            upstream_send_iface: 0,
+            upstream_recv_iface: 0,
+
+            pcap_writer,
+            state: ProxySessionState::Connecting,
+        }
+    }
+}
+
+struct NegotiationData {
+    downstream_accumulator: Vec<u8>,
+    downstream_dh: DiffieHellman,
+    downstream_private_key: RsaPrivateKey,
+
+    upstream_accumulator: Vec<u8>,
+    upstream_dh: DiffieHellman,
+    upstream_public_key: RsaPublicKey,
+}
+
+impl NegotiationData {
+    pub fn new() -> Self {
+        let downstream_private_key =
+            RsaPrivateKey::from_pkcs8_pem(OUR_PRIVATE_KEY).expect("Failed to parse pineapple private key");
+        #[cfg(debug_assertions)]
+        {
+            let downstream_public_key =
+                RsaPublicKey::from_public_key_pem(OUR_PUBLIC_KEY).expect("Failed to parse pineapple public key");
+            assert_eq!(
+                downstream_private_key.to_public_key(),
+                downstream_public_key,
+                "Expected our public keys to be equivalent #1"
+            );
+            let downstream_public_key_mod = BigUint::from_bytes_be(&OUR_PUBLIC_KEY_MODULUS);
+            let downstream_public_key_exp = BigUint::from(OUR_PUBLIC_KEY_EXPONENT);
+            let downstream_public_key =
+                RsaPublicKey::new(downstream_public_key_mod, downstream_public_key_exp).unwrap();
+            assert_eq!(
+                downstream_private_key.to_public_key(),
+                downstream_public_key,
+                "Expected our public keys to be equivalent #2"
+            );
+        }
+
+        let upstream_public_key =
+            RsaPublicKey::from_public_key_pem(SERVER_PUBLIC_KEY).expect("Failed to parse Spotify public key");
+        #[cfg(debug_assertions)]
+        {
+            let upstream_public_key_mod = BigUint::from_bytes_be(&SERVER_PUBLIC_KEY_MODULUS);
+            let upstream_public_key_exp = BigUint::from(SERVER_PUBLIC_KEY_EXPONENT);
+            let upstream_public_key2 = RsaPublicKey::new(upstream_public_key_mod, upstream_public_key_exp).unwrap();
+            assert_eq!(
+                upstream_public_key, upstream_public_key2,
+                "Expected Spotify public keys to be equivalent"
+            );
+        }
+
+        NegotiationData {
+            downstream_accumulator: Vec::<u8>::new(),
+            downstream_dh: DiffieHellman::random(),
+            downstream_private_key,
+
+            upstream_accumulator: Vec::<u8>::new(),
+            upstream_dh: DiffieHellman::random(),
+            upstream_public_key,
+        }
+    }
+}
+
+enum ProxySessionState {
+    Connecting,
+    ReadDownstreamClientHello(Box<NegotiationData>),
+    SendUpstreamClientHello(Box<NegotiationData>),
+    RecvUpstreamAPChallenge(Box<NegotiationData>),
+    SendDownstreamAPChallenge(Box<NegotiationData>),
+    ReadDownstreamClientResponse(Box<NegotiationData>),
+    SendUpstreamClientResponse(Box<NegotiationData>),
+    Connected,
+}
+
+impl Display for ProxySession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let default_ip = "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap();
+        write!(f, "ProxySession {{ downstream: {} {:?} downstream_send: {} downstream_recv: {} upstream: {} {:?} upstream_send: {} upstream_recv: {} }}",
+            self.downstream.peer_addr().unwrap_or(default_ip), self.downstream_token,
+            self.downstream_send_iface, self.downstream_recv_iface,
+            self.upstream.peer_addr().unwrap_or(default_ip), self.upstream_token,
+            self.upstream_send_iface, self.upstream_recv_iface
+        )
+    }
+}
+
+impl ProxySession {
+    fn create_interfaces(&mut self) {
+        let mut writer = self.pcap_writer.borrow_mut();
+        self.downstream_send_iface =
+            writer.create_interface(IfaceType::DownstreamSend, self.downstream.local_addr().unwrap());
+        self.downstream_recv_iface =
+            writer.create_interface(IfaceType::DownstreamRecv, self.downstream.peer_addr().unwrap());
+        self.upstream_send_iface =
+            writer.create_interface(IfaceType::UpstreamSend, self.upstream.local_addr().unwrap());
+        self.upstream_recv_iface = writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
+    }
+
+    pub fn handle_event(&mut self, token: &Token, event: &Event) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+pub struct ProxySessionOld {
     downstream_accumulator: Vec<u8>,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
@@ -151,8 +303,8 @@ pub struct ProxySession {
     pcap_writer: Arc<Mutex<PcapWriter>>,
 }
 
-impl ProxySession {
-    pub fn new(pcap_writer: Arc<Mutex<PcapWriter>>, downstream: TcpStream, upstream: TcpStream) -> Self {
+impl ProxySessionOld {
+    pub fn new(pcap_writer: Arc<Mutex<PcapWriter>>, downstream: TcpStream, upstream: TcpStream, t: bool) -> Self {
         let downstream_private_key =
             RsaPrivateKey::from_pkcs8_pem(OUR_PRIVATE_KEY).expect("Failed to parse pineapple private key");
         #[cfg(debug_assertions)]
@@ -198,7 +350,7 @@ impl ProxySession {
             )
         };
 
-        ProxySession {
+        ProxySessionOld {
             downstream,
             downstream_accumulator: Vec::<u8>::new(),
             downstream_dh: DiffieHellman::random(),
@@ -690,14 +842,14 @@ impl ProxySession {
     }
 
     pub fn run(&mut self, is_running: Arc<RwLock<bool>>) {
-        if let Err(error) = self.downstream.set_read_timeout(Some(Duration::from_millis(250))) {
-            println!("Failed to set downstream socket timeout: {}", error);
-            return;
-        }
-        if let Err(error) = self.upstream.set_read_timeout(Some(Duration::from_millis(250))) {
-            println!("Failed to set upstream socket timeout: {}", error);
-            return;
-        }
+        // if let Err(error) = self.downstream.set_read_timeout(Some(Duration::from_millis(250))) {
+        //     println!("Failed to set downstream socket timeout: {}", error);
+        //     return;
+        // }
+        // if let Err(error) = self.upstream.set_read_timeout(Some(Duration::from_millis(250))) {
+        //     println!("Failed to set upstream socket timeout: {}", error);
+        //     return;
+        // }
 
         // TODO: Replace with a poll-based implementation soon
         loop {
