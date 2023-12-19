@@ -7,7 +7,7 @@ use dh::DiffieHellman;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
 use mio::event::Event;
-use mio::net::{SocketAddr, TcpStream};
+use mio::net::TcpStream;
 use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
@@ -20,6 +20,7 @@ use rsa::{
     RsaPrivateKey, RsaPublicKey,
 };
 use sha1::{Digest, Sha1};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::{Error, ErrorKind, Read, Write};
@@ -133,6 +134,7 @@ const SPIRC_MAGIC: [u8; 2] = [0x00, 0x04];
 
 pub struct ProxySession {
     pub downstream: TcpStream,
+    pub downstream_addr: std::net::SocketAddr,
     pub downstream_token: Token,
     downstream_cipher: Option<ShannonCipher>,
     downstream_decrypt_type: u8,
@@ -159,6 +161,7 @@ impl ProxySession {
     ) -> Self {
         ProxySession {
             downstream,
+            downstream_addr: "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap(),
             downstream_token,
             downstream_cipher: None,
             downstream_decrypt_type: 0,
@@ -182,6 +185,7 @@ impl ProxySession {
 
 struct NegotiationData {
     downstream_accumulator: Vec<u8>,
+    downstream_client_hello: ClientHello,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
 
@@ -229,6 +233,7 @@ impl NegotiationData {
 
         NegotiationData {
             downstream_accumulator: Vec::<u8>::new(),
+            downstream_client_hello: ClientHello::default(),
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
 
@@ -248,6 +253,25 @@ enum ProxySessionState {
     ReadDownstreamClientResponse(Box<NegotiationData>),
     SendUpstreamClientResponse(Box<NegotiationData>),
     Connected,
+}
+
+impl Display for ProxySessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                ProxySessionState::Connecting => "Connecting",
+                ProxySessionState::ReadDownstreamClientHello(_) => "ReadDownstreamClientHello",
+                ProxySessionState::SendUpstreamClientHello(_) => "SendUpstreamClientHello",
+                ProxySessionState::RecvUpstreamAPChallenge(_) => "RecvUpstreamAPChallenge",
+                ProxySessionState::SendDownstreamAPChallenge(_) => "SendDownstreamAPChallenge",
+                ProxySessionState::ReadDownstreamClientResponse(_) => "ReadDownstreamClientResponse",
+                ProxySessionState::SendUpstreamClientResponse(_) => "SendUpstreamClientResponse",
+                ProxySessionState::Connected => "Connected",
+            }
+        )
+    }
 }
 
 impl Display for ProxySession {
@@ -274,8 +298,84 @@ impl ProxySession {
         self.upstream_recv_iface = writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
     }
 
-    pub fn handle_event(&mut self, token: &Token, event: &Event) -> Result<(), Error> {
-        Ok(())
+    pub fn handle_event(&mut self, _token: &Token, _event: &Event) -> Result<(), Error> {
+        match &mut self.state {
+            ProxySessionState::Connecting => {
+                if self.upstream.peer_addr().is_err() {
+                    return Ok(());
+                    // Not connected to AP yet
+                }
+                if let Ok(downstream_addr) = self.downstream.peer_addr() {
+                    self.downstream_addr = downstream_addr;
+                    self.create_interfaces();
+                    self.state = ProxySessionState::ReadDownstreamClientHello(Box::new(NegotiationData::new()));
+                    #[cfg(debug_assertions)]
+                    println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                }
+                Ok(())
+            },
+            ProxySessionState::ReadDownstreamClientHello(state_data) => {
+                if state_data.downstream_accumulator.len() != SPIRC_MAGIC.len() {
+                    let mut magic_bytes = [0; SPIRC_MAGIC.len()];
+                    if self.downstream.read_exact(&mut magic_bytes).is_err() {
+                        return Ok(());
+                        // Not enough bytes to read
+                    }
+                    if magic_bytes != SPIRC_MAGIC {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Invalid SPIRC magic '{}'", hex::encode(magic_bytes)),
+                        ));
+                    }
+                    self.pcap_writer.borrow_mut().write_data(self.downstream_recv_iface, Cow::Borrowed(&magic_bytes));
+                    state_data.downstream_accumulator.extend_from_slice(&magic_bytes);
+                }
+
+                let mut client_hello_header = [0; 4];
+                let Ok(client_hello_header_bytes_read) = self.downstream.peek(&mut client_hello_header) else {
+                    return Ok(());
+                };
+                if client_hello_header_bytes_read != client_hello_header.len() {
+                    return Ok(());
+                }
+                let client_hello_len = u32::from_be_bytes(client_hello_header);
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] ClientHelloSize: {} PB: {}",
+                    self.downstream_addr,
+                    client_hello_len,
+                    client_hello_len as usize - SPIRC_MAGIC.len() - 4
+                );
+
+                state_data.downstream_accumulator.resize(client_hello_len as usize, 0);
+                if self.downstream.read_exact(&mut state_data.downstream_accumulator[2..]).is_err() {
+                    return Ok(());
+                };
+                self.pcap_writer.borrow_mut().write_data(
+                    self.downstream_recv_iface,
+                    Cow::Borrowed(&state_data.downstream_accumulator[SPIRC_MAGIC.len()..]),
+                );
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Read ClientHello: {}",
+                    self.downstream_addr,
+                    hex::encode(&state_data.downstream_accumulator[SPIRC_MAGIC.len() + 4..])
+                );
+
+                match ClientHello::parse_from_bytes(&state_data.downstream_accumulator[SPIRC_MAGIC.len() + 4..]) {
+                    Ok(client_hello) => {
+                        state_data.downstream_client_hello = client_hello;
+                        // self.state = ProxySessionState::SendUpstreamClientHello(*state_data);
+                        Ok(())
+                    },
+                    Err(parse_error) => Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Failed to parse ClientHello: {}", parse_error),
+                    )),
+                }
+            },
+            _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
+        }
     }
 }
 
@@ -304,7 +404,7 @@ pub struct ProxySessionOld {
 }
 
 impl ProxySessionOld {
-    pub fn new(pcap_writer: Arc<Mutex<PcapWriter>>, downstream: TcpStream, upstream: TcpStream, t: bool) -> Self {
+    pub fn new(pcap_writer: Arc<Mutex<PcapWriter>>, downstream: TcpStream, upstream: TcpStream, _t: bool) -> Self {
         let downstream_private_key =
             RsaPrivateKey::from_pkcs8_pem(OUR_PRIVATE_KEY).expect("Failed to parse pineapple private key");
         #[cfg(debug_assertions)]
