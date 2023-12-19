@@ -246,12 +246,12 @@ impl NegotiationData {
 
 enum ProxySessionState {
     Connecting,
-    ReadDownstreamClientHello(Box<NegotiationData>),
-    SendUpstreamClientHello(Box<NegotiationData>),
-    RecvUpstreamAPChallenge(Box<NegotiationData>),
-    SendDownstreamAPChallenge(Box<NegotiationData>),
-    ReadDownstreamClientResponse(Box<NegotiationData>),
-    SendUpstreamClientResponse(Box<NegotiationData>),
+    ReadDownstreamClientHello(Rc<RefCell<NegotiationData>>),
+    SendUpstreamClientHello(Rc<RefCell<NegotiationData>>),
+    RecvUpstreamAPChallenge(Rc<RefCell<NegotiationData>>),
+    SendDownstreamAPChallenge(Rc<RefCell<NegotiationData>>),
+    ReadDownstreamClientResponse(Rc<RefCell<NegotiationData>>),
+    SendUpstreamClientResponse(Rc<RefCell<NegotiationData>>),
     Connected,
 }
 
@@ -299,7 +299,7 @@ impl ProxySession {
     }
 
     pub fn handle_event(&mut self, _token: &Token, _event: &Event) -> Result<(), Error> {
-        match &mut self.state {
+        match self.state {
             ProxySessionState::Connecting => {
                 if self.upstream.peer_addr().is_err() {
                     return Ok(());
@@ -308,18 +308,20 @@ impl ProxySession {
                 if let Ok(downstream_addr) = self.downstream.peer_addr() {
                     self.downstream_addr = downstream_addr;
                     self.create_interfaces();
-                    self.state = ProxySessionState::ReadDownstreamClientHello(Box::new(NegotiationData::new()));
+                    self.state =
+                        ProxySessionState::ReadDownstreamClientHello(Rc::new(RefCell::new(NegotiationData::new())));
                     #[cfg(debug_assertions)]
                     println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 }
                 Ok(())
             },
-            ProxySessionState::ReadDownstreamClientHello(state_data) => {
+            ProxySessionState::ReadDownstreamClientHello(ref state) => {
+                let mut state_data = state.borrow_mut();
                 if state_data.downstream_accumulator.len() != SPIRC_MAGIC.len() {
                     let mut magic_bytes = [0; SPIRC_MAGIC.len()];
                     if self.downstream.read_exact(&mut magic_bytes).is_err() {
-                        return Ok(());
                         // Not enough bytes to read
+                        return Ok(());
                     }
                     if magic_bytes != SPIRC_MAGIC {
                         return Err(Error::new(
@@ -365,7 +367,8 @@ impl ProxySession {
                 match ClientHello::parse_from_bytes(&state_data.downstream_accumulator[SPIRC_MAGIC.len() + 4..]) {
                     Ok(client_hello) => {
                         state_data.downstream_client_hello = client_hello;
-                        // self.state = ProxySessionState::SendUpstreamClientHello(*state_data);
+                        std::mem::drop(state_data);
+                        self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
                         Ok(())
                     },
                     Err(parse_error) => Err(Error::new(
