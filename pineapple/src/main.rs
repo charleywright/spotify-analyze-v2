@@ -12,7 +12,8 @@ fn main() -> io::Result<()> {
     let host = "0.0.0.0:4070";
     {
         ctrlc::set_handler(move || {
-            let _ = TcpStream::connect(host); // Trigger running check
+            // Trigger running check
+            let _ = TcpStream::connect(host);
         })
         .expect("Failed to set Ctrl+C handler");
     }
