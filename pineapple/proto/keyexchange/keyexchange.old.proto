@@ -107,8 +107,21 @@ message LoginCryptoDiffieHellmanHello {
 message FeatureSet {
     optional bool autoupdate2 = 0x1;
     optional bool current_location = 0x2;
+    optional StreamingRules supported_streaming_rules = 0x3;
+    optional bool unk_4 = 0x4;
+    optional Trial trial = 0x5;
 }
 
+message StreamingRules {
+    optional bool dmca_radio = 1;
+    optional bool unk_2 = 2;
+    optional bool shuffle_mode = 3;
+    optional bool unk_4 = 4;
+}
+
+message Trial {
+    optional bool no_autostart = 1;
+}
 
 message APResponseMessage {
     optional APChallenge challenge = 0xa;
