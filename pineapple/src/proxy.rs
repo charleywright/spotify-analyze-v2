@@ -79,15 +79,31 @@ pub fn run_proxy(host: &str) -> io::Result<()> {
                         continue;
                     };
                     let mut session = session.borrow_mut();
-                    if let Err(error) = session.handle_event(&token, event) {
-                        println!("Error while handling {event:?} for {session}: {error}");
-                        std::mem::drop(session); // End immutable borrow of `connections`
-                        let session = connections.remove(&token).unwrap();
-                        let mut session = session.borrow_mut();
-                        connections.remove(&session.downstream_token);
-                        connections.remove(&session.upstream_token);
-                        poll.registry().deregister(&mut session.downstream)?;
-                        poll.registry().deregister(&mut session.upstream)?;
+                    match session.handle_event(&token, event) {
+                        Ok(_) => {
+                            let downstream_token = session.downstream_token;
+                            let upstream_token = session.upstream_token;
+                            poll.registry().reregister(
+                                &mut session.downstream,
+                                downstream_token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            )?;
+                            poll.registry().reregister(
+                                &mut session.upstream,
+                                upstream_token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            )?;
+                        },
+                        Err(error) => {
+                            println!("Error while handling {event:?} for {session}: {error}");
+                            std::mem::drop(session); // End immutable borrow of `connections`
+                            let session = connections.remove(&token).unwrap();
+                            let mut session = session.borrow_mut();
+                            connections.remove(&session.downstream_token);
+                            connections.remove(&session.upstream_token);
+                            poll.registry().deregister(&mut session.downstream)?;
+                            poll.registry().deregister(&mut session.upstream)?;
+                        },
                     };
                 },
             }
