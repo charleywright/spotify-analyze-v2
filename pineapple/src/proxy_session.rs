@@ -11,9 +11,9 @@ use mio::net::TcpStream;
 use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
-use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Powscheme};
+use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Cryptosuite, Powscheme};
 use protobuf::{EnumOrUnknown, Message};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use rsa::Pkcs1v15Sign;
 use rsa::{
     pkcs8::{DecodePrivateKey, DecodePublicKey},
@@ -190,6 +190,7 @@ struct NegotiationData {
     downstream_private_key: RsaPrivateKey,
 
     upstream_accumulator: Vec<u8>,
+    upstream_client_hello_message: Vec<u8>,
     upstream_dh: DiffieHellman,
     upstream_public_key: RsaPublicKey,
 }
@@ -238,6 +239,7 @@ impl NegotiationData {
             downstream_private_key,
 
             upstream_accumulator: Vec::<u8>::new(),
+            upstream_client_hello_message: Vec::<u8>::new(),
             upstream_dh: DiffieHellman::random(),
             upstream_public_key,
         }
@@ -298,12 +300,13 @@ impl ProxySession {
         self.upstream_recv_iface = writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
     }
 
-    pub fn handle_event(&mut self, _token: &Token, _event: &Event) -> Result<(), Error> {
+    #[allow(clippy::only_used_in_recursion)]
+    pub fn handle_event(&mut self, token: &Token, event: &Event) -> Result<(), Error> {
         match self.state {
             ProxySessionState::Connecting => {
                 if self.upstream.peer_addr().is_err() {
-                    return Ok(());
                     // Not connected to AP yet
+                    return Ok(());
                 }
                 if let Ok(downstream_addr) = self.downstream.peer_addr() {
                     self.downstream_addr = downstream_addr;
@@ -369,13 +372,71 @@ impl ProxySession {
                         state_data.downstream_client_hello = client_hello;
                         std::mem::drop(state_data);
                         self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
-                        Ok(())
+                        self.handle_event(token, event)
                     },
                     Err(parse_error) => Err(Error::new(
                         ErrorKind::InvalidData,
                         format!("Failed to parse ClientHello: {}", parse_error),
                     )),
                 }
+            },
+            ProxySessionState::SendUpstreamClientHello(ref state) => {
+                let mut state_data = state.borrow_mut();
+
+                // Not created packet yet. Also not sent magic
+                if state_data.upstream_client_hello_message.is_empty() {
+                    if self.upstream.write_all(&SPIRC_MAGIC).is_err() {
+                        return Err(Error::new(ErrorKind::Interrupted, "Failed to write SPIRC magic"));
+                    }
+                    #[cfg(debug_assertions)]
+                    println!("[{}] Sent SPIRC magic to upstream", self.downstream_addr);
+
+                    let mut client_hello = ClientHello::new();
+                    client_hello.build_info.clone_from(&state_data.downstream_client_hello.build_info);
+                    client_hello.cryptosuites_supported.push(Cryptosuite::CRYPTO_SUITE_SHANNON.into());
+                    client_hello.cryptosuites_supported.push(Cryptosuite::CRYPTO_SUITE_RC4_SHA1_HMAC.into());
+                    client_hello.powschemes_supported.push(Powscheme::POW_HASH_CASH.into());
+                    {
+                        let mut nonce = vec![0; 16];
+                        rand::thread_rng().fill_bytes(&mut nonce);
+                        client_hello.set_client_nonce(nonce);
+                    }
+                    {
+                        let padding_len: usize = rand::thread_rng().gen_range(1..256);
+                        let mut padding = vec![0; padding_len];
+                        rand::thread_rng().fill_bytes(&mut padding);
+                        client_hello.set_padding(padding);
+                    }
+                    client_hello
+                        .login_crypto_hello
+                        .mut_or_insert_default()
+                        .diffie_hellman
+                        .mut_or_insert_default()
+                        .set_server_keys_known(1 << SERVER_KEY_IDX);
+                    client_hello
+                        .login_crypto_hello
+                        .mut_or_insert_default()
+                        .diffie_hellman
+                        .mut_or_insert_default()
+                        .set_gc(state_data.upstream_dh.public_bytes());
+                    client_hello.feature_set.clone_from(&state_data.downstream_client_hello.feature_set);
+
+                    let client_hello_len = client_hello.compute_size() as usize;
+                    let client_hello_len_bytes = (client_hello_len as u32).to_be_bytes();
+
+                    state_data.upstream_client_hello_message.reserve_exact(4 + client_hello_len);
+                    state_data.upstream_client_hello_message.extend_from_slice(&client_hello_len_bytes);
+                    let client_hello_bytes = client_hello.write_to_bytes()?;
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] Sending ClientHello {}",
+                        self.downstream_addr,
+                        hex::encode(&client_hello_bytes)
+                    );
+                    state_data.upstream_client_hello_message.extend_from_slice(&client_hello_bytes);
+                }
+
+                Ok(())
             },
             _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
         }
