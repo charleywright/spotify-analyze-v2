@@ -429,11 +429,25 @@ impl ProxySession {
                     let client_hello_bytes = client_hello.write_to_bytes()?;
                     #[cfg(debug_assertions)]
                     println!(
-                        "[{}] Sending ClientHello {}",
+                        "[{}] Sending {} bytes for ClientHello {}",
                         self.downstream_addr,
+                        client_hello_len + 4,
                         hex::encode(&client_hello_bytes)
                     );
                     state_data.upstream_client_hello_message.extend_from_slice(&client_hello_bytes);
+                }
+
+                // Magic has been sent, ClientHello is serialized, send what we can
+                let bytes_written = self.upstream.write(&state_data.upstream_client_hello_message)?;
+                state_data.upstream_client_hello_message.drain(0..bytes_written);
+                #[cfg(debug_assertions)]
+                println!("[{}] Sent {bytes_written} bytes of ClientHello", self.downstream_addr);
+
+                // Written all, on to the next stage
+                if state_data.upstream_client_hello_message.is_empty() {
+                    std::mem::drop(state_data);
+                    self.state = ProxySessionState::RecvUpstreamAPChallenge(state.clone());
+                    return self.handle_event(token, event);
                 }
 
                 Ok(())

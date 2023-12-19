@@ -9,6 +9,8 @@ use std::io::{self, Error, ErrorKind};
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 const SERVER: Token = Token(0);
@@ -18,7 +20,7 @@ fn next_token() -> Token {
     Token(inner as usize)
 }
 
-pub fn run_proxy(host: &str) -> io::Result<()> {
+pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
     let host = host.parse().map_err(|_| Error::new(ErrorKind::InvalidInput, "Failed to parse host"))?;
@@ -30,7 +32,7 @@ pub fn run_proxy(host: &str) -> io::Result<()> {
 
     println!("Listening on {host}");
 
-    loop {
+    while *is_running.read().unwrap() {
         if let Err(poll_error) = poll.poll(&mut events, Some(Duration::from_secs(1))) {
             // SIGINT e.g. Ctrl+C
             if poll_error.kind() == ErrorKind::Interrupted {
@@ -75,7 +77,6 @@ pub fn run_proxy(host: &str) -> io::Result<()> {
                 },
                 token => {
                     let Some(session) = connections.get(&token) else {
-                        println!("Failed to find session for {token:?}");
                         continue;
                     };
                     let mut session = session.borrow_mut();
