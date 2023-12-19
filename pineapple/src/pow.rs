@@ -1,34 +1,32 @@
-/*
-Research done by matching symbols from version 0.7.2.26 for iOS with latest linux version (122501009)
-Frida used for hooking and logging
-
-sp::hashcash_key - Only first 20 bytes are used
-A3 AD B1 31 AB 58 45 07 CB 7A 68 AE E1 A5 F9 0B 4D 7F 07 11 00 00 00 00 00 00 00 00 00 00 00 00
-
+// Research done by matching symbols from version 0.7.2.26 for iOS with latest linux version (122501009)
+// Frida used for hooking and logging
+//
+// sp::hashcash_key - Only first 20 bytes are used
+// A3 AD B1 31 AB 58 45 07 CB 7A 68 AE E1 A5 F9 0B 4D 7F 07 11 00 00 00 00 00 00 00 00 00 00 00 00
+//
 // `suffix` is a pointer to the mutable protobuf array (output)
 // `prefix` and `prefix_len` come from the AP challenge
 // `length` comes from the AP challenge, specifies how many trailing zero bits to target
 // `target` is XOR'd with the suffix before checking the trailing zeroes
-ApConnectionImpl::powSolveHashcash(this, suffix, prefix, prefix_len, length, target)
-    // SHA1HMAC of ClientHello and APResponse using hashcash key
-    context_bytes = SHA1HMAC(hashcash_key, 20, accumulator);
-    context = BigEndian::read64(context_bytes);
-
-    memset(suffix, 0, 16);
-    for (i = 0; ; i++, context++) {
-        BigEndian::write64(&suffix[0x0], context);
-        BigEndian::write64(&suffix[0x8], i);
-        sha_ctx = SHA1::new()
-        sha_ctx.update(prefix, prefix_len);
-        sha_ctx.update(suffix, 16);
-        digest = sha_ctx.finish();
-
-        // Interpret last 4 bytes of digest as uint32, then AND with `target` LSB's set to 1 and compare with zero
-        if ( ( (BigEndian::read32(&digest[16]) ^ target) & (1 << length) -1) == 0 ) {
-            break;
-        }
-    }
-*/
+// ApConnectionImpl::powSolveHashcash(this, suffix, prefix, prefix_len, length, target)
+// SHA1HMAC of ClientHello and APResponse using hashcash key
+// context_bytes = SHA1HMAC(hashcash_key, 20, accumulator);
+// context = BigEndian::read64(context_bytes);
+//
+// memset(suffix, 0, 16);
+// for (i = 0; ; i++, context++) {
+// BigEndian::write64(&suffix[0x0], context);
+// BigEndian::write64(&suffix[0x8], i);
+// sha_ctx = SHA1::new()
+// sha_ctx.update(prefix, prefix_len);
+// sha_ctx.update(suffix, 16);
+// digest = sha_ctx.finish();
+//
+// Interpret last 4 bytes of digest as uint32, then AND with `target` LSB's set to 1 and compare with zero
+// if ( ( (BigEndian::read32(&digest[16]) ^ target) & (1 << length) -1) == 0 ) {
+// break;
+// }
+// }
 
 use std::io::{Error, ErrorKind};
 
