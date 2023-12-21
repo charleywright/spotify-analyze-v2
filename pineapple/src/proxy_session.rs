@@ -11,7 +11,7 @@ use mio::net::TcpStream;
 use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
-use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Cryptosuite, Powscheme};
+use pineapple_proto::keyexchange_old::{self as keyexchange, APChallenge, BuildInfo, Cryptosuite, Powscheme};
 use protobuf::{EnumOrUnknown, Message};
 use rand::{Rng, RngCore};
 use rsa::Pkcs1v15Sign;
@@ -195,6 +195,8 @@ struct NegotiationData {
     upstream_buffer: Vec<u8>,
     upstream_buffer_pos: usize,
     upstream_dh: DiffieHellman,
+    upstream_ap_challenge: APChallenge,
+    upstream_hmac: Vec<u8>,
     upstream_public_key: RsaPublicKey,
 }
 
@@ -247,6 +249,8 @@ impl NegotiationData {
             upstream_buffer: Vec::<u8>::new(),
             upstream_buffer_pos: 0,
             upstream_dh: DiffieHellman::random(),
+            upstream_ap_challenge: APChallenge::default(),
+            upstream_hmac: Vec::<u8>::new(),
             upstream_public_key,
         }
     }
@@ -628,8 +632,65 @@ impl ProxySession {
                 );
 
                 match APResponseMessage::parse_from_bytes(&state_data.upstream_buffer[4..]) {
-                    Ok(_ap_response) => {
-                        // Use APResponse
+                    Ok(ap_response) => {
+                        let Some(ap_challenge) = ap_response.challenge.as_ref() else {
+                            if let Some(_ap_upgrade) = ap_response.upgrade.as_ref() {
+                                return Err(Error::new(
+                                    ErrorKind::Unsupported,
+                                    "Upstream AP returned upgrade required, please open an issue on Github",
+                                ));
+                            } else if let Some(ap_login_failed) = ap_response.login_failed.as_ref() {
+                                return Err(Error::new(
+                                    ErrorKind::Other,
+                                    format!("Upstream AP login failed {ap_login_failed:?}"),
+                                ));
+                            } else {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidData,
+                                    "Upstream AP returned invalid APResponse",
+                                ));
+                            }
+                        };
+
+                        // Verify signature
+                        let remote_key = ap_challenge.login_crypto_challenge.diffie_hellman.gs();
+                        let signature = ap_challenge.login_crypto_challenge.diffie_hellman.gs_signature();
+                        let remote_key_hash = Sha1::digest(remote_key);
+                        let scheme = Pkcs1v15Sign::new::<Sha1>();
+                        state_data
+                            .upstream_public_key
+                            .verify(scheme, &remote_key_hash, signature)
+                            .map_err(|_| Error::new(ErrorKind::InvalidData, "RSA Verification of upstream failed"))?;
+
+                        // Compute shared key, hmac, and shannon keys
+                        state_data.upstream_dh.compute_shared(remote_key);
+                        let shared_key = state_data.upstream_dh.shared_bytes();
+                        let mut data = vec![];
+                        for i in 1u8..6u8 {
+                            let mut hmac = HmacSha1::new_from_slice(&shared_key)
+                                .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+                            hmac.update(&state_data.upstream_accumulator);
+                            hmac.update(&[i]);
+                            data.extend_from_slice(&hmac.finalize().into_bytes());
+                        }
+                        let hmac_key = &data[0x00..0x14];
+                        let proxy_key = &data[0x14..0x34];
+                        let server_key = &data[0x34..0x54];
+                        self.upstream_cipher = ShannonCipher::new(proxy_key, server_key).into();
+                        let mut hmac = HmacSha1::new_from_slice(hmac_key)
+                            .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+                        hmac.update(&state_data.upstream_accumulator);
+                        let hmac: [u8; 20] = hmac.finalize().into_bytes().into();
+                        state_data.upstream_hmac.extend_from_slice(&hmac);
+                        state_data.upstream_ap_challenge = ap_response.challenge.unwrap();
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Computed hmac: {} proxy key: {} server key: {} for upstream",
+                            self.downstream_addr,
+                            hex::encode(hmac),
+                            hex::encode(proxy_key),
+                            hex::encode(server_key)
+                        );
 
                         let mut ap_response_buffer = std::mem::take(&mut state_data.upstream_buffer);
                         state_data.upstream_accumulator.append(&mut ap_response_buffer);
