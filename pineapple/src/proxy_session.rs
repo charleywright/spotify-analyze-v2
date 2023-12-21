@@ -306,25 +306,33 @@ impl ProxySession {
         self.upstream_recv_iface = writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     pub fn handle_event(&mut self, token: &Token, event: &Event) -> Result<(), Error> {
         match self.state {
             ProxySessionState::Connecting => {
-                if self.upstream.peer_addr().is_err() {
-                    // Not connected to AP yet
+                if *token != self.upstream_token {
                     return Ok(());
                 }
-                if let Ok(downstream_addr) = self.downstream.peer_addr() {
+
+                if let (Ok(upstream_addr), Ok(downstream_addr)) =
+                    (self.upstream.peer_addr(), self.downstream.peer_addr())
+                {
                     self.downstream_addr = downstream_addr;
                     self.create_interfaces();
+                    #[cfg(debug_assertions)]
+                    println!("[{}] Connected to upstream {upstream_addr}", self.downstream_addr);
                     self.state =
                         ProxySessionState::ReadDownstreamClientHello(Rc::new(RefCell::new(NegotiationData::new())));
                     #[cfg(debug_assertions)]
                     println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 }
+
                 Ok(())
             },
             ProxySessionState::ReadDownstreamClientHello(ref state) => {
+                if *token != self.downstream_token || !event.is_readable() {
+                    return Ok(());
+                }
+
                 let mut state_data = state.borrow_mut();
 
                 // Try to read magic
@@ -423,7 +431,7 @@ impl ProxySession {
                         std::mem::drop(state_data);
                         self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
-                        self.handle_event(token, event)
+                        Ok(())
                     },
                     Err(parse_error) => Err(Error::new(
                         ErrorKind::InvalidData,
@@ -432,6 +440,10 @@ impl ProxySession {
                 }
             },
             ProxySessionState::SendUpstreamClientHello(ref state) => {
+                if *token != self.upstream_token || !event.is_writable() {
+                    return Ok(());
+                }
+
                 let mut state_data = state.borrow_mut();
 
                 // Not created packet yet. Also not sent magic
@@ -534,7 +546,7 @@ impl ProxySession {
                 std::mem::drop(state_data);
                 self.state = ProxySessionState::RecvUpstreamAPChallenge(state.clone());
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
-                self.handle_event(token, event)
+                Ok(())
             },
             _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
         }
