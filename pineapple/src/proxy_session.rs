@@ -185,15 +185,15 @@ impl ProxySession {
 
 struct NegotiationData {
     downstream_accumulator: Vec<u8>,
-    downstream_client_hello_buffer: Vec<u8>,
-    downstream_client_hello_pos: usize,
+    downstream_buffer: Vec<u8>,
+    downstream_buffer_pos: usize,
     downstream_client_hello: ClientHello,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
 
     upstream_accumulator: Vec<u8>,
-    upstream_client_hello_buffer: Vec<u8>,
-    upstream_client_hello_pos: usize,
+    upstream_buffer: Vec<u8>,
+    upstream_buffer_pos: usize,
     upstream_dh: DiffieHellman,
     upstream_public_key: RsaPublicKey,
 }
@@ -237,15 +237,15 @@ impl NegotiationData {
 
         NegotiationData {
             downstream_accumulator: Vec::<u8>::new(),
-            downstream_client_hello_buffer: Vec::<u8>::new(),
-            downstream_client_hello_pos: 0,
+            downstream_buffer: Vec::<u8>::new(),
+            downstream_buffer_pos: 0,
             downstream_client_hello: ClientHello::default(),
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
 
             upstream_accumulator: Vec::<u8>::new(),
-            upstream_client_hello_buffer: Vec::<u8>::new(),
-            upstream_client_hello_pos: 0,
+            upstream_buffer: Vec::<u8>::new(),
+            upstream_buffer_pos: 0,
             upstream_dh: DiffieHellman::random(),
             upstream_public_key,
         }
@@ -353,7 +353,7 @@ impl ProxySession {
                 }
 
                 // Try to read ClientHello length if not already
-                if state_data.downstream_client_hello_buffer.is_empty() {
+                if state_data.downstream_buffer.is_empty() {
                     let mut client_hello_header = [0; 4];
                     let Ok(client_hello_header_bytes_read) = self.downstream.peek(&mut client_hello_header) else {
                         return Ok(());
@@ -370,14 +370,15 @@ impl ProxySession {
                         client_hello_len as usize - SPIRC_MAGIC.len() - 4
                     );
                     let client_hello_len = client_hello_len as usize - SPIRC_MAGIC.len();
-                    state_data.downstream_client_hello_buffer.resize(client_hello_len, 0);
+                    state_data.downstream_buffer_pos = 0;
+                    state_data.downstream_buffer.resize(client_hello_len, 0);
                 }
 
                 // We have read the magic and the header and know the size, but haven't read the whole ClientHello
 
-                let mut current_pos = state_data.downstream_client_hello_pos;
-                let remaining_bytes = state_data.downstream_client_hello_buffer.len() - current_pos;
-                let remaining_ref = &mut state_data.downstream_client_hello_buffer[current_pos..];
+                let mut current_pos = state_data.downstream_buffer_pos;
+                let remaining_bytes = state_data.downstream_buffer.len() - current_pos;
+                let remaining_ref = &mut state_data.downstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
                 println!(
                     "[{}] Trying to read remaining {remaining_bytes} bytes of ClientHello",
@@ -385,13 +386,13 @@ impl ProxySession {
                 );
                 match self.downstream.read(remaining_ref) {
                     Ok(bytes_read) => {
-                        state_data.downstream_client_hello_pos += bytes_read;
+                        state_data.downstream_buffer_pos += bytes_read;
                         current_pos += bytes_read;
                         #[cfg(debug_assertions)]
                         println!(
                             "[{}] Read {bytes_read} bytes of ClientHello, {} remaining",
                             self.downstream_addr,
-                            state_data.downstream_client_hello_buffer.len() - current_pos
+                            state_data.downstream_buffer.len() - current_pos
                         );
                     },
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -401,33 +402,33 @@ impl ProxySession {
                         // Write what we have, could be useful for debugging
                         self.pcap_writer.borrow_mut().write_data(
                             self.downstream_recv_iface,
-                            Cow::Borrowed(&state_data.downstream_client_hello_buffer[0..current_pos]),
+                            Cow::Borrowed(&state_data.downstream_buffer[0..current_pos]),
                         );
                         return Err(error);
                     },
                 }
 
                 // More to read
-                if current_pos != state_data.downstream_client_hello_buffer.len() {
+                if current_pos != state_data.downstream_buffer.len() {
                     return Ok(());
                 }
 
-                self.pcap_writer.borrow_mut().write_data(
-                    self.downstream_recv_iface,
-                    Cow::Borrowed(&state_data.downstream_client_hello_buffer),
-                );
+                self.pcap_writer
+                    .borrow_mut()
+                    .write_data(self.downstream_recv_iface, Cow::Borrowed(&state_data.downstream_buffer));
                 #[cfg(debug_assertions)]
                 println!(
                     "[{}] ClientHello: {}",
                     self.downstream_addr,
-                    hex::encode(&state_data.downstream_client_hello_buffer)
+                    hex::encode(&state_data.downstream_buffer)
                 );
 
-                match ClientHello::parse_from_bytes(&state_data.downstream_client_hello_buffer[4..]) {
+                match ClientHello::parse_from_bytes(&state_data.downstream_buffer[4..]) {
                     Ok(client_hello) => {
                         state_data.downstream_client_hello = client_hello;
-                        let mut client_hello_buffer = std::mem::take(&mut state_data.downstream_client_hello_buffer);
+                        let mut client_hello_buffer = std::mem::take(&mut state_data.downstream_buffer);
                         state_data.downstream_accumulator.append(&mut client_hello_buffer);
+                        state_data.downstream_buffer_pos = 0;
                         std::mem::drop(state_data);
                         self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -447,7 +448,7 @@ impl ProxySession {
                 let mut state_data = state.borrow_mut();
 
                 // Not created packet yet. Also not sent magic
-                if state_data.upstream_client_hello_buffer.is_empty() {
+                if state_data.upstream_buffer.is_empty() {
                     if self.upstream.write_all(&SPIRC_MAGIC).is_err() {
                         return Err(Error::new(ErrorKind::Interrupted, "Failed to write SPIRC magic"));
                     }
@@ -488,23 +489,25 @@ impl ProxySession {
                     let client_hello_len = client_hello.compute_size() as usize + 4 + SPIRC_MAGIC.len();
                     let client_hello_len_bytes = (client_hello_len as u32).to_be_bytes();
 
-                    state_data.upstream_client_hello_buffer.reserve_exact(client_hello_len - SPIRC_MAGIC.len());
-                    state_data.upstream_client_hello_buffer.extend_from_slice(&client_hello_len_bytes);
-                    state_data.upstream_client_hello_buffer.extend_from_slice(&client_hello.write_to_bytes()?);
+                    state_data.upstream_buffer_pos = 0;
+                    state_data.upstream_buffer.clear();
+                    state_data.upstream_buffer.reserve_exact(client_hello_len - SPIRC_MAGIC.len());
+                    state_data.upstream_buffer.extend_from_slice(&client_hello_len_bytes);
+                    state_data.upstream_buffer.extend_from_slice(&client_hello.write_to_bytes()?);
                     #[cfg(debug_assertions)]
                     println!(
                         "[{}] Sending {} bytes for ClientHello {}",
                         self.downstream_addr,
                         client_hello_len,
-                        hex::encode(&state_data.upstream_client_hello_buffer)
+                        hex::encode(&state_data.upstream_buffer)
                     );
                 }
 
                 // ClientHello is serialized but we haven't finished sending it
 
-                let mut current_pos = state_data.upstream_client_hello_pos;
-                let remaining_bytes = state_data.upstream_client_hello_buffer.len() - current_pos;
-                let remaining_ref = &state_data.upstream_client_hello_buffer[current_pos..];
+                let mut current_pos = state_data.upstream_buffer_pos;
+                let remaining_bytes = state_data.upstream_buffer.len() - current_pos;
+                let remaining_ref = &state_data.upstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
                 println!(
                     "[{}] Trying to send remaining {remaining_bytes} bytes of ClientHello",
@@ -512,13 +515,13 @@ impl ProxySession {
                 );
                 match self.upstream.write(remaining_ref) {
                     Ok(bytes_written) => {
-                        state_data.upstream_client_hello_pos += bytes_written;
+                        state_data.upstream_buffer_pos += bytes_written;
                         current_pos += bytes_written;
                         #[cfg(debug_assertions)]
                         println!(
                             "[{}] Written {bytes_written} bytes of ClientHello, {} remaining",
                             self.downstream_addr,
-                            state_data.upstream_client_hello_buffer.len() - current_pos
+                            state_data.upstream_buffer.len() - current_pos
                         );
                     },
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -527,26 +530,120 @@ impl ProxySession {
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_data(
                             self.upstream_send_iface,
-                            Cow::Borrowed(&state_data.upstream_client_hello_buffer[0..current_pos]),
+                            Cow::Borrowed(&state_data.upstream_buffer[0..current_pos]),
                         );
                         return Err(error);
                     },
                 }
 
-                if current_pos != state_data.upstream_client_hello_buffer.len() {
+                if current_pos != state_data.upstream_buffer.len() {
                     return Ok(());
                 }
 
-                self.pcap_writer.borrow_mut().write_data(
-                    self.upstream_send_iface,
-                    Cow::Borrowed(&state_data.upstream_client_hello_buffer),
-                );
-                let mut client_hello_buffer = std::mem::take(&mut state_data.upstream_client_hello_buffer);
+                self.pcap_writer
+                    .borrow_mut()
+                    .write_data(self.upstream_send_iface, Cow::Borrowed(&state_data.upstream_buffer));
+                let mut client_hello_buffer = std::mem::take(&mut state_data.upstream_buffer);
                 state_data.upstream_accumulator.append(&mut client_hello_buffer);
+                state_data.upstream_buffer_pos = 0;
                 std::mem::drop(state_data);
                 self.state = ProxySessionState::RecvUpstreamAPChallenge(state.clone());
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
+            },
+            ProxySessionState::RecvUpstreamAPChallenge(ref state) => {
+                if *token != self.upstream_token || !event.is_readable() {
+                    return Ok(());
+                }
+
+                let mut state_data = state.borrow_mut();
+
+                // Try to read APResponse length if not already
+                if state_data.upstream_buffer.is_empty() {
+                    let mut ap_response_header = [0; 4];
+                    let Ok(ap_response_header_bytes_read) = self.upstream.peek(&mut ap_response_header) else {
+                        return Ok(());
+                    };
+                    if ap_response_header_bytes_read != ap_response_header.len() {
+                        return Ok(());
+                    }
+                    let ap_response_len = u32::from_be_bytes(ap_response_header) as usize;
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] APResponseSize: {} Protobuf: {}",
+                        self.downstream_addr,
+                        ap_response_len,
+                        ap_response_len - 4
+                    );
+                    state_data.upstream_buffer_pos = 0;
+                    state_data.upstream_buffer.resize(ap_response_len, 0);
+                }
+
+                // We know the size but haven't finished reading yet
+
+                let mut current_pos = state_data.upstream_buffer_pos;
+                let remaining_bytes = state_data.upstream_buffer.len() - current_pos;
+                let remaining_ref = &mut state_data.upstream_buffer[current_pos..];
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Trying to read remaining {remaining_bytes} bytes of APResponse",
+                    self.downstream_addr
+                );
+                match self.upstream.read(remaining_ref) {
+                    Ok(bytes_read) => {
+                        state_data.upstream_buffer_pos += bytes_read;
+                        current_pos += bytes_read;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Read {bytes_read} bytes of APResponse, {} remaining",
+                            self.downstream_addr,
+                            state_data.upstream_buffer.len() - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.upstream_recv_iface,
+                            Cow::Borrowed(&state_data.upstream_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
+                }
+
+                // More to read
+                if current_pos != state_data.upstream_buffer.len() {
+                    return Ok(());
+                }
+
+                self.pcap_writer
+                    .borrow_mut()
+                    .write_data(self.upstream_recv_iface, Cow::Borrowed(&state_data.upstream_buffer));
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] APResponse: {}",
+                    self.downstream_addr,
+                    hex::encode(&state_data.upstream_buffer)
+                );
+
+                match APResponseMessage::parse_from_bytes(&state_data.upstream_buffer[4..]) {
+                    Ok(_ap_response) => {
+                        // Use APResponse
+
+                        let mut ap_response_buffer = std::mem::take(&mut state_data.upstream_buffer);
+                        state_data.upstream_accumulator.append(&mut ap_response_buffer);
+                        state_data.upstream_buffer_pos = 0;
+                        std::mem::drop(state_data);
+                        self.state = ProxySessionState::SendDownstreamAPChallenge(state.clone());
+                        println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                        Ok(())
+                    },
+                    Err(parse_error) => Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Failed to parse APResponseMessage: {}", parse_error),
+                    )),
+                }
             },
             _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
         }
