@@ -185,12 +185,15 @@ impl ProxySession {
 
 struct NegotiationData {
     downstream_accumulator: Vec<u8>,
+    downstream_client_hello_buffer: Vec<u8>,
+    downstream_client_hello_pos: usize,
     downstream_client_hello: ClientHello,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
 
     upstream_accumulator: Vec<u8>,
-    upstream_client_hello_message: Vec<u8>,
+    upstream_client_hello_buffer: Vec<u8>,
+    upstream_client_hello_pos: usize,
     upstream_dh: DiffieHellman,
     upstream_public_key: RsaPublicKey,
 }
@@ -234,12 +237,15 @@ impl NegotiationData {
 
         NegotiationData {
             downstream_accumulator: Vec::<u8>::new(),
+            downstream_client_hello_buffer: Vec::<u8>::new(),
+            downstream_client_hello_pos: 0,
             downstream_client_hello: ClientHello::default(),
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
 
             upstream_accumulator: Vec::<u8>::new(),
-            upstream_client_hello_message: Vec::<u8>::new(),
+            upstream_client_hello_buffer: Vec::<u8>::new(),
+            upstream_client_hello_pos: 0,
             upstream_dh: DiffieHellman::random(),
             upstream_public_key,
         }
@@ -320,6 +326,8 @@ impl ProxySession {
             },
             ProxySessionState::ReadDownstreamClientHello(ref state) => {
                 let mut state_data = state.borrow_mut();
+
+                // Try to read magic
                 if state_data.downstream_accumulator.len() != SPIRC_MAGIC.len() {
                     let mut magic_bytes = [0; SPIRC_MAGIC.len()];
                     if self.downstream.read_exact(&mut magic_bytes).is_err() {
@@ -336,42 +344,85 @@ impl ProxySession {
                     state_data.downstream_accumulator.extend_from_slice(&magic_bytes);
                 }
 
-                let mut client_hello_header = [0; 4];
-                let Ok(client_hello_header_bytes_read) = self.downstream.peek(&mut client_hello_header) else {
-                    return Ok(());
-                };
-                if client_hello_header_bytes_read != client_hello_header.len() {
+                // Try to read ClientHello length if not already
+                if state_data.downstream_client_hello_buffer.is_empty() {
+                    let mut client_hello_header = [0; 4];
+                    let Ok(client_hello_header_bytes_read) = self.downstream.peek(&mut client_hello_header) else {
+                        return Ok(());
+                    };
+                    if client_hello_header_bytes_read != client_hello_header.len() {
+                        return Ok(());
+                    }
+                    let client_hello_len = u32::from_be_bytes(client_hello_header);
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] ClientHelloSize: {} Protobuf: {}",
+                        self.downstream_addr,
+                        client_hello_len,
+                        client_hello_len as usize - SPIRC_MAGIC.len() - 4
+                    );
+                    let client_hello_len = client_hello_len as usize - SPIRC_MAGIC.len();
+                    state_data.downstream_client_hello_buffer.resize(client_hello_len, 0);
+                }
+
+                // We have read the magic and the header and know the size, but haven't read the whole ClientHello
+
+                let mut current_pos = state_data.downstream_client_hello_pos;
+                let remaining_bytes = state_data.downstream_client_hello_buffer.len() - current_pos;
+                let remaining_ref = &mut state_data.downstream_client_hello_buffer[current_pos..];
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Trying to read remaining {remaining_bytes} bytes of ClientHello",
+                    self.downstream_addr
+                );
+                match self.downstream.read(remaining_ref) {
+                    Ok(bytes_read) => {
+                        state_data.downstream_client_hello_pos += bytes_read;
+                        current_pos += bytes_read;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Read {bytes_read} bytes of ClientHello, {} remaining",
+                            self.downstream_addr,
+                            state_data.downstream_client_hello_buffer.len() - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        // Write what we have, could be useful for debugging
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.downstream_recv_iface,
+                            Cow::Borrowed(&state_data.downstream_client_hello_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
+                }
+
+                // More to read
+                if current_pos != state_data.downstream_client_hello_buffer.len() {
                     return Ok(());
                 }
-                let client_hello_len = u32::from_be_bytes(client_hello_header);
-                #[cfg(debug_assertions)]
-                println!(
-                    "[{}] ClientHelloSize: {} PB: {}",
-                    self.downstream_addr,
-                    client_hello_len,
-                    client_hello_len as usize - SPIRC_MAGIC.len() - 4
-                );
 
-                state_data.downstream_accumulator.resize(client_hello_len as usize, 0);
-                if self.downstream.read_exact(&mut state_data.downstream_accumulator[2..]).is_err() {
-                    return Ok(());
-                };
                 self.pcap_writer.borrow_mut().write_data(
                     self.downstream_recv_iface,
-                    Cow::Borrowed(&state_data.downstream_accumulator[SPIRC_MAGIC.len()..]),
+                    Cow::Borrowed(&state_data.downstream_client_hello_buffer),
                 );
                 #[cfg(debug_assertions)]
                 println!(
-                    "[{}] Read ClientHello: {}",
+                    "[{}] ClientHello: {}",
                     self.downstream_addr,
-                    hex::encode(&state_data.downstream_accumulator[SPIRC_MAGIC.len() + 4..])
+                    hex::encode(&state_data.downstream_client_hello_buffer)
                 );
 
-                match ClientHello::parse_from_bytes(&state_data.downstream_accumulator[SPIRC_MAGIC.len() + 4..]) {
+                match ClientHello::parse_from_bytes(&state_data.downstream_client_hello_buffer[4..]) {
                     Ok(client_hello) => {
                         state_data.downstream_client_hello = client_hello;
+                        let mut client_hello_buffer = std::mem::take(&mut state_data.downstream_client_hello_buffer);
+                        state_data.downstream_accumulator.append(&mut client_hello_buffer);
                         std::mem::drop(state_data);
                         self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
+                        println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         self.handle_event(token, event)
                     },
                     Err(parse_error) => Err(Error::new(
@@ -384,10 +435,11 @@ impl ProxySession {
                 let mut state_data = state.borrow_mut();
 
                 // Not created packet yet. Also not sent magic
-                if state_data.upstream_client_hello_message.is_empty() {
+                if state_data.upstream_client_hello_buffer.is_empty() {
                     if self.upstream.write_all(&SPIRC_MAGIC).is_err() {
                         return Err(Error::new(ErrorKind::Interrupted, "Failed to write SPIRC magic"));
                     }
+                    self.pcap_writer.borrow_mut().write_data(self.upstream_send_iface, Cow::Borrowed(&SPIRC_MAGIC));
                     #[cfg(debug_assertions)]
                     println!("[{}] Sent SPIRC magic to upstream", self.downstream_addr);
 
@@ -421,36 +473,68 @@ impl ProxySession {
                         .set_gc(state_data.upstream_dh.public_bytes());
                     client_hello.feature_set.clone_from(&state_data.downstream_client_hello.feature_set);
 
-                    let client_hello_len = client_hello.compute_size() as usize;
+                    let client_hello_len = client_hello.compute_size() as usize + 4 + SPIRC_MAGIC.len();
                     let client_hello_len_bytes = (client_hello_len as u32).to_be_bytes();
 
-                    state_data.upstream_client_hello_message.reserve_exact(4 + client_hello_len);
-                    state_data.upstream_client_hello_message.extend_from_slice(&client_hello_len_bytes);
-                    let client_hello_bytes = client_hello.write_to_bytes()?;
+                    state_data.upstream_client_hello_buffer.reserve_exact(client_hello_len - SPIRC_MAGIC.len());
+                    state_data.upstream_client_hello_buffer.extend_from_slice(&client_hello_len_bytes);
+                    state_data.upstream_client_hello_buffer.extend_from_slice(&client_hello.write_to_bytes()?);
                     #[cfg(debug_assertions)]
                     println!(
                         "[{}] Sending {} bytes for ClientHello {}",
                         self.downstream_addr,
-                        client_hello_len + 4,
-                        hex::encode(&client_hello_bytes)
+                        client_hello_len,
+                        hex::encode(&state_data.upstream_client_hello_buffer)
                     );
-                    state_data.upstream_client_hello_message.extend_from_slice(&client_hello_bytes);
                 }
 
-                // Magic has been sent, ClientHello is serialized, send what we can
-                let bytes_written = self.upstream.write(&state_data.upstream_client_hello_message)?;
-                state_data.upstream_client_hello_message.drain(0..bytes_written);
+                // ClientHello is serialized but we haven't finished sending it
+
+                let mut current_pos = state_data.upstream_client_hello_pos;
+                let remaining_bytes = state_data.upstream_client_hello_buffer.len() - current_pos;
+                let remaining_ref = &state_data.upstream_client_hello_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!("[{}] Sent {bytes_written} bytes of ClientHello", self.downstream_addr);
-
-                // Written all, on to the next stage
-                if state_data.upstream_client_hello_message.is_empty() {
-                    std::mem::drop(state_data);
-                    self.state = ProxySessionState::RecvUpstreamAPChallenge(state.clone());
-                    return self.handle_event(token, event);
+                println!(
+                    "[{}] Trying to send remaining {remaining_bytes} bytes of ClientHello",
+                    self.downstream_addr
+                );
+                match self.upstream.write(remaining_ref) {
+                    Ok(bytes_written) => {
+                        state_data.upstream_client_hello_pos += bytes_written;
+                        current_pos += bytes_written;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Written {bytes_written} bytes of ClientHello, {} remaining",
+                            self.downstream_addr,
+                            state_data.upstream_client_hello_buffer.len() - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.upstream_send_iface,
+                            Cow::Borrowed(&state_data.upstream_client_hello_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
                 }
 
-                Ok(())
+                if current_pos != state_data.downstream_client_hello_buffer.len() {
+                    return Ok(());
+                }
+
+                self.pcap_writer.borrow_mut().write_data(
+                    self.upstream_send_iface,
+                    Cow::Borrowed(&state_data.upstream_client_hello_buffer),
+                );
+                let mut client_hello_buffer = std::mem::take(&mut state_data.upstream_client_hello_buffer);
+                state_data.upstream_accumulator.append(&mut client_hello_buffer);
+                std::mem::drop(state_data);
+                self.state = ProxySessionState::RecvUpstreamAPChallenge(state.clone());
+                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                self.handle_event(token, event)
             },
             _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
         }
