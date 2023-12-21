@@ -521,7 +521,7 @@ impl ProxySession {
                     },
                 }
 
-                if current_pos != state_data.downstream_client_hello_buffer.len() {
+                if current_pos != state_data.upstream_client_hello_buffer.len() {
                     return Ok(());
                 }
 
