@@ -11,6 +11,7 @@ use mio::net::TcpStream;
 use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
+use pineapple_proto::authentication_old::ClientResponseEncrypted;
 use pineapple_proto::keyexchange_old::{self as keyexchange, APChallenge, BuildInfo, Cryptosuite, Powscheme};
 use protobuf::{EnumOrUnknown, Message};
 use rand::{Rng, RngCore};
@@ -188,6 +189,9 @@ struct NegotiationData {
     downstream_buffer: Vec<u8>,
     downstream_buffer_pos: usize,
     downstream_client_hello: ClientHello,
+    downstream_ap_response: APResponseMessage,
+    downstream_client_response_plaintext: ClientResponsePlaintext,
+    downstream_client_response_encrypted: ClientResponseEncrypted,
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
 
@@ -241,6 +245,9 @@ impl NegotiationData {
             downstream_buffer: Vec::<u8>::new(),
             downstream_buffer_pos: 0,
             downstream_client_hello: ClientHello::default(),
+            downstream_ap_response: APResponseMessage::default(),
+            downstream_client_response_plaintext: ClientResponsePlaintext::default(),
+            downstream_client_response_encrypted: ClientResponseEncrypted::default(),
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
 
@@ -260,8 +267,10 @@ enum ProxySessionState {
     SendUpstreamClientHello(Rc<RefCell<NegotiationData>>),
     ReadUpstreamAPChallenge(Rc<RefCell<NegotiationData>>),
     SendDownstreamAPChallenge(Rc<RefCell<NegotiationData>>),
-    ReadDownstreamClientResponse(Rc<RefCell<NegotiationData>>),
-    SendUpstreamClientResponse(Rc<RefCell<NegotiationData>>),
+    ReadDownstreamClientResponsePlaintext(Rc<RefCell<NegotiationData>>),
+    ReadDownstreamClientResponseEncrypted(Rc<RefCell<NegotiationData>>),
+    SendUpstreamClientResponsePlaintext(Rc<RefCell<NegotiationData>>),
+    SendUpstreamClientResponseEncrypted(Rc<RefCell<NegotiationData>>),
     Connected,
 }
 
@@ -271,14 +280,16 @@ impl Display for ProxySessionState {
             f,
             "{}",
             match self {
-                ProxySessionState::Connecting => "Connecting",
-                ProxySessionState::ReadDownstreamClientHello(_) => "ReadDownstreamClientHello",
-                ProxySessionState::SendUpstreamClientHello(_) => "SendUpstreamClientHello",
-                ProxySessionState::ReadUpstreamAPChallenge(_) => "ReadUpstreamAPChallenge",
-                ProxySessionState::SendDownstreamAPChallenge(_) => "SendDownstreamAPChallenge",
-                ProxySessionState::ReadDownstreamClientResponse(_) => "ReadDownstreamClientResponse",
-                ProxySessionState::SendUpstreamClientResponse(_) => "SendUpstreamClientResponse",
-                ProxySessionState::Connected => "Connected",
+                Self::Connecting => "Connecting",
+                Self::ReadDownstreamClientHello(_) => "ReadDownstreamClientHello",
+                Self::SendUpstreamClientHello(_) => "SendUpstreamClientHello",
+                Self::ReadUpstreamAPChallenge(_) => "ReadUpstreamAPChallenge",
+                Self::SendDownstreamAPChallenge(_) => "SendDownstreamAPChallenge",
+                Self::ReadDownstreamClientResponsePlaintext(_) => "ReadDownstreamClientResponsePlaintext",
+                Self::ReadDownstreamClientResponseEncrypted(_) => "ReadDownstreamClientResponseEncrypted",
+                Self::SendUpstreamClientResponsePlaintext(_) => "SendUpstreamClientResponsePlaintext",
+                Self::SendUpstreamClientResponseEncrypted(_) => "SendUpstreamClientResponseEncrypted",
+                Self::Connected => "Connected",
             }
         )
     }
@@ -646,46 +657,6 @@ impl ProxySession {
                             return Err(Error::new(ErrorKind::InvalidData, "Upstream AP returned invalid APResponse"));
                         }
 
-                        // // Verify signature
-                        // let remote_key = ap_challenge.login_crypto_challenge.diffie_hellman.gs();
-                        // let signature = ap_challenge.login_crypto_challenge.diffie_hellman.gs_signature();
-                        // let remote_key_hash = Sha1::digest(remote_key);
-                        // let scheme = Pkcs1v15Sign::new::<Sha1>();
-                        // state_data
-                        //     .upstream_public_key
-                        //     .verify(scheme, &remote_key_hash, signature)
-                        //     .map_err(|_| Error::new(ErrorKind::InvalidData, "RSA Verification of upstream failed"))?;
-
-                        // // Compute shared key, hmac, and shannon keys
-                        // state_data.upstream_dh.compute_shared(remote_key);
-                        // let shared_key = state_data.upstream_dh.shared_bytes();
-                        // let mut data = vec![];
-                        // for i in 1u8..6u8 {
-                        //     let mut hmac = HmacSha1::new_from_slice(&shared_key)
-                        //         .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
-                        //     hmac.update(&state_data.upstream_accumulator);
-                        //     hmac.update(&[i]);
-                        //     data.extend_from_slice(&hmac.finalize().into_bytes());
-                        // }
-                        // let hmac_key = &data[0x00..0x14];
-                        // let proxy_key = &data[0x14..0x34];
-                        // let server_key = &data[0x34..0x54];
-                        // self.upstream_cipher = ShannonCipher::new(proxy_key, server_key).into();
-                        // let mut hmac = HmacSha1::new_from_slice(hmac_key)
-                        //     .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
-                        // hmac.update(&state_data.upstream_accumulator);
-                        // let hmac: [u8; 20] = hmac.finalize().into_bytes().into();
-                        // state_data.upstream_hmac.extend_from_slice(&hmac);
-                        // state_data.upstream_ap_response = ap_response.challenge.unwrap();
-                        // #[cfg(debug_assertions)]
-                        // println!(
-                        //     "[{}] Computed hmac: {} proxy key: {} server key: {} for upstream",
-                        //     self.downstream_addr,
-                        //     hex::encode(hmac),
-                        //     hex::encode(proxy_key),
-                        //     hex::encode(server_key)
-                        // );
-
                         state_data.upstream_ap_response = ap_response;
                         let mut ap_response_buffer = std::mem::take(&mut state_data.upstream_buffer);
                         state_data.upstream_accumulator.append(&mut ap_response_buffer);
@@ -744,10 +715,17 @@ impl ProxySession {
                             diffie_hellman_challenge.set_server_signature_key(SERVER_KEY_IDX);
                             diffie_hellman_challenge.set_gs(public_key_bytes);
                             diffie_hellman_challenge.set_gs_signature(signature);
+                        } else {
+                            // When solving the diffie hellman challenge we also get the shannon keys
+                            // There doesn't appear to be another way to obtain them, so consider this fatal
+                            unimplemented!(
+                                "Upstream didn't send a diffie hellman challenge, please open an issue on Github"
+                            );
                         }
 
                         ap_response.challenge.mut_or_insert_default().fingerprint_challenge.mut_or_insert_default();
                         if upstream_ap_challenge.fingerprint_challenge.grain.is_some() {
+                            // TODO: Write grain challenge implementation
                             println!(
                                 "[{}] Upstream sent FingerprintGrainChallenge which we don't support yet",
                                 self.downstream_addr
@@ -759,6 +737,7 @@ impl ProxySession {
                             );
                         }
 
+                        // TODO: Generate our own challenge
                         ap_response.challenge.mut_or_insert_default().pow_challenge.mut_or_insert_default();
                         if upstream_ap_challenge.pow_challenge.hash_cash.is_some() {
                             ap_response
@@ -793,6 +772,7 @@ impl ProxySession {
                     state_data.downstream_buffer.reserve_exact(ap_response_len as usize);
                     state_data.downstream_buffer.extend_from_slice(&ap_response_len_bytes);
                     state_data.downstream_buffer.extend_from_slice(&ap_response.write_to_bytes()?);
+                    state_data.downstream_ap_response = ap_response;
                     #[cfg(debug_assertions)]
                     println!(
                         "[{}] Sending {} bytes for APResponseMessage {}",
@@ -846,7 +826,199 @@ impl ProxySession {
                 state_data.downstream_accumulator.append(&mut ap_response_buffer);
                 state_data.downstream_buffer_pos = 0;
                 std::mem::drop(state_data);
-                self.state = ProxySessionState::ReadDownstreamClientResponse(state.clone());
+                self.state = ProxySessionState::ReadDownstreamClientResponsePlaintext(state.clone());
+                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                Ok(())
+            },
+            ProxySessionState::ReadDownstreamClientResponsePlaintext(ref state) => {
+                if *token != self.downstream_token || !event.is_readable() {
+                    return Ok(());
+                }
+
+                let mut state_data = state.borrow_mut();
+
+                if state_data.downstream_buffer.is_empty() {
+                    let mut client_response_header = [0; 4];
+                    let Ok(client_response_header_bytes_read) = self.downstream.peek(&mut client_response_header)
+                    else {
+                        return Ok(());
+                    };
+                    if client_response_header_bytes_read != client_response_header.len() {
+                        return Ok(());
+                    }
+                    let client_response_len = u32::from_be_bytes(client_response_header);
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] ClientResponsePlaintextSize: {} Protobuf: {}",
+                        self.downstream_addr,
+                        client_response_len,
+                        client_response_len - 4
+                    );
+                    state_data.downstream_buffer_pos = 0;
+                    state_data.downstream_buffer.resize(client_response_len as usize, 0);
+                }
+
+                let mut current_pos = state_data.downstream_buffer_pos;
+                let remaining_bytes = state_data.downstream_buffer.len() - current_pos;
+                let remaining_ref = &mut state_data.downstream_buffer[current_pos..];
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Trying to read remaining {remaining_bytes} bytes of ClientResponsePlaintext",
+                    self.downstream_addr
+                );
+                match self.downstream.read(remaining_ref) {
+                    Ok(bytes_read) => {
+                        state_data.downstream_buffer_pos += bytes_read;
+                        current_pos += bytes_read;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Read {bytes_read} bytes of ClientResponsePlaintext, {} remaining",
+                            self.downstream_addr,
+                            state_data.downstream_buffer.len() - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.downstream_recv_iface,
+                            Cow::Borrowed(&state_data.downstream_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
+                }
+
+                if current_pos != state_data.downstream_buffer.len() {
+                    return Ok(());
+                }
+
+                self.pcap_writer
+                    .borrow_mut()
+                    .write_data(self.downstream_recv_iface, Cow::Borrowed(&state_data.downstream_buffer));
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] ClientResponsePlaintext: {}",
+                    self.downstream_addr,
+                    hex::encode(&state_data.downstream_buffer)
+                );
+
+                match ClientResponsePlaintext::parse_from_bytes(&state_data.downstream_buffer[4..]) {
+                    Ok(client_response) => {
+                        state_data.downstream_client_response_plaintext = client_response;
+                        state_data.downstream_buffer.clear();
+                        state_data.downstream_buffer_pos = 0;
+                    },
+                    Err(parse_error) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Failed to parse ClientResponsePlaintext: {}", parse_error),
+                        ))
+                    },
+                }
+
+                // Check the client's solutions to challenges. ap.spotify.com does not consider it an error if the
+                // client doesn't provide a solution to a challenge given by the server, so we are not going to enforce
+                // them either.
+
+                if state_data.downstream_client_response_plaintext.login_crypto_response.is_some()
+                    && state_data.downstream_client_response_plaintext.login_crypto_response.diffie_hellman.is_some()
+                {
+                    let downstream_public_key =
+                        Vec::from(state_data.downstream_client_hello.login_crypto_hello.diffie_hellman.gc());
+                    state_data.downstream_dh.compute_shared(&downstream_public_key);
+                    let shared_key = state_data.downstream_dh.shared_bytes();
+                    let mut data = vec![];
+                    for i in 1u8..6u8 {
+                        let mut hmac = HmacSha1::new_from_slice(&shared_key)
+                            .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+                        hmac.update(&state_data.downstream_accumulator);
+                        hmac.update(&[i]);
+                        data.extend_from_slice(&hmac.finalize().into_bytes());
+                    }
+                    let hmac_key = &data[0x00..0x14];
+                    let downstream_key = &data[0x14..0x34];
+                    let proxy_key = &data[0x34..0x54];
+                    self.downstream_cipher = ShannonCipher::new(proxy_key, downstream_key).into();
+                    let mut computed_hmac = HmacSha1::new_from_slice(hmac_key)
+                        .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+                    computed_hmac.update(&state_data.downstream_accumulator);
+                    let computed_hmac: [u8; 20] = computed_hmac.finalize().into_bytes().into();
+                    let computed_hmac = Vec::<u8>::from(computed_hmac);
+
+                    let downstream_hmac = Vec::from(
+                        state_data.downstream_client_response_plaintext.login_crypto_response.diffie_hellman.hmac(),
+                    );
+
+                    if computed_hmac != downstream_hmac {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Downstream sent invalid hmac, computed: {} downstream: {}",
+                                hex::encode(&computed_hmac),
+                                hex::encode(&downstream_hmac)
+                            ),
+                        ));
+                    }
+
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] Computed hmac: {} downstream key: {} proxy key: {}",
+                        self.downstream_addr,
+                        hex::encode(&computed_hmac),
+                        hex::encode(downstream_key),
+                        hex::encode(proxy_key)
+                    );
+                }
+
+                if state_data.downstream_client_response_plaintext.pow_response.hash_cash.is_some() {
+                    let Some(challenge) = state_data.downstream_ap_response.challenge.pow_challenge.hash_cash.as_ref()
+                    else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "Client sent a PoW HashCash response when no challenge was sent",
+                        ));
+                    };
+                    let computed_suffix = pow::solve_hashcash(&state_data.downstream_accumulator, challenge)?;
+                    let downstream_suffix =
+                        Vec::from(state_data.downstream_client_response_plaintext.pow_response.hash_cash.hash_suffix());
+                    // TODO: Fix bug in hashcash solve code
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] Hash cash solution - proxy: {} downstream: {} prefix: {} length: {} target: {} accumulator: {}",
+                        self.downstream_addr,
+                        hex::encode(&computed_suffix),
+                        hex::encode(&downstream_suffix),
+                        hex::encode(challenge.prefix()),
+                        challenge.length(),
+                        challenge.target(),
+                        hex::encode(&state_data.downstream_accumulator)
+                    );
+                    if computed_suffix != downstream_suffix {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Hash cash solution mismatch, proxy: {} downstream: {}",
+                                hex::encode(&computed_suffix),
+                                hex::encode(&downstream_suffix)
+                            ),
+                        ));
+                    }
+                }
+
+                if state_data.downstream_client_response_plaintext.crypto_response.is_some() {
+                    if state_data.downstream_client_response_plaintext.crypto_response.shannon.is_some() {
+                        #[cfg(debug_assertions)]
+                        println!("[{}] Downstream sent shannon crypto response solution", self.downstream_addr);
+                    }
+                    if state_data.downstream_client_response_plaintext.crypto_response.rc4_sha1_hmac.is_some() {
+                        #[cfg(debug_assertions)]
+                        println!("[{}] Downstream sent RC4 SHA1 crypto response solution", self.downstream_addr);
+                    }
+                }
+
+                std::mem::drop(state_data);
+                self.state = ProxySessionState::ReadDownstreamClientResponseEncrypted(state.clone());
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
