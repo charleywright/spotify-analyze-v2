@@ -287,7 +287,8 @@ impl Display for ProxySessionState {
 impl Display for ProxySession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let default_ip = "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap();
-        write!(f, "ProxySession {{ downstream: {} {:?} downstream_send: {} downstream_recv: {} upstream: {} {:?} upstream_send: {} upstream_recv: {} }}",
+        write!(f, "ProxySession {{ state: {} downstream: {} {:?} downstream_send: {} downstream_recv: {} upstream: {} {:?} upstream_send: {} upstream_recv: {} }}",
+            self.state,
             self.downstream.peer_addr().unwrap_or(default_ip), self.downstream_token,
             self.downstream_send_iface, self.downstream_recv_iface,
             self.upstream.peer_addr().unwrap_or(default_ip), self.upstream_token,
