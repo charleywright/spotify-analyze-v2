@@ -96,7 +96,10 @@ pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
                             )?;
                         },
                         Err(error) => {
-                            println!("Error while handling {event:?} for {session}: {error}");
+                            println!(
+                                "[{}] Error while handling {event:?} for {session}: {error}",
+                                session.downstream_addr
+                            );
                             std::mem::drop(session); // End immutable borrow of `connections`
                             let session = connections.remove(&token).unwrap();
                             let mut session = session.borrow_mut();
