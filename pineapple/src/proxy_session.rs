@@ -1142,6 +1142,153 @@ impl ProxySession {
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
+            ProxySessionState::SendUpstreamClientResponsePlaintext(ref state) => {
+                if *token != self.upstream_token || !event.is_writable() {
+                    return Ok(());
+                }
+
+                let mut state_data = state.borrow_mut();
+
+                if state_data.upstream_buffer.is_empty() {
+                    let mut client_response = ClientResponsePlaintext::new();
+
+                    // diffie hellman hmac
+                    if let Some(login_crypto_challenge) =
+                        state_data.upstream_ap_response.challenge.login_crypto_challenge.as_ref()
+                    {
+                        if let Some(diffie_hellman_challenge) = login_crypto_challenge.diffie_hellman.as_ref() {
+                            let remote_key = Vec::from(diffie_hellman_challenge.gs());
+                            let signature = diffie_hellman_challenge.gs_signature();
+                            let remote_key_hash = Sha1::digest(&remote_key);
+                            let scheme = Pkcs1v15Sign::new::<Sha1>();
+                            state_data.upstream_public_key.verify(scheme, &remote_key_hash, signature).map_err(
+                                |_| Error::new(ErrorKind::InvalidData, "RSA Verification of upstream failed"),
+                            )?;
+
+                            state_data.upstream_dh.compute_shared(&remote_key);
+                            let shared_key = state_data.upstream_dh.shared_bytes();
+                            let mut data = vec![];
+                            for i in 1u8..6u8 {
+                                let mut hmac = HmacSha1::new_from_slice(&shared_key)
+                                    .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+                                hmac.update(&state_data.upstream_accumulator);
+                                hmac.update(&[i]);
+                                data.extend_from_slice(&hmac.finalize().into_bytes());
+                            }
+                            let hmac_key = &data[0x00..0x14];
+                            let proxy_key = &data[0x14..0x34];
+                            let upstream_key = &data[0x34..0x54];
+                            self.upstream_cipher = ShannonCipher::new(proxy_key, upstream_key).into();
+                            let mut computed_hmac = HmacSha1::new_from_slice(hmac_key)
+                                .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to create HMAC"))?;
+                            computed_hmac.update(&state_data.downstream_accumulator);
+                            let computed_hmac: [u8; 20] = computed_hmac.finalize().into_bytes().into();
+                            let computed_hmac = Vec::<u8>::from(computed_hmac);
+
+                            #[cfg(debug_assertions)]
+                            println!(
+                                "[{}] Computed hmac: {} Proxy key: {} Upstream key: {} ",
+                                self.downstream_addr,
+                                hex::encode(&computed_hmac),
+                                hex::encode(proxy_key),
+                                hex::encode(upstream_key)
+                            );
+
+                            client_response
+                                .login_crypto_response
+                                .mut_or_insert_default()
+                                .diffie_hellman
+                                .mut_or_insert_default()
+                                .set_hmac(computed_hmac);
+                        }
+                    }
+
+                    if let Some(pow_challenge) = state_data.upstream_ap_response.challenge.pow_challenge.as_ref() {
+                        if let Some(hash_cash_challenge) = pow_challenge.hash_cash.as_ref() {
+                            let suffix = pow::solve_hashcash(&state_data.upstream_accumulator, hash_cash_challenge)?;
+                            client_response
+                                .pow_response
+                                .mut_or_insert_default()
+                                .hash_cash
+                                .mut_or_insert_default()
+                                .set_hash_suffix(suffix);
+                        }
+                    }
+
+                    if let Some(crypto_challenge) = state_data.upstream_ap_response.challenge.crypto_challenge.as_ref()
+                    {
+                        if let Some(_shannon_challenge) = crypto_challenge.shannon.as_ref() {
+                            client_response.crypto_response.mut_or_insert_default().shannon.mut_or_insert_default();
+                        }
+                        if let Some(_rc4_sha1_hmac_challenge) = crypto_challenge.rc4_sha1_hmac.as_ref() {
+                            unimplemented!("RC4_SHA1_HMAC crypto challenge is unknown, please open an issue on Github");
+                        }
+                    }
+
+                    let client_response_len = client_response.compute_size() as u32 + 4;
+                    let client_response_len_bytes = client_response_len.to_be_bytes();
+                    state_data.upstream_buffer_pos = 0;
+                    state_data.upstream_buffer.clear();
+                    state_data.upstream_buffer.reserve_exact(client_response_len as usize);
+                    state_data.upstream_buffer.extend_from_slice(&client_response_len_bytes);
+                    state_data.upstream_buffer.extend_from_slice(&client_response.write_to_bytes()?);
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] Sending {} bytes for ClientResponsePlaintext {}",
+                        self.downstream_addr,
+                        client_response_len,
+                        hex::encode(&state_data.upstream_buffer)
+                    );
+                }
+
+                let mut current_pos = state_data.upstream_buffer_pos;
+                let remaining_bytes = state_data.upstream_buffer.len() - current_pos;
+                let remaining_ref = &state_data.upstream_buffer[current_pos..];
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Trying to send remaining {remaining_bytes} bytes of ClientResponsePlaintext",
+                    self.downstream_addr
+                );
+                match self.upstream.write(remaining_ref) {
+                    Ok(bytes_written) => {
+                        state_data.upstream_buffer_pos += bytes_written;
+                        current_pos += bytes_written;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Written {bytes_written} bytes of ClientResponsePlaintext, {} remaining",
+                            self.downstream_addr,
+                            state_data.upstream_buffer.len() - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.upstream_send_iface,
+                            Cow::Borrowed(&state_data.upstream_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
+                }
+
+                if current_pos != state_data.upstream_buffer.len() {
+                    return Ok(());
+                }
+
+                self.pcap_writer
+                    .borrow_mut()
+                    .write_data(self.upstream_send_iface, Cow::Borrowed(&state_data.upstream_buffer));
+                let mut ap_response_buffer = std::mem::take(&mut state_data.upstream_buffer);
+                state_data.upstream_accumulator.append(&mut ap_response_buffer);
+                state_data.upstream_buffer_pos = 0;
+                std::mem::drop(state_data);
+                self.state = ProxySessionState::SendUpstreamClientResponseEncrypted(state.clone());
+                #[cfg(debug_assertions)]
+                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+
+                Ok(())
+            },
             _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
         }
     }
