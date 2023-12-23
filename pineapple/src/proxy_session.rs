@@ -1,8 +1,8 @@
-use super::dh;
-use super::pcap::PcapWriter;
-use super::shannon::{DecryptResult, DecryptState, ShannonCipher};
+use crate::dh;
 use crate::pcap::IfaceType;
+use crate::pcap::PcapWriter;
 use crate::pow;
+use crate::shannon::{DecryptResult, DecryptState, ShannonCipher};
 use dh::DiffieHellman;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
@@ -12,7 +12,7 @@ use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
 use pineapple_proto::authentication_old::ClientResponseEncrypted;
-use pineapple_proto::keyexchange_old::{self as keyexchange, APChallenge, BuildInfo, Cryptosuite, Powscheme};
+use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Cryptosuite, Powscheme};
 use protobuf::{EnumOrUnknown, Message};
 use rand::{Rng, RngCore};
 use rsa::Pkcs1v15Sign;
@@ -445,6 +445,7 @@ impl ProxySession {
                         state_data.downstream_buffer_pos = 0;
                         std::mem::drop(state_data);
                         self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
+                        #[cfg(debug_assertions)]
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         Ok(())
                     },
@@ -569,6 +570,7 @@ impl ProxySession {
                 state_data.upstream_buffer_pos = 0;
                 std::mem::drop(state_data);
                 self.state = ProxySessionState::ReadUpstreamAPChallenge(state.clone());
+                #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
@@ -663,6 +665,7 @@ impl ProxySession {
                         state_data.upstream_buffer_pos = 0;
                         std::mem::drop(state_data);
                         self.state = ProxySessionState::SendDownstreamAPChallenge(state.clone());
+                        #[cfg(debug_assertions)]
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         Ok(())
                     },
@@ -827,6 +830,7 @@ impl ProxySession {
                 state_data.downstream_buffer_pos = 0;
                 std::mem::drop(state_data);
                 self.state = ProxySessionState::ReadDownstreamClientResponsePlaintext(state.clone());
+                #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
@@ -1019,6 +1023,122 @@ impl ProxySession {
 
                 std::mem::drop(state_data);
                 self.state = ProxySessionState::ReadDownstreamClientResponseEncrypted(state.clone());
+                #[cfg(debug_assertions)]
+                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                Ok(())
+            },
+            ProxySessionState::ReadDownstreamClientResponseEncrypted(ref state) => {
+                if *token != self.downstream_token || !event.is_readable() {
+                    return Ok(());
+                }
+
+                let mut state_data = state.borrow_mut();
+                let Some(downstream_cipher) = self.downstream_cipher.as_mut() else {
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "No downstream cipher while trying to read ClientResponseEncrypted",
+                    ));
+                };
+
+                if state_data.downstream_buffer.is_empty() {
+                    let mut client_response_header = [0; 3];
+                    self.downstream.read_exact(&mut client_response_header)?;
+                    let DecryptResult::Header(packet_type, packet_len) =
+                        downstream_cipher.decrypt(&client_response_header)
+                    else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Failed to decrypt header for ClientResponseEncrypted",
+                        ));
+                    };
+                    if packet_type != 0xAB {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Expected 0xAB for ClientResponseEncrypted, got {:#02X}", packet_type),
+                        ));
+                    }
+                    let packet_len = packet_len as usize + 4; // 4 byte MAC after encrypted bytes
+
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] ClientResponseEncrypted - Type: {:#02X} Length: {}",
+                        self.downstream_addr, packet_type, packet_len
+                    );
+                    state_data.downstream_buffer_pos = 0;
+                    state_data.downstream_buffer.resize(packet_len, 0);
+                }
+
+                let mut current_pos = state_data.downstream_buffer_pos;
+                let buffer_len = state_data.downstream_buffer.len();
+                let remaining_bytes = buffer_len - current_pos;
+                let remaining_ref = &mut state_data.downstream_buffer[current_pos..];
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Trying to read remaining {remaining_bytes} bytes of ClientResponseEncrypted",
+                    self.downstream_addr
+                );
+                match self.downstream.read(remaining_ref) {
+                    Ok(bytes_read) => {
+                        state_data.downstream_buffer_pos += bytes_read;
+                        current_pos += bytes_read;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Read {bytes_read} bytes of ClientResponseEncrypted, {} remaining",
+                            self.downstream_addr,
+                            buffer_len - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.downstream_recv_iface,
+                            Cow::Borrowed(&state_data.downstream_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
+                }
+
+                // More to read
+                if current_pos != buffer_len {
+                    return Ok(());
+                }
+
+                // Decrypt body, MAC isn't encrypted since we couldn't verify an unsuccessful decrypt
+                let DecryptResult::Body(packet) = downstream_cipher.decrypt(&state_data.downstream_buffer) else {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "Failed to decrypt packet for ClientResponseEncrypted",
+                    ));
+                };
+
+                match ClientResponseEncrypted::parse_from_bytes(&packet) {
+                    Ok(client_response) => {
+                        state_data.downstream_client_response_encrypted = client_response;
+                        state_data.downstream_buffer.clear();
+                        state_data.downstream_buffer_pos = 0;
+                    },
+                    Err(parse_error) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Failed to parse ClientResponseEncrypted: {}", parse_error),
+                        ))
+                    },
+                }
+
+                if state_data.downstream_client_response_encrypted.fingerprint_response.is_some() {
+                    if state_data.downstream_client_response_encrypted.fingerprint_response.grain.is_some() {
+                        unimplemented!("Grain is not implemented yet");
+                    }
+                    if state_data.downstream_client_response_encrypted.fingerprint_response.hmac_ripemd.is_some() {
+                        unimplemented!("HMAC RipeMD is unknown, please open an issue on Github");
+                    }
+                }
+
+                std::mem::drop(state_data);
+                self.state = ProxySessionState::SendUpstreamClientResponsePlaintext(state.clone());
+                #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
