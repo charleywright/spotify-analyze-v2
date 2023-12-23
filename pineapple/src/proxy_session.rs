@@ -132,6 +132,8 @@ vQIDAQAB
 const SERVER_KEY_IDX: i32 = 0;
 // First bytes sent to identify spirc
 const SPIRC_MAGIC: [u8; 2] = [0x00, 0x04];
+// Login packet type
+const LOGIN_PACKET: u8 = 0xAB;
 
 pub struct ProxySession {
     pub downstream: TcpStream,
@@ -1051,10 +1053,11 @@ impl ProxySession {
                             "Failed to decrypt header for ClientResponseEncrypted",
                         ));
                     };
-                    if packet_type != 0xAB {
+
+                    if packet_type != LOGIN_PACKET {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
-                            format!("Expected 0xAB for ClientResponseEncrypted, got {:#02X}", packet_type),
+                            format!("Expected {LOGIN_PACKET} for ClientResponseEncrypted, got {:#02X}", packet_type),
                         ));
                     }
                     let packet_len = packet_len as usize + 4; // 4 byte MAC after encrypted bytes
@@ -1091,13 +1094,7 @@ impl ProxySession {
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
                         return Ok(());
                     },
-                    Err(error) => {
-                        self.pcap_writer.borrow_mut().write_data(
-                            self.downstream_recv_iface,
-                            Cow::Borrowed(&state_data.downstream_buffer[0..current_pos]),
-                        );
-                        return Err(error);
-                    },
+                    Err(error) => return Err(error),
                 }
 
                 // More to read
@@ -1112,6 +1109,7 @@ impl ProxySession {
                         "Failed to decrypt packet for ClientResponseEncrypted",
                     ));
                 };
+                self.pcap_writer.borrow_mut().write_data(self.downstream_recv_iface, Cow::Borrowed(&packet));
 
                 match ClientResponseEncrypted::parse_from_bytes(&packet) {
                     Ok(client_response) => {
