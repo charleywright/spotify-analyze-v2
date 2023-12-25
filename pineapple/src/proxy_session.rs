@@ -12,6 +12,7 @@ use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
 use pineapple_proto::authentication_old::ClientResponseEncrypted;
+use pineapple_proto::keyexchange_old::Fingerprint;
 use pineapple_proto::keyexchange_old::{self as keyexchange, BuildInfo, Cryptosuite, Powscheme};
 use protobuf::{EnumOrUnknown, Message};
 use rand::{Rng, RngCore};
@@ -475,16 +476,9 @@ impl ProxySession {
 
                     let mut client_hello = ClientHello::new();
                     client_hello.build_info.clone_from(&state_data.downstream_client_hello.build_info);
-                    client_hello
-                        .fingerprints_supported
-                        .extend_from_slice(&state_data.downstream_client_hello.fingerprints_supported);
-                    client_hello
-                        .cryptosuites_supported
-                        .extend_from_slice(&state_data.downstream_client_hello.cryptosuites_supported);
-                    client_hello.cryptosuites_supported.push(Cryptosuite::CRYPTO_SUITE_RC4_SHA1_HMAC.into());
-                    client_hello
-                        .powschemes_supported
-                        .extend_from_slice(&state_data.downstream_client_hello.powschemes_supported);
+                    // client_hello.fingerprints_supported.push(Fingerprint::FINGERPRINT_GRAIN.into());
+                    client_hello.cryptosuites_supported.push(Cryptosuite::CRYPTO_SUITE_SHANNON.into());
+                    client_hello.powschemes_supported.push(Powscheme::POW_HASH_CASH.into());
                     {
                         let mut nonce = vec![0; 16];
                         rand::thread_rng().fill_bytes(&mut nonce);
@@ -1109,6 +1103,8 @@ impl ProxySession {
                         "Failed to decrypt packet for ClientResponseEncrypted",
                     ));
                 };
+                #[cfg(debug_assertions)]
+                println!("[{}] ClientResponseEncrypted: {}", self.downstream_addr, hex::encode(&packet));
                 self.pcap_writer.borrow_mut().write_data(self.downstream_recv_iface, Cow::Borrowed(&packet));
 
                 match ClientResponseEncrypted::parse_from_bytes(&packet) {
@@ -1277,8 +1273,7 @@ impl ProxySession {
                 self.pcap_writer
                     .borrow_mut()
                     .write_data(self.upstream_send_iface, Cow::Borrowed(&state_data.upstream_buffer));
-                let mut ap_response_buffer = std::mem::take(&mut state_data.upstream_buffer);
-                state_data.upstream_accumulator.append(&mut ap_response_buffer);
+                state_data.upstream_buffer.clear();
                 state_data.upstream_buffer_pos = 0;
                 std::mem::drop(state_data);
                 self.state = ProxySessionState::SendUpstreamClientResponseEncrypted(state.clone());
@@ -1287,7 +1282,101 @@ impl ProxySession {
 
                 Ok(())
             },
-            _ => Err(Error::new(ErrorKind::InvalidData, format!("No handler for {}", self.state))),
+            ProxySessionState::SendUpstreamClientResponseEncrypted(ref state) => {
+                if *token != self.upstream_token || !event.is_writable() {
+                    return Ok(());
+                }
+
+                let mut state_data = state.borrow_mut();
+
+                if state_data.upstream_buffer.is_empty() {
+                    let mut client_response = ClientResponseEncrypted::new();
+                    client_response.clone_from(&state_data.downstream_client_response_encrypted);
+                    client_response.fingerprint_response.clear();
+
+                    if let Some(fingerprint_challenge) =
+                        state_data.upstream_ap_response.challenge.fingerprint_challenge.as_ref()
+                    {
+                        if let Some(_grain_challenge) = fingerprint_challenge.grain.as_ref() {
+                            unimplemented!("Grain is not implemented yet");
+                        }
+                        if let Some(_hmac_ripemd_challenge) = fingerprint_challenge.hmac_ripemd.as_ref() {
+                            unimplemented!("HMAC RipeMD is unknown, please open an issue on Github");
+                        }
+                    }
+
+                    let Some(upstream_cipher) = self.upstream_cipher.as_mut() else {
+                        return Err(Error::new(
+                            ErrorKind::Other,
+                            "No upstream cipher while trying to send ClientResponseEncrypted",
+                        ));
+                    };
+                    let mut packet = vec![];
+                    packet.push(LOGIN_PACKET);
+                    let client_response_len = client_response.compute_size() as u16 + 4;
+                    let client_response_len_bytes = client_response_len.to_be_bytes();
+                    packet.extend_from_slice(&client_response_len_bytes);
+                    packet.append(&mut client_response.write_to_bytes()?);
+                    self.pcap_writer.borrow_mut().write_data(self.upstream_send_iface, Cow::Borrowed(&packet));
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "[{}] Sending {} bytes for ClientResponseEncrypted {}",
+                        self.downstream_addr,
+                        packet.len() + 4,
+                        hex::encode(&packet)
+                    );
+                    let mut packet = upstream_cipher.encrypt(packet);
+                    state_data.upstream_buffer.append(&mut packet);
+                    state_data.upstream_buffer_pos = 0;
+                }
+
+                let mut current_pos = state_data.upstream_buffer_pos;
+                let remaining_bytes = state_data.upstream_buffer.len() - current_pos;
+                let remaining_ref = &state_data.upstream_buffer[current_pos..];
+                #[cfg(debug_assertions)]
+                println!(
+                    "[{}] Trying to send remaining {remaining_bytes} bytes of ClientResponseEncrypted",
+                    self.downstream_addr
+                );
+                match self.upstream.write(remaining_ref) {
+                    Ok(bytes_written) => {
+                        state_data.upstream_buffer_pos += bytes_written;
+                        current_pos += bytes_written;
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Written {bytes_written} bytes of ClientResponseEncrypted, {} remaining",
+                            self.downstream_addr,
+                            state_data.upstream_buffer.len() - current_pos
+                        );
+                    },
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Ok(());
+                    },
+                    Err(error) => {
+                        self.pcap_writer.borrow_mut().write_data(
+                            self.upstream_send_iface,
+                            Cow::Borrowed(&state_data.upstream_buffer[0..current_pos]),
+                        );
+                        return Err(error);
+                    },
+                }
+
+                if current_pos != state_data.upstream_buffer.len() {
+                    return Ok(());
+                }
+
+                state_data.upstream_buffer.clear();
+                state_data.upstream_buffer_pos = 0;
+                std::mem::drop(state_data);
+                self.state = ProxySessionState::Connected;
+                #[cfg(debug_assertions)]
+                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+
+                Ok(())
+            },
+            ProxySessionState::Connected => {
+                panic!("Connected handler not implemented");
+            },
         }
     }
 }
