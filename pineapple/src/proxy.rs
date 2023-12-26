@@ -82,24 +82,29 @@ pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
                     let mut session = session.borrow_mut();
                     #[cfg(debug_assertions)]
                     println!("{event:?} for {session}");
-                    match session.handle_event(&token, event) {
+                    let is_complete = match session.handle_event(&token, event) {
                         Ok(_) => {
                             session.reregister_sockets(poll.registry())?;
+                            session.is_complete()
                         },
                         Err(error) => {
                             println!(
                                 "[{}] Error while handling {event:?} for {session}: {error}",
                                 session.downstream_addr
                             );
-                            std::mem::drop(session); // End immutable borrow of `connections`
-                            let session = connections.remove(&token).unwrap();
-                            let mut session = session.borrow_mut();
-                            connections.remove(&session.downstream_token);
-                            connections.remove(&session.upstream_token);
-                            poll.registry().deregister(&mut session.downstream)?;
-                            poll.registry().deregister(&mut session.upstream)?;
+                            true
                         },
                     };
+                    if is_complete {
+                        std::mem::drop(session); // End immutable borrow of `connections`
+                        let session = connections.remove(&token).unwrap();
+                        let mut session = session.borrow_mut();
+                        connections.remove(&session.downstream_token);
+                        connections.remove(&session.upstream_token);
+                        poll.registry().deregister(&mut session.downstream)?;
+                        poll.registry().deregister(&mut session.upstream)?;
+                        println!("Completed connection from {}", session.peer_addr());
+                    }
                 },
             }
         }
