@@ -1,6 +1,6 @@
 use shannon::Shannon;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DecryptState {
     Header,
     Body,
@@ -32,15 +32,13 @@ impl ShannonCipher {
         }
     }
 
-    pub fn encrypt(&mut self, mut packet: Vec<u8>) -> Vec<u8> {
+    pub fn encrypt(&mut self, packet: &mut Vec<u8>) {
         self.encrypt_ctx.nonce_u32(self.encrypt_nonce);
-        self.encrypt_ctx.encrypt(&mut packet);
+        self.encrypt_ctx.encrypt(packet);
         let mut hmac = vec![0; 4];
         self.encrypt_ctx.finish(&mut hmac);
         packet.append(&mut hmac);
         self.encrypt_nonce += 1;
-
-        packet
     }
 
     pub fn decrypt(&mut self, input: &[u8]) -> DecryptResult {
