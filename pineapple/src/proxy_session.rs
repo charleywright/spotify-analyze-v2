@@ -8,6 +8,8 @@ use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
 use mio::event::Event;
 use mio::net::TcpStream;
+use mio::Interest;
+use mio::Registry;
 use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
@@ -1627,5 +1629,50 @@ impl ProxySession {
                 }
             },
         }
+    }
+
+    pub fn reregister_sockets(&mut self, registry: &Registry) -> Result<(), Error> {
+        match self.state {
+            ProxySessionState::Connecting => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
+            },
+            ProxySessionState::ReadDownstreamClientHello(_) => {
+                registry.reregister(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::SendUpstreamClientHello(_) => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
+            },
+            ProxySessionState::ReadUpstreamAPChallenge(_) => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::SendDownstreamAPChallenge(_) => {
+                registry.reregister(&mut self.downstream, self.downstream_token, Interest::WRITABLE)?;
+            },
+            ProxySessionState::ReadDownstreamClientResponsePlaintext(_)
+            | ProxySessionState::ReadDownstreamClientResponseEncrypted(_) => {
+                registry.reregister(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::SendUpstreamClientResponsePlaintext(_)
+            | ProxySessionState::SendUpstreamClientResponseEncrypted(_) => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
+            },
+            ProxySessionState::Idle => {
+                registry.reregister(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::ReadDownstream => {
+                registry.reregister(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::SendUpstream => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
+            },
+            ProxySessionState::ReadUpstream => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::SendDownstream => {
+                registry.reregister(&mut self.downstream, self.downstream_token, Interest::WRITABLE)?;
+            },
+        }
+        Ok(())
     }
 }
