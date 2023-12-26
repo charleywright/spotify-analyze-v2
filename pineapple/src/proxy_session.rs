@@ -27,6 +27,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::{Error, ErrorKind, Read, Write};
+use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::rc::Rc;
 type HmacSha1 = Hmac<Sha1>;
@@ -134,9 +135,11 @@ const SPIRC_MAGIC: [u8; 2] = [0x00, 0x04];
 const LOGIN_PACKET: u8 = 0xAB;
 
 // TODO: Reduce allocations when decrypting then encrypting messages by using one buffer
+// TODO: Factor out sending and receiving code to reduce duplictes
+//        - Properly support https://docs.rs/mio/latest/mio/struct.Poll.html#draining-readiness
 pub struct ProxySession {
     pub downstream: TcpStream,
-    pub downstream_addr: std::net::SocketAddr,
+    pub downstream_addr: SocketAddr,
     pub downstream_token: Token,
     downstream_cipher: Option<ShannonCipher>,
     downstream_decrypt_packet_type: u8,
@@ -277,6 +280,7 @@ enum ProxySessionState {
     SendUpstream,
     ReadUpstream,
     SendDownstream,
+    Complete,
 }
 
 impl Display for ProxySessionState {
@@ -299,6 +303,7 @@ impl Display for ProxySessionState {
                 Self::SendUpstream => "SendUpstream",
                 Self::ReadUpstream => "ReadUpstream",
                 Self::SendDownstream => "SendDownstream",
+                Self::Complete => "Complete",
             }
         )
     }
@@ -329,7 +334,20 @@ impl ProxySession {
         self.upstream_recv_iface = writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
     }
 
+    pub fn is_complete(&self) -> bool {
+        matches!(self.state, ProxySessionState::Complete)
+    }
+
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.downstream_addr
+    }
+
     pub fn handle_event(&mut self, token: &Token, event: &Event) -> Result<(), Error> {
+        if event.is_read_closed() || event.is_write_closed() {
+            self.state = ProxySessionState::Complete;
+            return Ok(());
+        }
+
         match self.state {
             ProxySessionState::Connecting => {
                 if *token != self.upstream_token {
@@ -1628,6 +1646,12 @@ impl ProxySession {
                     Err(error) => Err(error),
                 }
             },
+            ProxySessionState::Complete => {
+                #[cfg(debug_assertions)]
+                panic!("Complete handler should never run");
+                #[cfg(not(debug_assertions))]
+                Ok(())
+            },
         }
     }
 
@@ -1672,6 +1696,7 @@ impl ProxySession {
             ProxySessionState::SendDownstream => {
                 registry.reregister(&mut self.downstream, self.downstream_token, Interest::WRITABLE)?;
             },
+            ProxySessionState::Complete => {},
         }
         Ok(())
     }
