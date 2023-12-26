@@ -80,20 +80,11 @@ pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
                         continue;
                     };
                     let mut session = session.borrow_mut();
+                    #[cfg(debug_assertions)]
+                    println!("{event:?} for {session}");
                     match session.handle_event(&token, event) {
                         Ok(_) => {
-                            let downstream_token = session.downstream_token;
-                            let upstream_token = session.upstream_token;
-                            poll.registry().reregister(
-                                &mut session.downstream,
-                                downstream_token,
-                                Interest::READABLE | Interest::WRITABLE,
-                            )?;
-                            poll.registry().reregister(
-                                &mut session.upstream,
-                                upstream_token,
-                                Interest::READABLE | Interest::WRITABLE,
-                            )?;
+                            session.reregister_sockets(poll.registry())?;
                         },
                         Err(error) => {
                             println!(
