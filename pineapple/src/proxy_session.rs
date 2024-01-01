@@ -3,7 +3,9 @@ use crate::pcap::IfaceType;
 use crate::pcap::PcapWriter;
 use crate::pow;
 use crate::shannon::{DecryptResult, ShannonCipher};
+use aes::cipher::{block_padding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use dh::DiffieHellman;
+use grain128::Grain128;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
 use mio::event::Event;
@@ -14,7 +16,7 @@ use mio::Token;
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
 use pineapple_proto::authentication_old::ClientResponseEncrypted;
-use pineapple_proto::keyexchange_old::{self as keyexchange, Cryptosuite, Powscheme};
+use pineapple_proto::keyexchange_old as keyexchange;
 use protobuf::Message;
 use rand::{Rng, RngCore};
 use rsa::Pkcs1v15Sign;
@@ -31,6 +33,8 @@ use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::rc::Rc;
 type HmacSha1 = Hmac<Sha1>;
+type Aes128CbcEncrypt = cbc::Encryptor<aes::Aes128>;
+type Aes128CbcDecrypt = cbc::Decryptor<aes::Aes128>;
 
 // Pineapple's development key pair. TODO: Generate on startup and save locally
 static OUR_PRIVATE_KEY: &str = r#"
@@ -142,6 +146,7 @@ pub struct ProxySession {
     pub downstream_addr: SocketAddr,
     pub downstream_token: Token,
     downstream_cipher: Option<ShannonCipher>,
+    downstream_grain_key: Box<[u8]>,
     downstream_decrypt_packet_type: u8,
     downstream_decrypt_packet_len: u16,
     downstream_buffer: Vec<u8>,
@@ -152,6 +157,7 @@ pub struct ProxySession {
     pub upstream: TcpStream,
     pub upstream_token: Token,
     upstream_cipher: Option<ShannonCipher>,
+    upstream_grain_key: Box<[u8]>,
     upstream_decrypt_packet_type: u8,
     upstream_decrypt_packet_len: u16,
     upstream_buffer: Vec<u8>,
@@ -173,6 +179,7 @@ impl ProxySession {
             downstream_addr: "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap(),
             downstream_token,
             downstream_cipher: None,
+            downstream_grain_key: vec![0; 16].into_boxed_slice(),
             downstream_decrypt_packet_type: 0,
             downstream_decrypt_packet_len: 0,
             downstream_buffer: Vec::<u8>::new(),
@@ -183,6 +190,7 @@ impl ProxySession {
             upstream,
             upstream_token,
             upstream_cipher: None,
+            upstream_grain_key: vec![0; 16].into_boxed_slice(),
             upstream_decrypt_packet_type: 0,
             upstream_decrypt_packet_len: 0,
             upstream_buffer: Vec::<u8>::new(),
@@ -501,11 +509,21 @@ impl ProxySession {
 
                     let mut client_hello = ClientHello::new();
                     client_hello.build_info.clone_from(&state_data.downstream_client_hello.build_info);
-                    client_hello.cryptosuites_supported.push(Cryptosuite::CRYPTO_SUITE_SHANNON.into());
-                    client_hello.powschemes_supported.push(Powscheme::POW_HASH_CASH.into());
+                    client_hello
+                        .fingerprints_supported
+                        .clone_from(&state_data.downstream_client_hello.fingerprints_supported);
+                    client_hello
+                        .cryptosuites_supported
+                        .clone_from(&state_data.downstream_client_hello.cryptosuites_supported);
+                    client_hello
+                        .powschemes_supported
+                        .clone_from(&state_data.downstream_client_hello.powschemes_supported);
                     {
+                        rand::thread_rng().fill_bytes(&mut self.upstream_grain_key);
                         let mut nonce = vec![0; 16];
-                        rand::thread_rng().fill_bytes(&mut nonce);
+                        let mut nonce_encryptor = Grain128::keysetup(&self.upstream_grain_key, 128, 128);
+                        nonce_encryptor.ivsetup(&[0; 16]);
+                        nonce_encryptor.encrypt_bytes(&[0; 16], &mut nonce);
                         client_hello.set_client_nonce(nonce);
                     }
                     {
@@ -704,6 +722,8 @@ impl ProxySession {
                     } else if ap_response.login_failed.is_some() {
                         ap_response.login_failed.clone_from(&state_data.upstream_ap_response.login_failed);
                     } else if let Some(upstream_ap_challenge) = state_data.upstream_ap_response.challenge.as_ref() {
+                        // This is an assumption. The client nonce generation is part of the grain challenge so this
+                        // may not be random however it isn't used by the client (as of 8.8.96.364)
                         let mut server_nonce = vec![0; 16];
                         rand::thread_rng().fill_bytes(&mut server_nonce);
                         ap_response.challenge.mut_or_insert_default().set_server_nonce(server_nonce);
@@ -742,11 +762,18 @@ impl ProxySession {
 
                         ap_response.challenge.mut_or_insert_default().fingerprint_challenge.mut_or_insert_default();
                         if upstream_ap_challenge.fingerprint_challenge.grain.is_some() {
-                            // TODO: Write grain challenge implementation
-                            println!(
-                                "[{}] Upstream sent FingerprintGrainChallenge which we don't support yet",
-                                self.downstream_addr
-                            );
+                            // Same as the server nonce, this is an assumption. There doesn't appear to be any reason
+                            // for this not to be random but we will likely never know for sure
+                            let grain_challenge = ap_response
+                                .challenge
+                                .mut_or_insert_default()
+                                .fingerprint_challenge
+                                .mut_or_insert_default()
+                                .grain
+                                .mut_or_insert_default();
+                            let mut key_exchange_key = vec![0; 16];
+                            rand::thread_rng().fill_bytes(&mut key_exchange_key);
+                            grain_challenge.set_kek(key_exchange_key);
                         }
                         if upstream_ap_challenge.fingerprint_challenge.hmac_ripemd.is_some() {
                             unimplemented!(
@@ -1141,7 +1168,49 @@ impl ProxySession {
 
                 if state_data.downstream_client_response_encrypted.fingerprint_response.is_some() {
                     if state_data.downstream_client_response_encrypted.fingerprint_response.grain.is_some() {
-                        unimplemented!("Grain is not implemented yet");
+                        // Get SHA1 of accumulator
+                        let accumulator_hash = Sha1::digest(&state_data.downstream_accumulator);
+
+                        // Encrypt hash
+                        let kek = state_data.downstream_ap_response.challenge.fingerprint_challenge.grain.kek();
+                        let mut hash_encryptor = Grain128::keysetup(kek, 128, 128);
+                        hash_encryptor.ivsetup(&[0; 16]);
+                        let mut encrypted_hash = [0; 16];
+                        hash_encryptor.encrypt_bytes(&accumulator_hash[0..16], &mut encrypted_hash);
+
+                        // Decrypt `encrypted_key` using encrypted accumulator hash
+                        let encrypted_key =
+                            state_data.downstream_client_response_encrypted.fingerprint_response.grain.encrypted_key();
+                        let Ok(grain_key) = Aes128CbcDecrypt::new(&encrypted_hash.into(), &[0u8; 16].into())
+                            .decrypt_padded_vec_mut::<block_padding::NoPadding>(encrypted_key)
+                        else {
+                            return Err(Error::new(ErrorKind::Other, "Failed to decrypt grain key"));
+                        };
+
+                        // Verify the key by decrypting client_nonce
+                        let client_nonce = state_data.downstream_client_hello.client_nonce();
+                        let mut client_nonce_decryptor = Grain128::keysetup(&grain_key, 128, 128);
+                        client_nonce_decryptor.ivsetup(&[0; 16]);
+                        let mut decrypted_client_nonce = [0; 16];
+                        client_nonce_decryptor.decrypt_bytes(client_nonce, &mut decrypted_client_nonce);
+                        if decrypted_client_nonce != [0; 16] {
+                            return Err(Error::new(
+                                ErrorKind::InvalidData,
+                                format!(
+                                    "Expected decrypted client_nonce to be all zeroes, got {}",
+                                    hex::encode(decrypted_client_nonce)
+                                ),
+                            ));
+                        }
+
+                        // All good
+                        self.downstream_grain_key.copy_from_slice(&grain_key);
+                        #[cfg(debug_assertions)]
+                        println!(
+                            "[{}] Verified downstream grain key {}",
+                            self.downstream_addr,
+                            hex::encode(&grain_key)
+                        );
                     }
                     if state_data.downstream_client_response_encrypted.fingerprint_response.hmac_ripemd.is_some() {
                         unimplemented!("HMAC RipeMD is unknown, please open an issue on Github");
@@ -1314,8 +1383,34 @@ impl ProxySession {
                     if let Some(fingerprint_challenge) =
                         state_data.upstream_ap_response.challenge.fingerprint_challenge.as_ref()
                     {
-                        if let Some(_grain_challenge) = fingerprint_challenge.grain.as_ref() {
-                            unimplemented!("Grain is not implemented yet");
+                        if let Some(grain_challenge) = fingerprint_challenge.grain.as_ref() {
+                            // Get SHA1 of accumulator
+                            let accumulator_hash = Sha1::digest(&state_data.upstream_accumulator);
+
+                            // Encrypt hash
+                            let kek = grain_challenge.kek();
+                            let mut hash_encryptor = Grain128::keysetup(kek, 128, 128);
+                            hash_encryptor.ivsetup(&[0; 16]);
+                            let mut encrypted_hash = [0; 16];
+                            hash_encryptor.encrypt_bytes(&accumulator_hash[0..16], &mut encrypted_hash);
+
+                            // Encrypt the grain key using encrypted accumulator hash
+                            let encrypted_key =
+                                Aes128CbcEncrypt::new(&encrypted_hash.into(), &[0; 16].into())
+                                    .encrypt_padded_vec_mut::<block_padding::NoPadding>(&self.upstream_grain_key);
+
+                            client_response
+                                .fingerprint_response
+                                .mut_or_insert_default()
+                                .grain
+                                .mut_or_insert_default()
+                                .set_encrypted_key(encrypted_key);
+                            #[cfg(debug_assertions)]
+                            println!(
+                                "[{}] Sent upstream grain key: {}",
+                                self.downstream_addr,
+                                hex::encode(&self.upstream_grain_key)
+                            );
                         }
                         if let Some(_hmac_ripemd_challenge) = fingerprint_challenge.hmac_ripemd.as_ref() {
                             unimplemented!("HMAC RipeMD is unknown, please open an issue on Github");

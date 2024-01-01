@@ -80,8 +80,8 @@ pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
                         continue;
                     };
                     let mut session = session.borrow_mut();
-                    #[cfg(debug_assertions)]
-                    println!("{event:?} for {session}");
+                    // #[cfg(debug_assertions)]
+                    // println!("{event:?} for {session}");
                     let is_complete = match session.handle_event(&token, event) {
                         Ok(_) => {
                             session.reregister_sockets(poll.registry())?;
