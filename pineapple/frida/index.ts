@@ -7,7 +7,7 @@ TODO: IPv6
 
 const TARGET_IP = `192.168.1.120`;
 const TARGET_PORT = 4070;
-const SERVER_KEY_ARM64_OFFSET = 0x312cbc;
+const SERVER_KEY_OFFSET = 0x3c5290;
 const OUR_SERVER_KEY = [
   0x94, 0x8f, 0x67, 0xa9, 0x51, 0xd7, 0x5f, 0x38, 0xa4, 0x36, 0x19, 0x11, 0x28,
   0x32, 0xad, 0x49, 0x33, 0xdd, 0x00, 0xf5, 0xdd, 0x24, 0xe6, 0xb9, 0x10, 0xed,
@@ -318,8 +318,95 @@ const int2 = setInterval(() => {
   const JNI = Process.findModuleByName("liborbit-jni-spotify.so");
   if (JNI) {
     clearInterval(int2);
-    const serverKeyAddr = JNI.base.add(SERVER_KEY_ARM64_OFFSET);
+    const serverKeyAddr = JNI.base.add(SERVER_KEY_OFFSET);
     Memory.protect(serverKeyAddr, OUR_SERVER_KEY.length, "rwx");
+    console.log(
+      `Server key: ${arrayBuffer2Hex(
+        serverKeyAddr.readByteArray(OUR_SERVER_KEY.length)
+      )}`
+    );
     serverKeyAddr.writeByteArray(OUR_SERVER_KEY);
+
+    if (0) {
+      // 8.8.96.364 x86_64
+      const AES_SET_KEY = 0x00000000012d9f4e;
+      const AES_PROCESS = 0x00000000012d9e46;
+      const GRAIN_IV_SETUP = 0x00000000012d840a;
+      const GRAIN_ENCRYPT = 0x00000000012d84f1;
+
+      Interceptor.attach(JNI.base.add(AES_SET_KEY), {
+        onEnter: function (args) {
+          const keyPtr = args[1];
+          const keyLen = args[2].toUInt32();
+          const key = arrayBuffer2Hex(keyPtr.readByteArray(keyLen));
+          console.log(
+            `sp::Rijndael::setKey(this=${args[0]}, key=${keyPtr} (${key}), keyLen=${keyLen})`
+          );
+        },
+      });
+      Interceptor.attach(JNI.base.add(AES_PROCESS), {
+        onEnter: function (args) {
+          const thisPtr = args[0];
+          const mode = thisPtr.add(20).readU8() ? "Encrypt" : "Decrypt";
+          const outPtr = args[1];
+          const inPtr = args[2];
+          const len = args[3].toUInt32();
+          console.log(
+            `ENTER sp::Rijndael::process(this=${thisPtr}, out=${outPtr}, in=${inPtr} (${arrayBuffer2Hex(
+              inPtr.readByteArray(len)
+            )}), len=${len}) Mode: ${mode}`
+          );
+          this.outPtr = outPtr;
+          this.inPtr = inPtr;
+          this.len = len;
+        },
+        onLeave: function (_) {
+          const outPtr: NativePointer = this.outPtr;
+          const len: number = this.len;
+          console.log(
+            `LEAVE sp::Rijndael::process() - out=${arrayBuffer2Hex(
+              outPtr.readByteArray(len)
+            )}`
+          );
+        },
+      });
+      Interceptor.attach(JNI.base.add(GRAIN_IV_SETUP), {
+        onEnter: function (args) {
+          const grainCtx = args[0];
+          const iv = args[1];
+          console.log(
+            `grain_iv_setup(${grainCtx}, ${arrayBuffer2Hex(
+              iv.readByteArray(16)
+            )}) Key: ${arrayBuffer2Hex(
+              grainCtx.add(256).readPointer().readByteArray(16)
+            )}`
+          );
+        },
+      });
+      Interceptor.attach(JNI.base.add(GRAIN_ENCRYPT), {
+        onEnter: function (args) {
+          const grainCtx = args[0];
+          const plainPtr = args[1];
+          const cipherPtr = args[2];
+          const len = args[3].toUInt32();
+          console.log(
+            `ENTER grain_encrypt_bytes(ctx=${grainCtx}, plain=${plainPtr} (${arrayBuffer2Hex(
+              plainPtr.readByteArray(len)
+            )}), cipherPtr=${cipherPtr}, len=${len})`
+          );
+          this.cipherPtr = cipherPtr;
+          this.len = len;
+        },
+        onLeave: function (_) {
+          const cipherPtr: NativePointer = this.cipherPtr;
+          const len: number = this.len;
+          console.log(
+            `LEAVE grain_encrypt_bytes() - ciphertext=${arrayBuffer2Hex(
+              cipherPtr.readByteArray(len)
+            )}`
+          );
+        },
+      });
+    }
   }
 }, 100);
