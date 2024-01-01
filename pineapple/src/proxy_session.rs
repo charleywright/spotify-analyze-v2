@@ -781,16 +781,23 @@ impl ProxySession {
                             );
                         }
 
-                        // TODO: Generate our own challenge
                         ap_response.challenge.mut_or_insert_default().pow_challenge.mut_or_insert_default();
                         if upstream_ap_challenge.pow_challenge.hash_cash.is_some() {
-                            ap_response
+                            let hash_cash_challenge = ap_response
                                 .challenge
                                 .mut_or_insert_default()
                                 .pow_challenge
                                 .mut_or_insert_default()
                                 .hash_cash
-                                .clone_from(&upstream_ap_challenge.pow_challenge.hash_cash);
+                                .mut_or_insert_default();
+
+                            let mut prefix = vec![0; 16];
+                            rand::thread_rng().fill_bytes(&mut prefix);
+                            let length = 14;
+                            let target = rand::thread_rng().gen_range(1..65535);
+                            hash_cash_challenge.set_prefix(prefix);
+                            hash_cash_challenge.set_length(length);
+                            hash_cash_challenge.set_target(target);
                         }
 
                         ap_response.challenge.mut_or_insert_default().crypto_challenge.mut_or_insert_default();
@@ -1027,13 +1034,11 @@ impl ProxySession {
                     let computed_suffix = pow::solve_hashcash(&state_data.downstream_accumulator, challenge)?;
                     let downstream_suffix =
                         Vec::from(state_data.downstream_client_response_plaintext.pow_response.hash_cash.hash_suffix());
-                    // TODO: Fix bug in hashcash solve code
                     #[cfg(debug_assertions)]
                     println!(
-                        "[{}] Hash cash solution - proxy: {} downstream: {} prefix: {} length: {} target: {} accumulator: {}",
+                        "[{}] Downstream hash cash solution - suffix: {} prefix: {} length: {} target: {} accumulator: {}",
                         self.downstream_addr,
                         hex::encode(&computed_suffix),
-                        hex::encode(&downstream_suffix),
                         hex::encode(challenge.prefix()),
                         challenge.length(),
                         challenge.target(),
@@ -1287,6 +1292,16 @@ impl ProxySession {
                     if let Some(pow_challenge) = state_data.upstream_ap_response.challenge.pow_challenge.as_ref() {
                         if let Some(hash_cash_challenge) = pow_challenge.hash_cash.as_ref() {
                             let suffix = pow::solve_hashcash(&state_data.upstream_accumulator, hash_cash_challenge)?;
+                            #[cfg(debug_assertions)]
+                            println!(
+                                "[{}] Upstream hash cash solution - suffix: {} prefix: {} length: {} target: {} accumulator: {}",
+                                self.downstream_addr,
+                                hex::encode(&suffix),
+                                hex::encode(hash_cash_challenge.prefix()),
+                                hash_cash_challenge.length(),
+                                hash_cash_challenge.target(),
+                                hex::encode(&state_data.upstream_accumulator)
+                            );
                             client_response
                                 .pow_response
                                 .mut_or_insert_default()
