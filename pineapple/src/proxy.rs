@@ -17,6 +17,7 @@ mod pow;
 mod proxy_session;
 mod shannon;
 
+use ap_resolver::ApResolver;
 use pcap::PcapWriter;
 use proxy_session::ProxySession;
 
@@ -48,6 +49,7 @@ pub fn run_proxy(host: String) -> io::Result<()> {
 
     let mut connections = HashMap::new();
     let pcap_writer = Rc::new(RefCell::new(PcapWriter::new()));
+    let mut ap_resolver = ApResolver::new();
 
     println!("Listening on {host}");
 
@@ -74,7 +76,7 @@ pub fn run_proxy(host: String) -> io::Result<()> {
                     println!("Accepted connection from {address}");
 
                     // Begin connecting to upstream
-                    let Some(ap_addr) = ap_resolver::get_resolved_ap() else {
+                    let Some(ap_addr) = ap_resolver.get_resolved_ap() else {
                         println!("[{address}] Failed to get upstream address");
                         continue;
                     };
