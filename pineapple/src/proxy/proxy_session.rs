@@ -1,10 +1,8 @@
-use crate::dh;
-use crate::pcap::IfaceType;
-use crate::pcap::PcapWriter;
-use crate::pow;
-use crate::shannon::{DecryptResult, ShannonCipher};
+use super::dh::DiffieHellman;
+use super::pcap::{IfaceType, PcapWriter};
+use super::pow;
+use super::shannon::{DecryptResult, ShannonCipher};
 use aes::cipher::{block_padding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use dh::DiffieHellman;
 use grain128::Grain128;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
@@ -328,6 +326,14 @@ impl Display for ProxySession {
             self.upstream_send_iface, self.upstream_recv_iface
         )
     }
+}
+
+// Workaround to avoid rust-analyzer showing an error
+// https://github.com/rust-lang/rust-analyzer/issues/15242
+fn sha1_digest(plaintext: impl AsRef<[u8]>) -> Vec<u8> {
+    let mut digest = vec![];
+    digest.extend_from_slice(&<Sha1 as Digest>::digest(plaintext));
+    digest
 }
 
 impl ProxySession {
@@ -743,7 +749,7 @@ impl ProxySession {
                                 .diffie_hellman
                                 .mut_or_insert_default();
                             let public_key_bytes = state_data.downstream_dh.public_bytes();
-                            let digest = Sha1::digest(&public_key_bytes);
+                            let digest = sha1_digest(&public_key_bytes);
                             let padding = Pkcs1v15Sign::new::<Sha1>();
                             let signature = state_data
                                 .downstream_private_key
@@ -1174,7 +1180,7 @@ impl ProxySession {
                 if state_data.downstream_client_response_encrypted.fingerprint_response.is_some() {
                     if state_data.downstream_client_response_encrypted.fingerprint_response.grain.is_some() {
                         // Get SHA1 of accumulator
-                        let accumulator_hash = Sha1::digest(&state_data.downstream_accumulator);
+                        let accumulator_hash = sha1_digest(&state_data.downstream_accumulator);
 
                         // Encrypt hash
                         let kek = state_data.downstream_ap_response.challenge.fingerprint_challenge.grain.kek();
@@ -1245,7 +1251,7 @@ impl ProxySession {
                         if let Some(diffie_hellman_challenge) = login_crypto_challenge.diffie_hellman.as_ref() {
                             let remote_key = Vec::from(diffie_hellman_challenge.gs());
                             let signature = diffie_hellman_challenge.gs_signature();
-                            let remote_key_hash = Sha1::digest(&remote_key);
+                            let remote_key_hash = sha1_digest(&remote_key);
                             let scheme = Pkcs1v15Sign::new::<Sha1>();
                             state_data.upstream_public_key.verify(scheme, &remote_key_hash, signature).map_err(
                                 |_| Error::new(ErrorKind::InvalidData, "RSA Verification of upstream failed"),
@@ -1400,7 +1406,7 @@ impl ProxySession {
                     {
                         if let Some(grain_challenge) = fingerprint_challenge.grain.as_ref() {
                             // Get SHA1 of accumulator
-                            let accumulator_hash = Sha1::digest(&state_data.upstream_accumulator);
+                            let accumulator_hash = sha1_digest(&state_data.upstream_accumulator);
 
                             // Encrypt hash
                             let kek = grain_challenge.kek();

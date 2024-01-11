@@ -76,8 +76,4 @@ impl ShannonCipher {
             },
         }
     }
-
-    pub fn state(&self) -> DecryptState {
-        self.decrypt_state
-    }
 }
