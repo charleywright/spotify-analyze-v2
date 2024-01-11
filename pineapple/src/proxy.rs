@@ -1,6 +1,3 @@
-use crate::ap_resolver;
-use crate::pcap::PcapWriter;
-use crate::proxy_session::ProxySession;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 use std::cell::RefCell;
@@ -13,6 +10,16 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
 
+mod ap_resolver;
+mod dh;
+mod pcap;
+mod pow;
+mod proxy_session;
+mod shannon;
+
+use pcap::PcapWriter;
+use proxy_session::ProxySession;
+
 const SERVER: Token = Token(0);
 fn next_token() -> Token {
     static COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -20,7 +27,19 @@ fn next_token() -> Token {
     Token(inner as usize)
 }
 
-pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
+pub fn run_proxy(host: String) -> io::Result<()> {
+    let is_running = Arc::new(RwLock::new(true));
+    {
+        let is_running = is_running.clone();
+        let host = host.clone();
+        ctrlc::set_handler(move || {
+            *is_running.write().unwrap() = false;
+            // Trigger running check
+            let _ = std::net::TcpStream::connect(&host);
+        })
+        .expect("Failed to set Ctrl+C handler");
+    }
+
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
     let host = host.parse().map_err(|_| Error::new(ErrorKind::InvalidInput, "Failed to parse host"))?;
@@ -56,19 +75,17 @@ pub fn run_proxy(host: &str, is_running: Arc<RwLock<bool>>) -> io::Result<()> {
 
                     // Begin connecting to upstream
                     let Some(ap_addr) = ap_resolver::get_resolved_ap() else {
+                        println!("[{address}] Failed to get upstream address");
                         continue;
                     };
                     let Ok(mut upstream) = TcpStream::connect(ap_addr) else {
+                        println!("[{address}] Failed to connect to upstream address");
                         continue;
                     };
                     let downstream_token = next_token();
                     let upstream_token = next_token();
-                    poll.registry().register(
-                        &mut downstream,
-                        downstream_token,
-                        Interest::READABLE | Interest::WRITABLE,
-                    )?;
-                    poll.registry().register(&mut upstream, upstream_token, Interest::READABLE | Interest::WRITABLE)?;
+                    poll.registry().register(&mut downstream, downstream_token, Interest::READABLE)?;
+                    poll.registry().register(&mut upstream, upstream_token, Interest::WRITABLE)?;
                     let session =
                         ProxySession::new(downstream, downstream_token, upstream, upstream_token, pcap_writer.clone());
                     let session = Rc::new(RefCell::new(session));
