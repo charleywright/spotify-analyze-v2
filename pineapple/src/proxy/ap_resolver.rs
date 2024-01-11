@@ -1,37 +1,39 @@
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    sync::Mutex,
-};
-
-use lazy_static::lazy_static;
+use std::net::{SocketAddr, ToSocketAddrs};
 
 const HOST: &str = "ap.spotify.com:4070";
 
-// TODO: Is Mutex really required?
-lazy_static! {
-    static ref ADDRESSES: Mutex<std::vec::IntoIter<SocketAddr>> = Mutex::new(vec![].into_iter());
-    static ref CURRENT_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
+pub struct ApResolver {
+    addresses: std::vec::IntoIter<SocketAddr>,
+    current_addr: Option<SocketAddr>,
 }
 
-pub fn get_resolved_ap() -> Option<SocketAddr> {
-    let mut current_addr = CURRENT_ADDR.lock().unwrap();
-    if current_addr.is_some() {
-        return *current_addr;
+impl ApResolver {
+    pub fn new() -> Self {
+        Self {
+            addresses: vec![].into_iter(),
+            current_addr: None,
+        }
     }
-    let mut addresses = ADDRESSES.lock().unwrap();
-    match HOST.to_socket_addrs() {
-        Ok(new_addresses) => *addresses = new_addresses,
-        Err(e) => {
-            println!("Failed to resolve {HOST}: {e}");
-        },
-    }
-    *current_addr = addresses.next();
-    *current_addr
-}
 
-pub fn mark_addr_as_invalid(addr: SocketAddr) {
-    let mut current_addr = CURRENT_ADDR.lock().unwrap();
-    if *current_addr == Some(addr) {
-        *current_addr = ADDRESSES.lock().unwrap().next();
+    pub fn get_resolved_ap(&mut self) -> Option<SocketAddr> {
+        if self.current_addr.is_some() {
+            println!("[ap_resolver] Returning current addr: {:?}", self.current_addr);
+            return self.current_addr;
+        }
+        match HOST.to_socket_addrs() {
+            Ok(new_addresses) => self.addresses = new_addresses,
+            Err(e) => {
+                println!("Failed to resolve {HOST}: {e}");
+            },
+        }
+        self.current_addr = self.addresses.next();
+        println!("[ap_resolver] Returning new addr: {:?}", self.current_addr);
+        self.current_addr
+    }
+
+    pub fn mark_addr_as_invalid(&mut self, addr: SocketAddr) {
+        if self.current_addr == Some(addr) {
+            self.current_addr = self.addresses.next();
+        }
     }
 }
