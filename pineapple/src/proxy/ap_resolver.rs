@@ -17,7 +17,6 @@ impl ApResolver {
 
     pub fn get_resolved_ap(&mut self) -> Option<SocketAddr> {
         if self.current_addr.is_some() {
-            println!("[ap_resolver] Returning current addr: {:?}", self.current_addr);
             return self.current_addr;
         }
         match HOST.to_socket_addrs() {
@@ -27,7 +26,6 @@ impl ApResolver {
             },
         }
         self.current_addr = self.addresses.next();
-        println!("[ap_resolver] Returning new addr: {:?}", self.current_addr);
         self.current_addr
     }
 
