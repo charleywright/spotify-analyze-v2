@@ -100,7 +100,7 @@ mod tests {
     use pineapple_proto::keyexchange_old::APResponseMessage;
     use protobuf::Message;
 
-    use crate::pow::solve_hashcash;
+    use super::solve_hashcash;
 
     struct TestData {
         client_hello: Vec<u8>,
