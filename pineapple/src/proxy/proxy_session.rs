@@ -1,7 +1,9 @@
+use super::ap_resolver::ApResolver;
 use super::dh::DiffieHellman;
 use super::pcap::{IfaceType, PcapWriter};
 use super::pow;
 use super::shannon::{DecryptResult, ShannonCipher};
+use super::token_manager::TokenManager;
 use aes::cipher::{block_padding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use grain128::Grain128;
 use hmac::{Hmac, Mac};
@@ -30,6 +32,7 @@ use std::io::{Error, ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 type HmacSha1 = Hmac<Sha1>;
 type Aes128CbcEncrypt = cbc::Encryptor<aes::Aes128>;
 type Aes128CbcDecrypt = cbc::Decryptor<aes::Aes128>;
@@ -135,6 +138,8 @@ const SERVER_KEY_IDX: i32 = 0;
 const SPIRC_MAGIC: [u8; 2] = [0x00, 0x04];
 // Login packet type
 const LOGIN_PACKET: u8 = 0xAB;
+// How long to wait before marking an AP as invalid
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // TODO: Reduce allocations when decrypting then encrypting messages by using one buffer
 // TODO: Factor out sending and receiving code to reduce duplictes
@@ -153,6 +158,7 @@ pub struct ProxySession {
     downstream_recv_iface: u32,
 
     pub upstream: TcpStream,
+    pub upstream_addr: SocketAddr,
     pub upstream_token: Token,
     upstream_cipher: Option<ShannonCipher>,
     upstream_grain_key: Box<[u8]>,
@@ -168,11 +174,19 @@ pub struct ProxySession {
 }
 
 impl ProxySession {
-    pub fn new(
-        downstream: TcpStream, downstream_token: Token, upstream: TcpStream, upstream_token: Token,
+    pub fn create(
+        downstream: TcpStream, token_manager: &mut TokenManager, ap_resolver: &mut ApResolver,
         pcap_writer: Rc<RefCell<PcapWriter>>,
-    ) -> Self {
-        ProxySession {
+    ) -> Result<Self, Error> {
+        let downstream_token = token_manager.next();
+        let upstream_token = token_manager.next();
+
+        let Some(upstream_addr) = ap_resolver.get_resolved_ap() else {
+            return Err(Error::new(ErrorKind::Other, "Failed to resolve AP"));
+        };
+        let upstream = TcpStream::connect(upstream_addr)?;
+
+        Ok(ProxySession {
             downstream,
             downstream_addr: "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap(),
             downstream_token,
@@ -186,6 +200,7 @@ impl ProxySession {
             downstream_recv_iface: 0,
 
             upstream,
+            upstream_addr,
             upstream_token,
             upstream_cipher: None,
             upstream_grain_key: vec![0; 16].into_boxed_slice(),
@@ -197,8 +212,21 @@ impl ProxySession {
             upstream_recv_iface: 0,
 
             pcap_writer,
-            state: ProxySessionState::Connecting,
-        }
+            state: ProxySessionState::ReadDownstreamClientHello(Rc::new(RefCell::new(NegotiationData::new()))),
+        })
+    }
+}
+
+impl Display for ProxySession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let default_ip = "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap();
+        write!(f, "ProxySession {{ state: {} downstream: {} {:?} downstream_send: {} downstream_recv: {} upstream: {} {:?} upstream_send: {} upstream_recv: {} }}",
+            self.state,
+            self.downstream.peer_addr().unwrap_or(default_ip), self.downstream_token,
+            self.downstream_send_iface, self.downstream_recv_iface,
+            self.upstream.peer_addr().unwrap_or(default_ip), self.upstream_token,
+            self.upstream_send_iface, self.upstream_recv_iface
+        )
     }
 }
 
@@ -211,6 +239,7 @@ struct NegotiationData {
     downstream_dh: DiffieHellman,
     downstream_private_key: RsaPrivateKey,
 
+    upstream_timeout: Instant,
     upstream_accumulator: Vec<u8>,
     upstream_dh: DiffieHellman,
     upstream_ap_response: APResponseMessage,
@@ -263,6 +292,7 @@ impl NegotiationData {
             downstream_dh: DiffieHellman::random(),
             downstream_private_key,
 
+            upstream_timeout: Instant::now() + UPSTREAM_CONNECT_TIMEOUT,
             upstream_accumulator: Vec::<u8>::new(),
             upstream_dh: DiffieHellman::random(),
             upstream_ap_response: APResponseMessage::default(),
@@ -272,8 +302,8 @@ impl NegotiationData {
 }
 
 enum ProxySessionState {
-    Connecting,
     ReadDownstreamClientHello(Rc<RefCell<NegotiationData>>),
+    ConnectingToUpstream(Rc<RefCell<NegotiationData>>),
     SendUpstreamClientHello(Rc<RefCell<NegotiationData>>),
     ReadUpstreamAPChallenge(Rc<RefCell<NegotiationData>>),
     SendDownstreamAPChallenge(Rc<RefCell<NegotiationData>>),
@@ -295,8 +325,8 @@ impl Display for ProxySessionState {
             f,
             "{}",
             match self {
-                Self::Connecting => "Connecting",
                 Self::ReadDownstreamClientHello(_) => "ReadDownstreamClientHello",
+                Self::ConnectingToUpstream(_) => "ConnectingToUpstream",
                 Self::SendUpstreamClientHello(_) => "SendUpstreamClientHello",
                 Self::ReadUpstreamAPChallenge(_) => "ReadUpstreamAPChallenge",
                 Self::SendDownstreamAPChallenge(_) => "SendDownstreamAPChallenge",
@@ -315,17 +345,10 @@ impl Display for ProxySessionState {
     }
 }
 
-impl Display for ProxySession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let default_ip = "0.0.0.0:0".to_socket_addrs().unwrap().next().unwrap();
-        write!(f, "ProxySession {{ state: {} downstream: {} {:?} downstream_send: {} downstream_recv: {} upstream: {} {:?} upstream_send: {} upstream_recv: {} }}",
-            self.state,
-            self.downstream.peer_addr().unwrap_or(default_ip), self.downstream_token,
-            self.downstream_send_iface, self.downstream_recv_iface,
-            self.upstream.peer_addr().unwrap_or(default_ip), self.upstream_token,
-            self.upstream_send_iface, self.upstream_recv_iface
-        )
-    }
+pub enum ProxyTimeoutAdvice {
+    KeepWaiting,
+    StopChecking,
+    TimedOut,
 }
 
 // Workaround to avoid rust-analyzer showing an error
@@ -337,17 +360,6 @@ fn sha1_digest(plaintext: impl AsRef<[u8]>) -> Vec<u8> {
 }
 
 impl ProxySession {
-    fn create_interfaces(&mut self) {
-        let mut writer = self.pcap_writer.borrow_mut();
-        self.downstream_send_iface =
-            writer.create_interface(IfaceType::DownstreamSend, self.downstream.local_addr().unwrap());
-        self.downstream_recv_iface =
-            writer.create_interface(IfaceType::DownstreamRecv, self.downstream.peer_addr().unwrap());
-        self.upstream_send_iface =
-            writer.create_interface(IfaceType::UpstreamSend, self.upstream.local_addr().unwrap());
-        self.upstream_recv_iface = writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
-    }
-
     pub fn is_complete(&self) -> bool {
         matches!(self.state, ProxySessionState::Complete)
     }
@@ -363,26 +375,6 @@ impl ProxySession {
         }
 
         match self.state {
-            ProxySessionState::Connecting => {
-                if *token != self.upstream_token {
-                    return Ok(());
-                }
-
-                if let (Ok(upstream_addr), Ok(downstream_addr)) =
-                    (self.upstream.peer_addr(), self.downstream.peer_addr())
-                {
-                    self.downstream_addr = downstream_addr;
-                    self.create_interfaces();
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Connected to upstream {upstream_addr}", self.downstream_addr);
-                    self.state =
-                        ProxySessionState::ReadDownstreamClientHello(Rc::new(RefCell::new(NegotiationData::new())));
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Updated state to {}", self.downstream_addr, self.state);
-                }
-
-                Ok(())
-            },
             ProxySessionState::ReadDownstreamClientHello(ref state) => {
                 if *token != self.downstream_token || !event.is_readable() {
                     return Ok(());
@@ -392,6 +384,13 @@ impl ProxySession {
 
                 // Try to read magic
                 if state_data.downstream_accumulator.is_empty() {
+                    self.downstream_addr = self.downstream.peer_addr()?;
+                    let mut pcap_writer = self.pcap_writer.borrow_mut();
+                    self.downstream_send_iface =
+                        pcap_writer.create_interface(IfaceType::DownstreamSend, self.downstream.local_addr().unwrap());
+                    self.downstream_recv_iface =
+                        pcap_writer.create_interface(IfaceType::DownstreamRecv, self.downstream.peer_addr().unwrap());
+
                     let mut magic_bytes = [0; SPIRC_MAGIC.len()];
                     if self.downstream.read_exact(&mut magic_bytes).is_err() {
                         // Not enough bytes to read
@@ -403,7 +402,7 @@ impl ProxySession {
                             format!("Invalid SPIRC magic '{}'", hex::encode(magic_bytes)),
                         ));
                     }
-                    self.pcap_writer.borrow_mut().write_data(self.downstream_recv_iface, Cow::Borrowed(&magic_bytes));
+                    pcap_writer.write_data(self.downstream_recv_iface, Cow::Borrowed(&magic_bytes));
                     state_data.downstream_accumulator.extend_from_slice(&magic_bytes);
                 }
 
@@ -485,7 +484,7 @@ impl ProxySession {
                         state_data.downstream_accumulator.append(&mut client_hello_buffer);
                         self.downstream_buffer_pos = 0;
                         std::mem::drop(state_data);
-                        self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
+                        self.state = ProxySessionState::ConnectingToUpstream(state.clone());
                         #[cfg(debug_assertions)]
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         Ok(())
@@ -495,6 +494,27 @@ impl ProxySession {
                         format!("Failed to parse ClientHello: {}", parse_error),
                     )),
                 }
+            },
+            ProxySessionState::ConnectingToUpstream(ref state) => {
+                if *token != self.upstream_token {
+                    return Ok(());
+                }
+
+                if let Ok(upstream_addr) = self.upstream.peer_addr() {
+                    let mut pcap_writer = self.pcap_writer.borrow_mut();
+                    self.upstream_send_iface =
+                        pcap_writer.create_interface(IfaceType::UpstreamSend, self.upstream.local_addr().unwrap());
+                    self.upstream_recv_iface =
+                        pcap_writer.create_interface(IfaceType::UpstreamRecv, self.upstream.peer_addr().unwrap());
+
+                    #[cfg(debug_assertions)]
+                    println!("[{}] Connected to upstream {upstream_addr}", self.downstream_addr);
+                    self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
+                    #[cfg(debug_assertions)]
+                    println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                }
+
+                Ok(())
             },
             ProxySessionState::SendUpstreamClientHello(ref state) => {
                 if *token != self.upstream_token || !event.is_writable() {
@@ -1771,13 +1791,19 @@ impl ProxySession {
         }
     }
 
+    pub fn register_sockets(&mut self, registry: &Registry) -> Result<(), Error> {
+        registry.register(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
+        registry.register(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
+        Ok(())
+    }
+
     pub fn reregister_sockets(&mut self, registry: &Registry) -> Result<(), Error> {
         match self.state {
-            ProxySessionState::Connecting => {
-                registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
-            },
             ProxySessionState::ReadDownstreamClientHello(_) => {
                 registry.reregister(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
+            },
+            ProxySessionState::ConnectingToUpstream(_) => {
+                registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
             },
             ProxySessionState::SendUpstreamClientHello(_) => {
                 registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
@@ -1815,5 +1841,25 @@ impl ProxySession {
             ProxySessionState::Complete => {},
         }
         Ok(())
+    }
+
+    pub fn deregister_sockets(&mut self, registry: &Registry) -> Result<(), Error> {
+        registry.deregister(&mut self.downstream)?;
+        registry.deregister(&mut self.upstream)?;
+        Ok(())
+    }
+
+    pub fn timeout_advice(&self) -> ProxyTimeoutAdvice {
+        match self.state {
+            ProxySessionState::ReadDownstreamClientHello(ref state)
+            | ProxySessionState::ConnectingToUpstream(ref state) => {
+                if state.borrow().upstream_timeout < Instant::now() {
+                    ProxyTimeoutAdvice::TimedOut
+                } else {
+                    ProxyTimeoutAdvice::KeepWaiting
+                }
+            },
+            _ => ProxyTimeoutAdvice::StopChecking,
+        }
     }
 }

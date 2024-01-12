@@ -1,11 +1,9 @@
-use mio::net::{TcpListener, TcpStream};
-use mio::{Events, Interest, Poll, Token};
+use mio::net::TcpListener;
+use mio::{Events, Interest, Poll};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind};
 use std::rc::Rc;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -16,17 +14,12 @@ mod pcap;
 mod pow;
 mod proxy_session;
 mod shannon;
+mod token_manager;
 
 use ap_resolver::ApResolver;
 use pcap::PcapWriter;
-use proxy_session::ProxySession;
-
-const SERVER: Token = Token(0);
-fn next_token() -> Token {
-    static COUNTER: AtomicU32 = AtomicU32::new(1);
-    let inner = COUNTER.fetch_add(1, Ordering::Relaxed);
-    Token(inner as usize)
-}
+use proxy_session::{ProxySession, ProxyTimeoutAdvice};
+use token_manager::{TokenManager, SERVER_TOKEN};
 
 pub fn run_proxy(host: String) -> io::Result<()> {
     let is_running = Arc::new(RwLock::new(true));
@@ -45,11 +38,12 @@ pub fn run_proxy(host: String) -> io::Result<()> {
     let mut events = Events::with_capacity(128);
     let host = host.parse().map_err(|_| Error::new(ErrorKind::InvalidInput, "Failed to parse host"))?;
     let mut server = TcpListener::bind(host)?;
-    poll.registry().register(&mut server, SERVER, Interest::READABLE)?;
-
-    let mut connections = HashMap::new();
     let pcap_writer = Rc::new(RefCell::new(PcapWriter::new()));
+    let mut token_manager = TokenManager::new();
+    poll.registry().register(&mut server, SERVER_TOKEN, Interest::READABLE)?;
     let mut ap_resolver = ApResolver::new();
+    let mut connections = HashMap::new();
+    let mut connection_timeouts = Vec::new();
 
     println!("Listening on {host}");
 
@@ -63,8 +57,8 @@ pub fn run_proxy(host: String) -> io::Result<()> {
         }
         for event in events.iter() {
             match event.token() {
-                SERVER => loop {
-                    let (mut downstream, address) = match server.accept() {
+                SERVER_TOKEN => loop {
+                    let (downstream, address) = match server.accept() {
                         Ok((connection, address)) => (connection, address),
                         Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                             break;
@@ -75,24 +69,14 @@ pub fn run_proxy(host: String) -> io::Result<()> {
                     };
                     println!("Accepted connection from {address}");
 
-                    // Begin connecting to upstream
-                    let Some(ap_addr) = ap_resolver.get_resolved_ap() else {
-                        println!("[{address}] Failed to get upstream address");
-                        continue;
-                    };
-                    let Ok(mut upstream) = TcpStream::connect(ap_addr) else {
-                        println!("[{address}] Failed to connect to upstream address");
-                        continue;
-                    };
-                    let downstream_token = next_token();
-                    let upstream_token = next_token();
-                    poll.registry().register(&mut downstream, downstream_token, Interest::READABLE)?;
-                    poll.registry().register(&mut upstream, upstream_token, Interest::WRITABLE)?;
-                    let session =
-                        ProxySession::new(downstream, downstream_token, upstream, upstream_token, pcap_writer.clone());
+                    let mut session =
+                        ProxySession::create(downstream, &mut token_manager, &mut ap_resolver, pcap_writer.clone())?;
+                    session.register_sockets(poll.registry())?;
+                    let (downstream_token, upstream_token) = (session.downstream_token, session.upstream_token);
                     let session = Rc::new(RefCell::new(session));
                     connections.insert(downstream_token, session.clone());
                     connections.insert(upstream_token, session.clone());
+                    connection_timeouts.push(session.clone());
                 },
                 token => {
                     let Some(session) = connections.get(&token) else {
@@ -118,15 +102,34 @@ pub fn run_proxy(host: String) -> io::Result<()> {
                         std::mem::drop(session); // End immutable borrow of `connections`
                         let session = connections.remove(&token).unwrap();
                         let mut session = session.borrow_mut();
+                        session.deregister_sockets(poll.registry())?;
                         connections.remove(&session.downstream_token);
                         connections.remove(&session.upstream_token);
-                        poll.registry().deregister(&mut session.downstream)?;
-                        poll.registry().deregister(&mut session.upstream)?;
                         println!("Completed connection from {}", session.peer_addr());
                     }
                 },
             }
         }
+        // TODO: The frequency of this running is determined by poll.poll() above. At worst it will run once per second
+        connection_timeouts.retain(|session| {
+            let mut session = session.borrow_mut();
+            match session.timeout_advice() {
+                ProxyTimeoutAdvice::KeepWaiting => true,
+                ProxyTimeoutAdvice::StopChecking => false,
+                ProxyTimeoutAdvice::TimedOut => {
+                    // TODO: Bubble up to run_proxy()
+                    let _ = session.deregister_sockets(poll.registry());
+                    connections.remove(&session.downstream_token);
+                    connections.remove(&session.upstream_token);
+                    println!(
+                        "Connection from {} to {} failed: Timed out connecting to upstream",
+                        session.downstream_addr, session.upstream_addr
+                    );
+                    ap_resolver.mark_addr_as_invalid(session.upstream_addr);
+                    false
+                },
+            }
+        });
     }
 
     println!("\rServer shutdown");
