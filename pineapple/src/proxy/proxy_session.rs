@@ -1264,7 +1264,7 @@ impl ProxySession {
                 if self.upstream_buffer.is_empty() {
                     let mut client_response = ClientResponsePlaintext::new();
 
-                    // diffie hellman hmac
+                    client_response.login_crypto_response.mut_or_insert_default();
                     if let Some(login_crypto_challenge) =
                         state_data.upstream_ap_response.challenge.login_crypto_challenge.as_ref()
                     {
@@ -1315,6 +1315,7 @@ impl ProxySession {
                         }
                     }
 
+                    client_response.pow_response.mut_or_insert_default();
                     if let Some(pow_challenge) = state_data.upstream_ap_response.challenge.pow_challenge.as_ref() {
                         if let Some(hash_cash_challenge) = pow_challenge.hash_cash.as_ref() {
                             let suffix = pow::solve_hashcash(&state_data.upstream_accumulator, hash_cash_challenge)?;
@@ -1337,6 +1338,7 @@ impl ProxySession {
                         }
                     }
 
+                    client_response.crypto_response.mut_or_insert_default();
                     if let Some(crypto_challenge) = state_data.upstream_ap_response.challenge.crypto_challenge.as_ref()
                     {
                         if let Some(_shannon_challenge) = crypto_challenge.shannon.as_ref() {
