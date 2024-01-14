@@ -1,3 +1,10 @@
+use std::{
+    borrow::Cow,
+    fs::File,
+    net::SocketAddr,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use pcap_file::{
     pcapng::{
         blocks::{
@@ -8,12 +15,6 @@ use pcap_file::{
         Block, PcapNgWriter,
     },
     DataLink, Endianness,
-};
-use std::{
-    borrow::Cow,
-    fs::File,
-    net::SocketAddr,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub enum IfaceType {
@@ -43,14 +44,11 @@ impl PcapWriter {
             options: vec![SectionHeaderOption::UserApplication("Spotify Analyze V2 (Pineapple)".into())],
             ..Default::default()
         };
-        PcapWriter {
-            writer: PcapNgWriter::with_section_header(file, section).unwrap(),
-            interface_counter: 0,
-        }
+        PcapWriter { writer: PcapNgWriter::with_section_header(file, section).unwrap(), interface_counter: 0 }
     }
 
     pub fn create_interface(&mut self, iface_type: IfaceType, addr: SocketAddr) -> u32 {
-        let linktype = match iface_type {
+        let link_type = match iface_type {
             IfaceType::DownstreamSend => DataLink::USER0,
             IfaceType::DownstreamRecv => DataLink::USER1,
             IfaceType::UpstreamSend => DataLink::USER2,
@@ -86,11 +84,7 @@ impl PcapWriter {
                 ]
             },
         };
-        let block = Block::InterfaceDescription(InterfaceDescriptionBlock {
-            linktype,
-            snaplen: 0,
-            options,
-        });
+        let block = Block::InterfaceDescription(InterfaceDescriptionBlock { linktype: link_type, snaplen: 0, options });
         self.writer.write_block(&block).expect("Failed to write interface block");
         let iface_idx = self.interface_counter;
         self.interface_counter += 1;

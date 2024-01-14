@@ -1,5 +1,6 @@
-use clap::{command, Arg};
 use std::io;
+
+use clap::{command, Arg};
 
 mod proxy;
 
