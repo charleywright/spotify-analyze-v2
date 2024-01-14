@@ -9,10 +9,7 @@ pub struct ApResolver {
 
 impl ApResolver {
     pub fn new() -> Self {
-        Self {
-            addresses: vec![].into_iter(),
-            current_addr: None,
-        }
+        Self { addresses: vec![].into_iter(), current_addr: None }
     }
 
     pub fn get_resolved_ap(&mut self) -> Option<SocketAddr> {

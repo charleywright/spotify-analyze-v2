@@ -1,44 +1,44 @@
-use super::ap_resolver::ApResolver;
-use super::dh::DiffieHellman;
-use super::pcap::{IfaceType, PcapWriter};
-use super::pow;
-use super::shannon::{DecryptResult, ShannonCipher};
-use super::token_manager::TokenManager;
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    fmt::Display,
+    io::{Error, ErrorKind, Read, Write},
+    net::{SocketAddr, ToSocketAddrs},
+    rc::Rc,
+    time::{Duration, Instant},
+};
+
 use aes::cipher::{block_padding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use grain128::Grain128;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
-use mio::event::Event;
-use mio::net::TcpStream;
-use mio::Interest;
-use mio::Registry;
-use mio::Token;
+use mio::{event::Event, net::TcpStream, Interest, Registry, Token};
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
-use pineapple_proto::authentication_old::ClientResponseEncrypted;
-use pineapple_proto::keyexchange_old as keyexchange;
+use pineapple_proto::{authentication_old::ClientResponseEncrypted, keyexchange_old as keyexchange};
 use protobuf::Message;
 use rand::{Rng, RngCore};
-use rsa::Pkcs1v15Sign;
 use rsa::{
     pkcs8::{DecodePrivateKey, DecodePublicKey},
-    RsaPrivateKey, RsaPublicKey,
+    Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey,
 };
 use sha1::{Digest, Sha1};
-use std::borrow::Cow;
-use std::cell::RefCell;
-use std::fmt::Display;
-use std::io::{Error, ErrorKind, Read, Write};
-use std::net::SocketAddr;
-use std::net::ToSocketAddrs;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+
+use super::{
+    ap_resolver::ApResolver,
+    dh::DiffieHellman,
+    pcap::{IfaceType, PcapWriter},
+    pow,
+    shannon::{DecryptResult, ShannonCipher},
+    token_manager::TokenManager,
+};
+
 type HmacSha1 = Hmac<Sha1>;
 type Aes128CbcEncrypt = cbc::Encryptor<aes::Aes128>;
 type Aes128CbcDecrypt = cbc::Decryptor<aes::Aes128>;
 
 // Pineapple's development key pair. TODO: Generate on startup and save locally
-static OUR_PRIVATE_KEY: &str = r#"
+static OUR_PRIVATE_KEY: &str = r"
 -----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCUj2epUddfOKQ2
 GREoMq1JM90A9d0k5rkQ7dOMzdAKPXcwj5F8lkO+Kxd9Kk+vfds11OVBijMY0SwA
@@ -67,7 +67,7 @@ WlsLtObx2rJW9Nbyv76dI0BUvJQkOjAqLVNYdEJgtqgx+scfiTHPsQ+6WDN0B3kW
 rtLxAVNM2/aQcBqPUFP8zLtzLVUMB4V27LKCPW3lezWhsltDXs6qGQtJ/F4fxw4S
 BMOqg0LGsyoSgXSkuysOWen/
 -----END PRIVATE KEY-----
-"#;
+";
 #[cfg(debug_assertions)]
 static OUR_PUBLIC_KEY_MODULUS: [u8; 256] = [
     0x94, 0x8f, 0x67, 0xa9, 0x51, 0xd7, 0x5f, 0x38, 0xa4, 0x36, 0x19, 0x11, 0x28, 0x32, 0xad, 0x49, 0x33, 0xdd, 0x00,
@@ -88,7 +88,7 @@ static OUR_PUBLIC_KEY_MODULUS: [u8; 256] = [
 #[cfg(debug_assertions)]
 static OUR_PUBLIC_KEY_EXPONENT: usize = 65537;
 #[cfg(debug_assertions)]
-static OUR_PUBLIC_KEY: &str = r#"
+static OUR_PUBLIC_KEY: &str = r"
 -----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlI9nqVHXXzikNhkRKDKt
 STPdAPXdJOa5EO3TjM3QCj13MI+RfJZDvisXfSpPr33bNdTlQYozGNEsAOYH9NPG
@@ -98,7 +98,7 @@ b0ZUW+aVBW5rK2YOT67C50rBQ4ek+VYk2oc/eJoTVR8yUZM2Hqny7jrI0nPSgadv
 Fy2I8xZ/c4M4hgnhzeGJPZ2RYWy0X0z0k22oQqJL9vGCHswF0hD/05/pEgU6DAym
 kwIDAQAB
 -----END PUBLIC KEY-----
-"#;
+";
 
 // Spotify public key, we obviously don't know the private key
 #[cfg(debug_assertions)]
@@ -120,7 +120,7 @@ static SERVER_PUBLIC_KEY_MODULUS: [u8; 256] = [
 ];
 #[cfg(debug_assertions)]
 static SERVER_PUBLIC_KEY_EXPONENT: usize = 65537;
-static SERVER_PUBLIC_KEY: &str = r#"
+static SERVER_PUBLIC_KEY: &str = r"
 -----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArOBGC//CMK/0a/7Dv7+G
 PaGRxswzbJOhT7OwFhKsrGrxgOf2FNlCnb4uNGZD42LSMnoaDZI7rt0UArGBVQVh
@@ -130,7 +130,7 @@ htdPM6Z4F5bJwy0NMqWrzQUn4vcQo5YTxC+ZwCe/7QScPCdYBLayGfnBLwLpSGPs
 obZCoJ1IJfizndDoavlITaHCuoYwQuqdswhsGQ5Is51m6wAGolruoRsThzzXGeZV
 vQIDAQAB
 -----END PUBLIC KEY-----
-"#;
+";
 
 // Spotify currently only use one key
 const SERVER_KEY_IDX: i32 = 0;
@@ -142,7 +142,7 @@ const LOGIN_PACKET: u8 = 0xAB;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // TODO: Reduce allocations when decrypting then encrypting messages by using one buffer
-// TODO: Factor out sending and receiving code to reduce duplictes
+// TODO: Factor out sending and receiving code to reduce duplicates
 //        - Properly support https://docs.rs/mio/latest/mio/struct.Poll.html#draining-readiness
 pub struct ProxySession {
     pub downstream: TcpStream,
@@ -277,10 +277,7 @@ impl NegotiationData {
             let upstream_public_key_mod = BigUint::from_bytes_be(&SERVER_PUBLIC_KEY_MODULUS);
             let upstream_public_key_exp = BigUint::from(SERVER_PUBLIC_KEY_EXPONENT);
             let upstream_public_key2 = RsaPublicKey::new(upstream_public_key_mod, upstream_public_key_exp).unwrap();
-            assert_eq!(
-                upstream_public_key, upstream_public_key2,
-                "Expected Spotify public keys to be equivalent"
-            );
+            assert_eq!(upstream_public_key, upstream_public_key2, "Expected Spotify public keys to be equivalent");
         }
 
         NegotiationData {
@@ -321,27 +318,23 @@ enum ProxySessionState {
 
 impl Display for ProxySessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::ReadDownstreamClientHello(_) => "ReadDownstreamClientHello",
-                Self::ConnectingToUpstream(_) => "ConnectingToUpstream",
-                Self::SendUpstreamClientHello(_) => "SendUpstreamClientHello",
-                Self::ReadUpstreamAPChallenge(_) => "ReadUpstreamAPChallenge",
-                Self::SendDownstreamAPChallenge(_) => "SendDownstreamAPChallenge",
-                Self::ReadDownstreamClientResponsePlaintext(_) => "ReadDownstreamClientResponsePlaintext",
-                Self::ReadDownstreamClientResponseEncrypted(_) => "ReadDownstreamClientResponseEncrypted",
-                Self::SendUpstreamClientResponsePlaintext(_) => "SendUpstreamClientResponsePlaintext",
-                Self::SendUpstreamClientResponseEncrypted(_) => "SendUpstreamClientResponseEncrypted",
-                Self::Idle => "Idle",
-                Self::ReadDownstream => "ReadDownstream",
-                Self::SendUpstream => "SendUpstream",
-                Self::ReadUpstream => "ReadUpstream",
-                Self::SendDownstream => "SendDownstream",
-                Self::Complete => "Complete",
-            }
-        )
+        write!(f, "{}", match self {
+            Self::ReadDownstreamClientHello(_) => "ReadDownstreamClientHello",
+            Self::ConnectingToUpstream(_) => "ConnectingToUpstream",
+            Self::SendUpstreamClientHello(_) => "SendUpstreamClientHello",
+            Self::ReadUpstreamAPChallenge(_) => "ReadUpstreamAPChallenge",
+            Self::SendDownstreamAPChallenge(_) => "SendDownstreamAPChallenge",
+            Self::ReadDownstreamClientResponsePlaintext(_) => "ReadDownstreamClientResponsePlaintext",
+            Self::ReadDownstreamClientResponseEncrypted(_) => "ReadDownstreamClientResponseEncrypted",
+            Self::SendUpstreamClientResponsePlaintext(_) => "SendUpstreamClientResponsePlaintext",
+            Self::SendUpstreamClientResponseEncrypted(_) => "SendUpstreamClientResponseEncrypted",
+            Self::Idle => "Idle",
+            Self::ReadDownstream => "ReadDownstream",
+            Self::SendUpstream => "SendUpstream",
+            Self::ReadUpstream => "ReadUpstream",
+            Self::SendDownstream => "SendDownstream",
+            Self::Complete => "Complete",
+        })
     }
 }
 
@@ -434,10 +427,7 @@ impl ProxySession {
                 let remaining_bytes = self.downstream_buffer.len() - current_pos;
                 let remaining_ref = &mut self.downstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to read remaining {remaining_bytes} bytes of ClientHello",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to read remaining {remaining_bytes} bytes of ClientHello", self.downstream_addr);
                 match self.downstream.read(remaining_ref) {
                     Ok(bytes_read) => {
                         self.downstream_buffer_pos += bytes_read;
@@ -471,11 +461,7 @@ impl ProxySession {
                     .borrow_mut()
                     .write_data(self.downstream_recv_iface, Cow::Borrowed(&self.downstream_buffer));
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] ClientHello: {}",
-                    self.downstream_addr,
-                    hex::encode(&self.downstream_buffer)
-                );
+                println!("[{}] ClientHello: {}", self.downstream_addr, hex::encode(&self.downstream_buffer));
 
                 match ClientHello::parse_from_bytes(&self.downstream_buffer[4..]) {
                     Ok(client_hello) => {
@@ -483,16 +469,15 @@ impl ProxySession {
                         let mut client_hello_buffer = std::mem::take(&mut self.downstream_buffer);
                         state_data.downstream_accumulator.append(&mut client_hello_buffer);
                         self.downstream_buffer_pos = 0;
-                        std::mem::drop(state_data);
+                        drop(state_data);
                         self.state = ProxySessionState::ConnectingToUpstream(state.clone());
                         #[cfg(debug_assertions)]
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         Ok(())
                     },
-                    Err(parse_error) => Err(Error::new(
-                        ErrorKind::InvalidData,
-                        format!("Failed to parse ClientHello: {}", parse_error),
-                    )),
+                    Err(parse_error) => {
+                        Err(Error::new(ErrorKind::InvalidData, format!("Failed to parse ClientHello: {}", parse_error)))
+                    },
                 }
             },
             ProxySessionState::ConnectingToUpstream(ref state) => {
@@ -595,10 +580,7 @@ impl ProxySession {
                 let remaining_bytes = self.upstream_buffer.len() - current_pos;
                 let remaining_ref = &self.upstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to send remaining {remaining_bytes} bytes of ClientHello",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to send remaining {remaining_bytes} bytes of ClientHello", self.downstream_addr);
                 match self.upstream.write(remaining_ref) {
                     Ok(bytes_written) => {
                         self.upstream_buffer_pos += bytes_written;
@@ -631,7 +613,7 @@ impl ProxySession {
                 let mut client_hello_buffer = std::mem::take(&mut self.upstream_buffer);
                 state_data.upstream_accumulator.append(&mut client_hello_buffer);
                 self.upstream_buffer_pos = 0;
-                std::mem::drop(state_data);
+                drop(state_data);
                 self.state = ProxySessionState::ReadUpstreamAPChallenge(state.clone());
                 #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -671,10 +653,7 @@ impl ProxySession {
                 let remaining_bytes = self.upstream_buffer.len() - current_pos;
                 let remaining_ref = &mut self.upstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to read remaining {remaining_bytes} bytes of APResponse",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to read remaining {remaining_bytes} bytes of APResponse", self.downstream_addr);
                 match self.upstream.read(remaining_ref) {
                     Ok(bytes_read) => {
                         self.upstream_buffer_pos += bytes_read;
@@ -710,9 +689,9 @@ impl ProxySession {
 
                 match APResponseMessage::parse_from_bytes(&self.upstream_buffer[4..]) {
                     Ok(ap_response) => {
-                        if ap_response.challenge.is_none()
-                            && ap_response.upgrade.is_none()
-                            && ap_response.login_failed.is_none()
+                        if ap_response.challenge.is_none() &&
+                            ap_response.upgrade.is_none() &&
+                            ap_response.login_failed.is_none()
                         {
                             return Err(Error::new(ErrorKind::InvalidData, "Upstream AP returned invalid APResponse"));
                         }
@@ -721,7 +700,7 @@ impl ProxySession {
                         let mut ap_response_buffer = std::mem::take(&mut self.upstream_buffer);
                         state_data.upstream_accumulator.append(&mut ap_response_buffer);
                         self.upstream_buffer_pos = 0;
-                        std::mem::drop(state_data);
+                        drop(state_data);
                         self.state = ProxySessionState::SendDownstreamAPChallenge(state.clone());
                         #[cfg(debug_assertions)]
                         println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -803,7 +782,7 @@ impl ProxySession {
                         }
                         if upstream_ap_challenge.fingerprint_challenge.hmac_ripemd.is_some() {
                             unimplemented!(
-                                "Upstream sent FingerprintHmacRipemdChallenge, please open an issue on Github"
+                                "Upstream sent FingerprintHmacRipeMDChallenge, please open an issue on Github"
                             );
                         }
 
@@ -902,7 +881,7 @@ impl ProxySession {
                 let mut ap_response_buffer = std::mem::take(&mut self.downstream_buffer);
                 state_data.downstream_accumulator.append(&mut ap_response_buffer);
                 self.downstream_buffer_pos = 0;
-                std::mem::drop(state_data);
+                drop(state_data);
                 self.state = ProxySessionState::ReadDownstreamClientResponsePlaintext(state.clone());
                 #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -999,8 +978,8 @@ impl ProxySession {
                 // client doesn't provide a solution to a challenge given by the server, so we are not going to enforce
                 // them either.
 
-                if state_data.downstream_client_response_plaintext.login_crypto_response.is_some()
-                    && state_data.downstream_client_response_plaintext.login_crypto_response.diffie_hellman.is_some()
+                if state_data.downstream_client_response_plaintext.login_crypto_response.is_some() &&
+                    state_data.downstream_client_response_plaintext.login_crypto_response.diffie_hellman.is_some()
                 {
                     let downstream_public_key =
                         Vec::from(state_data.downstream_client_hello.login_crypto_hello.diffie_hellman.gc());
@@ -1093,7 +1072,7 @@ impl ProxySession {
                     }
                 }
 
-                std::mem::drop(state_data);
+                drop(state_data);
                 self.state = ProxySessionState::ReadDownstreamClientResponseEncrypted(state.clone());
                 #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -1248,7 +1227,7 @@ impl ProxySession {
                     }
                 }
 
-                std::mem::drop(state_data);
+                drop(state_data);
                 self.state = ProxySessionState::SendUpstreamClientResponsePlaintext(state.clone());
                 #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -1404,7 +1383,7 @@ impl ProxySession {
                     .write_data(self.upstream_send_iface, Cow::Borrowed(&self.upstream_buffer));
                 self.upstream_buffer.clear();
                 self.upstream_buffer_pos = 0;
-                std::mem::drop(state_data);
+                drop(state_data);
                 self.state = ProxySessionState::SendUpstreamClientResponseEncrypted(state.clone());
                 #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -1518,7 +1497,7 @@ impl ProxySession {
 
                 self.upstream_buffer.clear();
                 self.upstream_buffer_pos = 0;
-                std::mem::drop(state_data);
+                drop(state_data);
                 self.state = ProxySessionState::Idle;
                 #[cfg(debug_assertions)]
                 println!("[{}] Updated state to {}", self.downstream_addr, self.state);
@@ -1553,7 +1532,6 @@ impl ProxySession {
                     if !event.is_readable() {
                         return Ok(());
                     }
-
                     let mut header = [0; 3];
                     if self.upstream.read_exact(&mut header).is_err() {
                         return Ok(());
@@ -1565,7 +1543,6 @@ impl ProxySession {
                         #[cfg(not(debug_assertions))]
                         return Err(Error::new(ErrorKind::Other, "Decryption mismatch, expected header got body"));
                     };
-
                     self.upstream_decrypt_packet_type = packet_type;
                     self.upstream_decrypt_packet_len = packet_len;
                     self.upstream_buffer.resize(packet_len as usize + 4, 0);
@@ -1587,10 +1564,7 @@ impl ProxySession {
                 let remaining_bytes = self.downstream_buffer.len() - current_pos;
                 let remaining_ref = &mut self.downstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to read {remaining_bytes} encrypted bytes from downstream",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to read {remaining_bytes} encrypted bytes from downstream", self.downstream_addr);
                 match self.downstream.read(remaining_ref) {
                     Ok(bytes_read) => {
                         self.downstream_buffer_pos += bytes_read;
@@ -1651,10 +1625,7 @@ impl ProxySession {
                 let remaining_bytes = self.upstream_buffer.len() - current_pos;
                 let remaining_ref = &self.upstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to write {remaining_bytes} encrypted bytes to upstream",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to write {remaining_bytes} encrypted bytes to upstream", self.downstream_addr);
                 match self.upstream.write(remaining_ref) {
                     Ok(bytes_written) => {
                         self.upstream_buffer_pos += bytes_written;
@@ -1689,10 +1660,7 @@ impl ProxySession {
                 let remaining_bytes = self.upstream_buffer.len() - current_pos;
                 let remaining_ref = &mut self.upstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to read {remaining_bytes} encrypted bytes from upstream",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to read {remaining_bytes} encrypted bytes from upstream", self.downstream_addr);
                 match self.upstream.read(remaining_ref) {
                     Ok(bytes_read) => {
                         self.upstream_buffer_pos += bytes_read;
@@ -1755,10 +1723,7 @@ impl ProxySession {
                 let remaining_bytes = self.downstream_buffer.len() - current_pos;
                 let remaining_ref = &self.downstream_buffer[current_pos..];
                 #[cfg(debug_assertions)]
-                println!(
-                    "[{}] Trying to write {remaining_bytes} encrypted bytes to downstream",
-                    self.downstream_addr
-                );
+                println!("[{}] Trying to write {remaining_bytes} encrypted bytes to downstream", self.downstream_addr);
                 match self.downstream.write(remaining_ref) {
                     Ok(bytes_written) => {
                         self.downstream_buffer_pos += bytes_written;
@@ -1816,12 +1781,12 @@ impl ProxySession {
             ProxySessionState::SendDownstreamAPChallenge(_) => {
                 registry.reregister(&mut self.downstream, self.downstream_token, Interest::WRITABLE)?;
             },
-            ProxySessionState::ReadDownstreamClientResponsePlaintext(_)
-            | ProxySessionState::ReadDownstreamClientResponseEncrypted(_) => {
+            ProxySessionState::ReadDownstreamClientResponsePlaintext(_) |
+            ProxySessionState::ReadDownstreamClientResponseEncrypted(_) => {
                 registry.reregister(&mut self.downstream, self.downstream_token, Interest::READABLE)?;
             },
-            ProxySessionState::SendUpstreamClientResponsePlaintext(_)
-            | ProxySessionState::SendUpstreamClientResponseEncrypted(_) => {
+            ProxySessionState::SendUpstreamClientResponsePlaintext(_) |
+            ProxySessionState::SendUpstreamClientResponseEncrypted(_) => {
                 registry.reregister(&mut self.upstream, self.upstream_token, Interest::WRITABLE)?;
             },
             ProxySessionState::Idle => {
@@ -1853,8 +1818,8 @@ impl ProxySession {
 
     pub fn timeout_advice(&self) -> ProxyTimeoutAdvice {
         match self.state {
-            ProxySessionState::ReadDownstreamClientHello(ref state)
-            | ProxySessionState::ConnectingToUpstream(ref state) => {
+            ProxySessionState::ReadDownstreamClientHello(ref state) |
+            ProxySessionState::ConnectingToUpstream(ref state) => {
                 if state.borrow().upstream_timeout < Instant::now() {
                     ProxyTimeoutAdvice::TimedOut
                 } else {

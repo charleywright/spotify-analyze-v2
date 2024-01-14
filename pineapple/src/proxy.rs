@@ -1,12 +1,13 @@
-use mio::net::TcpListener;
-use mio::{Events, Interest, Poll};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::io::{self, Error, ErrorKind};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    io::{self, Error, ErrorKind},
+    rc::Rc,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+
+use mio::{net::TcpListener, Events, Interest, Poll};
 
 mod ap_resolver;
 mod dh;
@@ -60,7 +61,7 @@ pub fn run_proxy(host: String) -> io::Result<()> {
                 SERVER_TOKEN => loop {
                     let (downstream, address) = match server.accept() {
                         Ok((connection, address)) => (connection, address),
-                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
                             break;
                         },
                         Err(server_err) => {
@@ -99,7 +100,7 @@ pub fn run_proxy(host: String) -> io::Result<()> {
                         },
                     };
                     if is_complete {
-                        std::mem::drop(session); // End immutable borrow of `connections`
+                        drop(session); // End immutable borrow of `connections`
                         let session = connections.remove(&token).unwrap();
                         let mut session = session.borrow_mut();
                         session.deregister_sockets(poll.registry())?;

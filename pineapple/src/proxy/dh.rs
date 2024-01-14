@@ -22,17 +22,12 @@ impl DiffieHellman {
     pub fn random() -> Self {
         let prime = BigUint::from_bytes_be(&PRIME_BYTES);
         let generator = BigUint::from(2usize);
-        let mut priv_key_bytes = [0; 95];
-        rand::thread_rng().fill_bytes(&mut priv_key_bytes);
-        let private_key = BigUint::from_bytes_be(&priv_key_bytes);
+        let mut private_key_bytes = [0; 95];
+        rand::thread_rng().fill_bytes(&mut private_key_bytes);
+        let private_key = BigUint::from_bytes_be(&private_key_bytes);
         let public_key = generator.modpow(&private_key, &prime);
 
-        DiffieHellman {
-            prime,
-            private_key,
-            public_key,
-            shared_key: BigUint::from(0usize),
-        }
+        DiffieHellman { prime, private_key, public_key, shared_key: BigUint::from(0usize) }
     }
 
     pub fn public_bytes(&self) -> Vec<u8> {
