@@ -10,7 +10,7 @@
 //  `length` comes from the AP challenge, specifies how many trailing zero bits are needed
 //  `target` is XOR'd with the suffix before checking the trailing zeroes
 // ApConnectionImpl::powSolveHashcash(this, suffix, prefix, prefix_len, length, target)
-//   sha_hmac_ctx = SHA1HMAC::new(sp::hascash_key, 20);
+//   sha_hmac_ctx = SHA1HMAC::new(sp::hashcash_key, 20);
 //   sha_hmac_ctx.update(this->client_hello); // Includes SPIRC_MAGIC 0004
 //   sha_hmac_ctx.update(this->ap_response);
 //   context_bytes = sha_hmac_ctx.finish();
@@ -142,13 +142,13 @@ mod tests {
                 APResponseMessage::parse_from_bytes(&test_data.ap_response[4..]).expect("Failed to parse APResponse");
             let hashcash_challenge =
                 ap_response_msg.challenge.pow_challenge.hash_cash.as_ref().expect("Expected POW challenge");
-            let mut accumuluator = vec![];
-            accumuluator.extend_from_slice(&test_data.client_hello);
-            accumuluator.extend_from_slice(&test_data.ap_response);
+            let mut accumulator = vec![];
+            accumulator.extend_from_slice(&test_data.client_hello);
+            accumulator.extend_from_slice(&test_data.ap_response);
 
             assert_eq!(
                 test_data.suffix,
-                solve_hashcash(&accumuluator, hashcash_challenge).expect("Failed to solve challenge")
+                solve_hashcash(&accumulator, hashcash_challenge).expect("Failed to solve challenge")
             )
         }
     }

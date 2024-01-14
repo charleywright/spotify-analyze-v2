@@ -1,6 +1,6 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use mio::Token;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 
 pub const SERVER_TOKEN: Token = Token(0);
 
@@ -10,9 +10,7 @@ pub struct TokenManager {
 
 impl TokenManager {
     pub fn new() -> Self {
-        Self {
-            counter: AtomicU32::new(1),
-        }
+        Self { counter: AtomicU32::new(1) }
     }
 
     pub fn next(&mut self) -> Token {
