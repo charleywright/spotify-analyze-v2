@@ -8,7 +8,7 @@ use std::{
 use pcap_file::{
     pcapng::{
         blocks::{
-            enhanced_packet::EnhancedPacketBlock,
+            enhanced_packet::{EnhancedPacketBlock, EnhancedPacketOption},
             interface_description::{InterfaceDescriptionBlock, InterfaceDescriptionOption},
             section_header::{SectionHeaderBlock, SectionHeaderOption},
         },
@@ -17,11 +17,43 @@ use pcap_file::{
     DataLink, Endianness,
 };
 
-pub enum IfaceType {
-    DownstreamSend,
-    DownstreamRecv,
-    UpstreamSend,
-    UpstreamRecv,
+#[derive(Debug, Clone, Copy)]
+pub enum InterfaceType {
+    Downstream,
+    Upstream,
+}
+impl InterfaceType {
+    pub fn flags(&self) -> u32 {
+        match self {
+            InterfaceType::Downstream => 0 << 1,
+            InterfaceType::Upstream => 1 << 1,
+        }
+    }
+}
+impl From<InterfaceType> for DataLink {
+    fn from(value: InterfaceType) -> Self {
+        match value {
+            InterfaceType::Downstream => DataLink::USER0,
+            InterfaceType::Upstream => DataLink::USER1,
+        }
+    }
+}
+#[derive(Debug)]
+pub struct Interface {
+    direction: InterfaceType,
+    index: u32,
+}
+pub enum PacketDirection {
+    Send,
+    Recv,
+}
+impl PacketDirection {
+    pub fn flags(&self) -> u32 {
+        match self {
+            PacketDirection::Send => 1,
+            PacketDirection::Recv => 0,
+        }
+    }
 }
 
 pub struct PcapWriter {
@@ -29,14 +61,14 @@ pub struct PcapWriter {
     interface_counter: u32,
 }
 
-fn socket_addr_to_pcap(addr: &SocketAddr) -> InterfaceDescriptionOption {
-    match addr {
-        SocketAddr::V4(addr) => InterfaceDescriptionOption::IfIpv4Addr(Cow::Owned(Vec::from(addr.ip().octets()))),
-        SocketAddr::V6(addr) => InterfaceDescriptionOption::IfIpv6Addr(Cow::Owned(Vec::from(addr.ip().octets()))),
-    }
-}
-
 impl PcapWriter {
+    fn socket_addr_to_pcap(addr: &SocketAddr) -> InterfaceDescriptionOption {
+        match addr {
+            SocketAddr::V4(addr) => InterfaceDescriptionOption::IfIpv4Addr(Cow::Owned(Vec::from(addr.ip().octets()))),
+            SocketAddr::V6(addr) => InterfaceDescriptionOption::IfIpv6Addr(Cow::Owned(Vec::from(addr.ip().octets()))),
+        }
+    }
+
     pub fn new() -> Self {
         let file = File::create("output.pcapng").expect("Failed to open file");
         let section = SectionHeaderBlock {
@@ -47,58 +79,38 @@ impl PcapWriter {
         PcapWriter { writer: PcapNgWriter::with_section_header(file, section).unwrap(), interface_counter: 0 }
     }
 
-    pub fn create_interface(&mut self, iface_type: IfaceType, addr: SocketAddr) -> u32 {
-        let link_type = match iface_type {
-            IfaceType::DownstreamSend => DataLink::USER0,
-            IfaceType::DownstreamRecv => DataLink::USER1,
-            IfaceType::UpstreamSend => DataLink::USER2,
-            IfaceType::UpstreamRecv => DataLink::USER3,
-        };
+    pub fn create_interface(&mut self, iface_type: InterfaceType, addr: SocketAddr) -> Interface {
         let options = match iface_type {
-            IfaceType::DownstreamSend => {
-                vec![
-                    InterfaceDescriptionOption::IfName("pineapple-clientproxy-send".into()),
-                    InterfaceDescriptionOption::IfDescription("Pineapple's Proxy -> Client channel".into()),
-                    socket_addr_to_pcap(&addr),
-                ]
-            },
-            IfaceType::DownstreamRecv => {
-                vec![
-                    InterfaceDescriptionOption::IfName("pineapple-clientproxy-recv".into()),
-                    InterfaceDescriptionOption::IfDescription("Pineapple's Client -> Proxy channel".into()),
-                    socket_addr_to_pcap(&addr),
-                ]
-            },
-            IfaceType::UpstreamSend => {
-                vec![
-                    InterfaceDescriptionOption::IfName("pineapple-serverproxy-send".into()),
-                    InterfaceDescriptionOption::IfDescription("Pineapple's Proxy -> Server channel".into()),
-                    socket_addr_to_pcap(&addr),
-                ]
-            },
-            IfaceType::UpstreamRecv => {
-                vec![
-                    InterfaceDescriptionOption::IfName("pineapple-serverproxy-recv".into()),
-                    InterfaceDescriptionOption::IfDescription("Pineapple's Server -> Proxy channel".into()),
-                    socket_addr_to_pcap(&addr),
-                ]
-            },
+            InterfaceType::Downstream => vec![
+                InterfaceDescriptionOption::IfName("pineapple-client-proxy".into()),
+                InterfaceDescriptionOption::IfDescription("Pineapple's Proxy -> Client channel".into()),
+                PcapWriter::socket_addr_to_pcap(&addr),
+            ],
+            InterfaceType::Upstream => vec![
+                InterfaceDescriptionOption::IfName("pineapple-server-proxy".into()),
+                InterfaceDescriptionOption::IfDescription("Pineapple's Proxy -> Server channel".into()),
+                PcapWriter::socket_addr_to_pcap(&addr),
+            ],
         };
-        let block = Block::InterfaceDescription(InterfaceDescriptionBlock { linktype: link_type, snaplen: 0, options });
+        let block = Block::InterfaceDescription(InterfaceDescriptionBlock {
+            linktype: DataLink::from(iface_type),
+            snaplen: 0,
+            options,
+        });
         self.writer.write_block(&block).expect("Failed to write interface block");
         let iface_idx = self.interface_counter;
         self.interface_counter += 1;
-        iface_idx
+        Interface { direction: iface_type, index: iface_idx }
     }
 
-    pub fn write_data(&mut self, iface_idx: u32, data: Cow<[u8]>) {
+    pub fn write_packet(&mut self, iface: &Interface, direction: PacketDirection, data: Cow<[u8]>) {
         let data_len = data.len();
         let block = Block::EnhancedPacket(EnhancedPacketBlock {
             data,
-            interface_id: iface_idx,
+            interface_id: iface.index,
             original_len: data_len as u32,
             timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
-            options: vec![],
+            options: vec![EnhancedPacketOption::Flags(direction.flags() | iface.direction.flags())],
         });
         self.writer.write_block(&block).expect("Failed to write data block");
     }
