@@ -11,6 +11,7 @@ use mio::{net::TcpListener, Events, Interest, Poll};
 
 mod ap_resolver;
 mod dh;
+mod nonblocking;
 mod pcap;
 mod pow;
 mod proxy_session;
