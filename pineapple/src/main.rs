@@ -1,4 +1,4 @@
-use std::io;
+#![feature(if_let_guard)]
 
 use clap::{Arg, Command};
 
@@ -31,6 +31,21 @@ fn main() -> anyhow::Result<()> {
                     .value_name("file path")
                     .help("Write a PCAPNG file containing all the captured packets to the specified file path"),
             ),
+        )
+        .subcommand(
+            Command::new("wireshark")
+                .about(
+                    "Launch Wireshark and display the intercepted packets in real time. \n\
+                    Note: When running multiple instances --host should be specified to select an instance",
+                )
+                .arg(
+                    Arg::new("dir")
+                        .short('d')
+                        .long("dir")
+                        .value_name("install dir")
+                        .required(false)
+                        .help("The directory that contains the Wireshark executable"),
+                ),
         )
         .get_matches();
 

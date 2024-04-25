@@ -44,7 +44,7 @@ pub fn run_proxy(args: &ArgMatches) -> anyhow::Result<()> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
     let mut server = TcpListener::bind(proxy_config.host)?;
-    let pcap_writer = Rc::new(RefCell::new(PcapWriter::new()));
+    let pcap_writer = Rc::new(RefCell::new(PcapWriter::new(&proxy_config)?));
     let mut token_manager = TokenManager::new();
     poll.registry().register(&mut server, SERVER_TOKEN, Interest::READABLE)?;
     let mut ap_resolver = ApResolver::new();

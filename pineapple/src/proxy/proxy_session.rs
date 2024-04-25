@@ -28,7 +28,7 @@ use super::{
     ap_resolver::ApResolver,
     dh::DiffieHellman,
     nonblocking::{NonblockingReader, NonblockingWriter},
-    pcap::{Interface, InterfaceType, PcapWriter},
+    pcap::{Interface, InterfaceDirection, PcapWriter},
     pow,
     shannon::{DecryptResult, ShannonCipher},
     token_manager::TokenManager,
@@ -378,7 +378,7 @@ impl ProxySession {
                     self.downstream_addr = self.downstream.peer_addr()?;
                     let mut pcap_writer = self.pcap_writer.borrow_mut();
                     self.downstream_iface = Some(
-                        pcap_writer.create_interface(InterfaceType::Downstream, self.downstream.peer_addr().unwrap()),
+                        pcap_writer.create_interface(InterfaceDirection::Downstream, self.downstream.peer_addr().unwrap()),
                     );
 
                     let mut magic_bytes = [0; SPIRC_MAGIC.len()];
@@ -393,7 +393,7 @@ impl ProxySession {
                         ));
                     }
                     pcap_writer.write_packet(
-                        self.downstream_iface.as_ref().unwrap(),
+                        self.downstream_iface.unwrap(),
                         PacketDirection::Recv,
                         Cow::Borrowed(&magic_bytes),
                     );
@@ -431,7 +431,7 @@ impl ProxySession {
                     Err(error) => {
                         // Write what we have, could be useful for debugging
                         self.pcap_writer.borrow_mut().write_packet(
-                            self.downstream_iface.as_ref().unwrap(),
+                            self.downstream_iface.unwrap(),
                             PacketDirection::Recv,
                             Cow::Owned(self.downstream_reader.take()),
                         );
@@ -446,7 +446,7 @@ impl ProxySession {
 
                 let mut client_hello_buffer = self.downstream_reader.take();
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.downstream_iface.as_ref().unwrap(),
+                    self.downstream_iface.unwrap(),
                     PacketDirection::Recv,
                     Cow::Borrowed(&client_hello_buffer),
                 );
@@ -476,7 +476,7 @@ impl ProxySession {
                 if let Ok(_upstream_addr) = self.upstream.peer_addr() {
                     let mut pcap_writer = self.pcap_writer.borrow_mut();
                     self.upstream_iface =
-                        Some(pcap_writer.create_interface(InterfaceType::Upstream, self.upstream.peer_addr().unwrap()));
+                        Some(pcap_writer.create_interface(InterfaceDirection::Upstream, self.upstream.peer_addr().unwrap()));
                     #[cfg(debug_assertions)]
                     println!("[{}] Connected to upstream {_upstream_addr}", self.downstream_addr);
                     self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
@@ -499,7 +499,7 @@ impl ProxySession {
                         return Err(Error::new(ErrorKind::Interrupted, "Failed to write SPIRC magic"));
                     }
                     self.pcap_writer.borrow_mut().write_packet(
-                        self.upstream_iface.as_ref().unwrap(),
+                        self.upstream_iface.unwrap(),
                         PacketDirection::Send,
                         Cow::Borrowed(&SPIRC_MAGIC),
                     );
@@ -572,7 +572,7 @@ impl ProxySession {
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
-                            self.upstream_iface.as_ref().unwrap(),
+                            self.upstream_iface.unwrap(),
                             PacketDirection::Send,
                             Cow::Owned(self.upstream_writer.take()),
                         );
@@ -586,7 +586,7 @@ impl ProxySession {
 
                 let mut client_hello_buffer = self.upstream_writer.take();
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.upstream_iface.as_ref().unwrap(),
+                    self.upstream_iface.unwrap(),
                     PacketDirection::Send,
                     Cow::Borrowed(&client_hello_buffer),
                 );
@@ -633,7 +633,7 @@ impl ProxySession {
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
-                            self.upstream_iface.as_ref().unwrap(),
+                            self.upstream_iface.unwrap(),
                             PacketDirection::Recv,
                             Cow::Owned(self.upstream_reader.take()),
                         );
@@ -648,7 +648,7 @@ impl ProxySession {
 
                 let mut ap_response_buffer = self.upstream_reader.take();
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.upstream_iface.as_ref().unwrap(),
+                    self.upstream_iface.unwrap(),
                     PacketDirection::Recv,
                     Cow::Borrowed(&ap_response_buffer),
                 );
@@ -813,7 +813,7 @@ impl ProxySession {
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
-                            self.downstream_iface.as_ref().unwrap(),
+                            self.downstream_iface.unwrap(),
                             PacketDirection::Send,
                             Cow::Owned(self.downstream_writer.take()),
                         );
@@ -827,7 +827,7 @@ impl ProxySession {
 
                 let mut ap_response_buffer = self.downstream_writer.take();
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.downstream_iface.as_ref().unwrap(),
+                    self.downstream_iface.unwrap(),
                     PacketDirection::Send,
                     Cow::Borrowed(&ap_response_buffer),
                 );
@@ -872,7 +872,7 @@ impl ProxySession {
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
-                            self.downstream_iface.as_ref().unwrap(),
+                            self.downstream_iface.unwrap(),
                             PacketDirection::Recv,
                             Cow::Owned(self.downstream_reader.take()),
                         );
@@ -886,7 +886,7 @@ impl ProxySession {
 
                 let client_response_buffer = self.downstream_reader.take();
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.downstream_iface.as_ref().unwrap(),
+                    self.downstream_iface.unwrap(),
                     PacketDirection::Recv,
                     Cow::Borrowed(&client_response_buffer),
                 );
@@ -1074,15 +1074,22 @@ impl ProxySession {
                         "Failed to decrypt packet for ClientResponseEncrypted",
                     ));
                 };
+                let packet = {
+                    let mut tmp = Vec::with_capacity(1 + 2 + packet.len());
+                    tmp.push(LOGIN_PACKET);
+                    tmp.extend_from_slice(&u16::to_be_bytes(packet.len() as u16));
+                    tmp.extend(packet);
+                    tmp
+                };
                 #[cfg(debug_assertions)]
                 println!("[{}] ClientResponseEncrypted: {}", self.downstream_addr, hex::encode(&packet));
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.downstream_iface.as_ref().unwrap(),
+                    self.downstream_iface.unwrap(),
                     PacketDirection::Recv,
                     Cow::Borrowed(&packet),
                 );
 
-                match ClientResponseEncrypted::parse_from_bytes(&packet) {
+                match ClientResponseEncrypted::parse_from_bytes(&packet[3..]) {
                     Ok(client_response) => {
                         state_data.downstream_client_response_encrypted = client_response;
                     },
@@ -1272,7 +1279,7 @@ impl ProxySession {
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
-                            self.upstream_iface.as_ref().unwrap(),
+                            self.upstream_iface.unwrap(),
                             PacketDirection::Send,
                             Cow::Owned(self.upstream_writer.take()),
                         );
@@ -1285,7 +1292,7 @@ impl ProxySession {
                 }
 
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.upstream_iface.as_ref().unwrap(),
+                    self.upstream_iface.unwrap(),
                     PacketDirection::Send,
                     Cow::Owned(self.upstream_writer.take()),
                 );
@@ -1358,7 +1365,7 @@ impl ProxySession {
                     packet.extend_from_slice(&client_response_len_bytes);
                     packet.append(&mut client_response.write_to_bytes()?);
                     self.pcap_writer.borrow_mut().write_packet(
-                        self.upstream_iface.as_ref().unwrap(),
+                        self.upstream_iface.unwrap(),
                         PacketDirection::Send,
                         Cow::Borrowed(&packet),
                     );
@@ -1476,12 +1483,12 @@ impl ProxySession {
                 encrypted_packet.extend_from_slice(&self.downstream_decrypt_packet_len.to_be_bytes());
                 encrypted_packet.append(&mut decrypted_packet);
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.downstream_iface.as_ref().unwrap(),
+                    self.downstream_iface.unwrap(),
                     PacketDirection::Recv,
                     Cow::Borrowed(&encrypted_packet),
                 );
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.upstream_iface.as_ref().unwrap(),
+                    self.upstream_iface.unwrap(),
                     PacketDirection::Send,
                     Cow::Borrowed(&encrypted_packet),
                 );
@@ -1547,12 +1554,12 @@ impl ProxySession {
                 encrypted_packet.extend_from_slice(&self.upstream_decrypt_packet_len.to_be_bytes());
                 encrypted_packet.append(&mut decrypted_packet);
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.upstream_iface.as_ref().unwrap(),
+                    self.upstream_iface.unwrap(),
                     PacketDirection::Recv,
                     Cow::Borrowed(&encrypted_packet),
                 );
                 self.pcap_writer.borrow_mut().write_packet(
-                    self.downstream_iface.as_ref().unwrap(),
+                    self.downstream_iface.unwrap(),
                     PacketDirection::Send,
                     Cow::Borrowed(&encrypted_packet),
                 );
