@@ -1,13 +1,7 @@
-/*
-Very good tool for searching for structures
-https://codebrowser.dev/
-
-TODO: IPv6
-*/
-
-const TARGET_IP = `192.168.1.120`;
+// const TARGET_IP = `192.168.12.1`;
+const TARGET_IP = "127.0.0.1";
 const TARGET_PORT = 4070;
-const SERVER_KEY_OFFSET = 0x3c5290;
+
 const OUR_SERVER_KEY = [
   0x94, 0x8f, 0x67, 0xa9, 0x51, 0xd7, 0x5f, 0x38, 0xa4, 0x36, 0x19, 0x11, 0x28,
   0x32, 0xad, 0x49, 0x33, 0xdd, 0x00, 0xf5, 0xdd, 0x24, 0xe6, 0xb9, 0x10, 0xed,
@@ -31,382 +25,350 @@ const OUR_SERVER_KEY = [
   0x9f, 0xe9, 0x12, 0x05, 0x3a, 0x0c, 0x0c, 0xa6, 0x93,
 ];
 
-export function callStack() {
-  let bt = "";
-  Java.perform(function () {
-    bt = exceptionCallStack(Java.use("java.lang.Exception").$new());
-  });
-  return bt;
+/* DON'T MODIFY BEYOND THIS POINT */
+
+import { ElfEndianReader, ElfHeader, ElfSegment, ElfSection } from "./elf.js";
+import {
+  MachOHeader,
+  MachOLoadCommand,
+  MachOSegmentLoadCommand,
+} from "./macho.js";
+
+const SCRIPT_START = Date.now();
+const AP_PORTS = [80, 443, 4070]; // The app will try these without modification
+const AP_SERVER_KEY =
+  "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
+const AP_SERVER_KEY_LEN = 256;
+const APRESOLVE_OVERRIDE = "dont.resolve.scdn.co"; // Spotify don't own scdn.com
+const PLATFORM_CHECK_INTERVAL = 10; // ms
+
+type RelocationEntry = {
+  offset_in_file: UInt64;
+  size_in_file: UInt64;
+  offset_in_memory: UInt64;
+  size_in_memory: UInt64;
+};
+function calculateRelocatedOffset(
+  relocations: Array<RelocationEntry>,
+  position: UInt64
+): UInt64 {
+  for (const relocation of relocations) {
+    if (
+      position >= relocation.offset_in_file &&
+      position < relocation.offset_in_file.add(relocation.size_in_file)
+    ) {
+      const offset_from_segment = position.sub(relocation.offset_in_file);
+      const offset_from_base = relocation.offset_in_memory.sub(
+        relocations[0].offset_in_memory
+      );
+      return offset_from_base.add(offset_from_segment);
+    }
+  }
+  return position;
 }
 
-export function nativeCallStack(ctx: CpuContext) {
-  console.log(
-    Thread.backtrace(ctx, Backtracer.ACCURATE)
-      .map(DebugSymbol.fromAddress)
-      .join("\n\t")
+function replaceServerKey(locations: MemoryScanMatch[]) {
+  for (const location of locations) {
+    console.log(
+      `Found server key at ${DebugSymbol.fromAddress(
+        location.address
+      )}\n${hexdump(location.address, { length: AP_SERVER_KEY_LEN })}`
+    );
+    Memory.protect(location.address, AP_SERVER_KEY_LEN, "rwx");
+    location.address.writeByteArray(OUR_SERVER_KEY);
+    Memory.protect(location.address, AP_SERVER_KEY_LEN, "r-x");
+    console.log(
+      `Replaced server key\n${hexdump(location.address, {
+        length: AP_SERVER_KEY_LEN,
+      })}`
+    );
+  }
+}
+
+function replaceServerKeyLinux(module: Module) {
+  const file = new File(module.path, "rb");
+
+  // Actual header is 52 bytes (32-bit) or 64 bytes (64-bit)
+  const header_buffer = file.readBytes(64);
+  const header = new ElfHeader(header_buffer.unwrap());
+  if (!header.isValid()) {
+    console.error(
+      `Read invalid ELF header from ${module.path}:\n${hexdump(header_buffer)}`
+    );
+    return;
+  }
+
+  const PH_SIZE_64 = 56;
+  const PH_SIZE_32 = 32;
+  if (Process.pointerSize === 64 && header.e_phentsize != PH_SIZE_64) {
+    console.error(
+      `Failed to replace server key, expected program header size ${PH_SIZE_64} got ${header.e_phentsize}`
+    );
+    return;
+  } else if (Process.pointerSize === 32 && header.e_phentsize != PH_SIZE_32) {
+    console.error(
+      `Failed to replace server key, expected program header size ${PH_SIZE_32} got ${header.e_phentsize}`
+    );
+    return;
+  }
+  const ph_start = header.e_phoff;
+  const ph_len = header.e_phnum * header.e_phentsize;
+  file.seek(ph_start.toNumber());
+  const ph_buffer = file.readBytes(ph_len);
+
+  let program_headers = [];
+  for (let i = 0; i < header.e_phnum; i++) {
+    let header_addr = ph_buffer.unwrap().add(i * header.e_phentsize);
+    const phdr = new ElfSegment(
+      new ElfEndianReader(header.e_ident, header_addr)
+    );
+    program_headers.push(phdr);
+  }
+  program_headers.forEach((phdr) => console.log(phdr));
+
+  const SH_SIZE_64 = 64;
+  const SH_SIZE_32 = 40;
+  if (Process.pointerSize === 64 && header.e_shentsize != SH_SIZE_64) {
+    console.error(
+      `Failed to replace server key, expected section header size ${SH_SIZE_64} got ${header.e_shentsize}`
+    );
+    return;
+  } else if (Process.pointerSize === 32 && header.e_shentsize != SH_SIZE_32) {
+    console.error(
+      `Failed to replace server key, expected section header size ${SH_SIZE_32} got ${header.e_shentsize}`
+    );
+    return;
+  }
+  const sh_start = header.e_shoff;
+  const sh_len = header.e_shnum * header.e_shentsize;
+  file.seek(sh_start.toNumber());
+  const sh_buffer = file.readBytes(sh_len);
+  let section_headers = [];
+  for (let i = 0; i < header.e_shnum; i++) {
+    let header_addr = sh_buffer.unwrap().add(i * header.e_shentsize);
+    const shdr = new ElfSection(
+      new ElfEndianReader(header.e_ident, header_addr)
+    );
+    section_headers.push(shdr);
+  }
+
+  let string_table_idx = header.e_shstrndx;
+  if (string_table_idx === 0xffff) {
+    string_table_idx = section_headers[0].sh_link;
+  }
+  if (string_table_idx >= section_headers.length) {
+    console.error(
+      `String table index ${string_table_idx} is out of bounds of section headers (${section_headers.length})`
+    );
+    return;
+  }
+  const string_table_header = section_headers[string_table_idx];
+  file.seek(string_table_header.sh_offset.toNumber());
+  const string_table_buffer = file.readBytes(
+    string_table_header.sh_size.toNumber()
   );
-}
+  section_headers.forEach((shdr) =>
+    shdr.setStringTableAddr(string_table_buffer.unwrap())
+  );
+  section_headers.forEach((shdr) => console.log(shdr));
 
-export function exceptionCallStack(ex: Java.Wrapper<{}>) {
-  return Java.use("android.util.Log")
-    .getStackTraceString(ex)
-    .replace(/^java\.lang\.Exception\n/, "");
-}
+  const relocations: RelocationEntry[] = program_headers
+    .filter((phdr) => phdr.p_type === ElfSegment.PT_LOAD)
+    .map((phdr) => ({
+      offset_in_file: phdr.p_offset,
+      size_in_file: phdr.p_filesz,
+      offset_in_memory: phdr.p_vaddr,
+      size_in_memory: phdr.p_memsz,
+    }));
 
-export function arrayBuffer2Hex(
-  buffer: ArrayBuffer | null,
-  addSpaces = false
-): string {
-  return buffer
-    ? [...new Uint8Array(buffer)]
-        .map((x) => x.toString(16).padStart(2, "0"))
-        .join(addSpaces ? " " : "")
-    : "<EMPTY>";
-}
-
-type Replacement = {
-  domain: RegExp;
-  ip: string;
-  port: number;
-};
-const replacements: Replacement[] = [
-  {
-    domain: /ap[\-a-z0-9]+\.spotify\.com/,
-    ip: TARGET_IP,
-    port: TARGET_PORT,
-  },
-  {
-    domain: /mobile-ap\.spotify\.com/,
-    ip: TARGET_IP,
-    port: TARGET_PORT,
-  },
-];
-
-type FdDetails = {
-  domain: number;
-  type: number;
-  protocol: number;
-};
-const fds: { [k: number]: FdDetails } = {};
-
-const resolvedIps: { [k: string]: string } = {};
-const AF_INET = 2;
-const AF_INET6 = 10;
-
-class Sockaddr_in {
-  /*
-    struct sockaddr
-    {
-      unsigned short int sa_family;	  // Common data: address family and length.
-      char sa_data[14];		            // Address data.
-    };
-    struct sockaddr_in
-    {
-      unsigned short int sin_family;
-      uint16_t sin_port;
-      struct in_addr sin_addr; // uint32_t
-    };
-  */
-
-  constructor(ptr: NativePointer) {
-    this.ptr = ptr;
-  }
-
-  private ptr: NativePointer;
-
-  getFamily(): number {
-    if (this.ptr.isNull()) return 0;
-    return this.ptr.add(0).readU16();
-  }
-
-  setFamily(family: number) {
-    if (this.ptr.isNull()) return;
-    this.ptr.add(0).writeU16(family & 0xffff);
-  }
-
-  getPort(): number {
-    if (this.ptr.isNull()) return 0;
-    return (this.ptr.add(2).readU8() << 8) | this.ptr.add(3).readU8();
-  }
-
-  setPort(port: number) {
-    if (this.ptr.isNull()) return;
-    this.ptr.add(2).writeU8((port >> 8) & 0xff);
-    this.ptr.add(3).writeU8((port >> 0) & 0xff);
-  }
-
-  getIP(): string {
-    if (this.ptr.isNull()) return "<NULL>";
-    const octet0 = this.ptr.add(4 + 1 * 0).readU8();
-    const octet1 = this.ptr.add(4 + 1 * 1).readU8();
-    const octet2 = this.ptr.add(4 + 1 * 2).readU8();
-    const octet3 = this.ptr.add(4 + 1 * 3).readU8();
-    return `${octet0}.${octet1}.${octet2}.${octet3}`;
-  }
-
-  setIP(ip: string) {
-    if (this.ptr.isNull()) return;
-
-    if (ip.includes(":")) {
-      const [actualIp, port] = ip.split(":");
-      ip = actualIp;
-      this.setPort(+port);
+  let key_locations: MemoryScanMatch[] = [];
+  for (const shdr of section_headers) {
+    if (shdr.getName() === ".rodata") {
+      const section_offset = calculateRelocatedOffset(
+        relocations,
+        shdr.sh_offset
+      );
+      const section_address = module.base.add(section_offset);
+      console.log(
+        `Found .rodata at ${DebugSymbol.fromAddress(section_address)}`
+      );
+      key_locations = key_locations.concat(
+        Memory.scanSync(section_address, shdr.sh_size, AP_SERVER_KEY)
+      );
     }
-
-    const [octet0, octet1, octet2, octet3] = ip.split(".");
-    this.ptr.add(4 + 1 * 0).writeU8(+octet0 & 0xff);
-    this.ptr.add(4 + 1 * 1).writeU8(+octet1 & 0xff);
-    this.ptr.add(4 + 1 * 2).writeU8(+octet2 & 0xff);
-    this.ptr.add(4 + 1 * 3).writeU8(+octet3 & 0xff);
   }
-
-  toString(): string {
-    return `Sockaddr_in{${this.getIP()}:${this.getPort()}}`;
+  if (key_locations.length === 0) {
+    console.warn(
+      "Failed to find server key in .rodata section, falling back to slower module scan"
+    );
+    key_locations = Memory.scanSync(module.base, module.size, AP_SERVER_KEY);
   }
+  replaceServerKey(key_locations);
 }
 
-class Addrinfo {
-  /*
-    struct addrinfo
-    {
-      int ai_flags;			          // Input flags.
-      int ai_family;		          // Protocol family for socket.
-      int ai_socktype;		        // Socket type.
-      int ai_protocol;		        // Protocol for socket.
-      unsigned int ai_addrlen;		// Length of socket address.
-      struct sockaddr *ai_addr;	  // Socket address for socket.
-      char *ai_canonname;		      // Canonical name for service location.
-      struct addrinfo *ai_next;	  // Pointer to next in list.
-    };
+function replaceDarwinServerKey(module: Module) {
+  const file = new File(module.path, "rb");
 
-                 0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F  0123456789ABCDEF
-    7a284cd250  00 04 00 00 02 00 00 00 01 00 00 00 06 00 00 00  ................
-    7a284cd260  10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
-    7a284cd270  80 d2 4c 28 7a 00 00 00 00 00 00 00 00 00 00 00  ..L(z...........
+  const header_buffer = file.readBytes(32);
+  const header = new MachOHeader(header_buffer.unwrap());
+  console.log(header);
 
-                {  flags  } {  family } {socktype } {protocol }
-                { addrlen }
-                {   addr  } <- Why not above? Maybe an optimisation on ARM64?
-  */
+  let key_locations: MemoryScanMatch[] = [];
+  if (header.isValid()) {
+    file.seek(header.size());
+    const load_commands_buffer = file.readBytes(header.load_commands_size);
+    let relocations: RelocationEntry[] = [];
+    let const_section = null;
+    for (let offset = 0; offset < load_commands_buffer.byteLength; ) {
+      const cmd = new MachOLoadCommand(
+        load_commands_buffer.unwrap().add(offset)
+      );
+      if (
+        cmd.type === MachOLoadCommand.LC_SEGMENT32 ||
+        cmd.type === MachOLoadCommand.LC_SEGMENT64
+      ) {
+        const segment_header = new MachOSegmentLoadCommand(
+          load_commands_buffer.unwrap().add(offset)
+        );
+        console.log(segment_header);
 
-  constructor(ptr: NativePointer) {
-    this.ptr = ptr;
-  }
-
-  private ptr: NativePointer;
-
-  // getFlags / setFlags / AI_ enum
-  // getFamily / setFamily / AF_ enum
-  // getSocktype / setSocktype / SOCK_ enum
-  // getProtocol / setProtocol
-
-  getAddrlen(): number {
-    if (this.ptr.isNull()) return 0;
-    return this.ptr.add(0x10).readU32();
-  }
-
-  getAddrPtr(): NativePointer {
-    if (this.ptr.isNull()) return NULL;
-    return this.ptr.add(0x20).readPointer();
-  }
-
-  // getCanonname / setCanonname
-  // getNext / setNext
-
-  toString(): string {
-    const addrLen = this.getAddrlen();
-    if (addrLen === 16) {
-      return `Addrinfo{addr=${new Sockaddr_in(this.getAddrPtr())}}`;
-    }
-    return `Addrinfo{addr=unknown,addrLen=${addrLen}}`;
-  }
-}
-
-const int = setInterval(() => {
-  if (Process.findModuleByName("libc.so")) {
-    clearInterval(int);
-    // https://man7.org/linux/man-pages/man2/socket.2.html
-    Interceptor.attach(Module.getExportByName(null, "socket"), {
-      onEnter: function (args) {
-        this.domain = args[0].toInt32();
-        this.type = args[1].toInt32();
-        this.protocol = args[2].toInt32();
-      },
-      onLeave: function (retval) {
-        if (retval.equals(-1)) {
-          return;
-        }
-        const domain: number = this.domain;
-        const type: number = this.type;
-        const protocol: number = this.protocol;
-        const fd = retval.toInt32();
-        fds[fd] = { domain, type, protocol };
-      },
-    });
-    // https://man7.org/linux/man-pages/man2/close.2.html
-    Interceptor.attach(Module.getExportByName(null, "close"), {
-      onEnter: function (args) {
-        const fd = args[0].toInt32();
-        delete fds[fd];
-      },
-    });
-    // https://man7.org/linux/man-pages/man2/connect.2.html
-    Interceptor.attach(Module.getExportByName(null, "connect"), {
-      onEnter: function (args) {
-        const fd = args[0].toInt32();
-        const addr = args[1];
-        const addrLen = args[2].toUInt32();
-        const details = fds[fd];
-        if (!details) {
-          console.error(
-            `connect(${fd}, ${addr}, ${addrLen}) FAILED TO FIND DETAILS FOR FD`
-          );
-          return;
-        }
-        if (details.domain != 2 /* INET */ || details.type != 1 /* TCP */) {
-          return;
+        if (segment_header.name !== "__PAGEZERO") {
+          relocations.push({
+            offset_in_file: segment_header.file_offset,
+            size_in_file: segment_header.file_size,
+            offset_in_memory: segment_header.memory_offset,
+            size_in_memory: segment_header.memory_size,
+          });
         }
 
-        const sockaddr = new Sockaddr_in(addr);
-        const resolved = resolvedIps[sockaddr.getIP()];
-        if (resolved) {
-          console.log(
-            `connect(${fd}, ${addr}, ${addrLen}) ${sockaddr} (${resolved})`
-          );
-          for (const replacement of replacements) {
-            if (new RegExp(replacement.domain).test(resolved)) {
-              sockaddr.setIP(replacement.ip);
-              sockaddr.setPort(replacement.port);
-              console.log(
-                `  Overriding ${resolved} with ${replacement.ip} - ${sockaddr}`
-              );
-            }
+        for (const section of segment_header.sections) {
+          console.log(` -> ${section}`);
+          if (section.name === "__const" && section.segment === "__TEXT") {
+            const_section = section;
           }
         }
-      },
-    });
-    // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
-    Interceptor.attach(Module.getExportByName(null, "getaddrinfo"), {
-      onEnter: function (args) {
-        this.name = args[0];
-        this.res = args[3];
-      },
-      onLeave: function (retval) {
-        if (!retval.equals(0)) {
-          return;
-        }
-        const res = (this.res as NativePointer).readPointer();
-        const name: string = this.name.readCString();
+      }
+      offset += cmd.size;
+    }
 
-        const addrinfo = new Addrinfo(res);
-        const addrLen = addrinfo.getAddrlen();
-        if (addrLen != 16) {
-          console.error(
-            `getaddrinfo: Expected sockaddr size 16, got ${addrLen}`
-          );
-          return;
-        }
-        const sockaddr = new Sockaddr_in(addrinfo.getAddrPtr());
-        // console.log(`Resolved ${name} to ${sockaddr}`);
-        resolvedIps[sockaddr.getIP()] = name;
-      },
-    });
+    if (const_section !== null) {
+      const const_offset = calculateRelocatedOffset(
+        relocations,
+        uint64(const_section.offset)
+      );
+      const const_address = module.base.add(const_offset);
+      console.log(`Found __const at ${DebugSymbol.fromAddress(const_address)}`);
+      key_locations = key_locations.concat(
+        Memory.scanSync(const_address, const_section.size, AP_SERVER_KEY)
+      );
+    }
   }
-}, 100);
 
-const int2 = setInterval(() => {
-  const JNI = Process.findModuleByName("liborbit-jni-spotify.so");
-  if (JNI) {
-    clearInterval(int2);
-    const serverKeyAddr = JNI.base.add(SERVER_KEY_OFFSET);
-    Memory.protect(serverKeyAddr, OUR_SERVER_KEY.length, "rwx");
-    console.log(
-      `Server key: ${arrayBuffer2Hex(
-        serverKeyAddr.readByteArray(OUR_SERVER_KEY.length)
-      )}`
+  if (key_locations.length === 0) {
+    console.warn(
+      "Failed to find server key in __const section, falling back to slower module scan"
     );
-    serverKeyAddr.writeByteArray(OUR_SERVER_KEY);
+    key_locations = Memory.scanSync(module.base, module.size, AP_SERVER_KEY);
+  }
 
-    if (0) {
-      // 8.8.96.364 x86_64
-      const AES_SET_KEY = 0x00000000012d9f4e;
-      const AES_PROCESS = 0x00000000012d9e46;
-      const GRAIN_IV_SETUP = 0x00000000012d840a;
-      const GRAIN_ENCRYPT = 0x00000000012d84f1;
+  replaceServerKey(key_locations);
+}
 
-      Interceptor.attach(JNI.base.add(AES_SET_KEY), {
+function stopAllPlatformChecks() {
+  clearInterval(linux_check);
+  clearInterval(ios_check);
+  clearInterval(android_check);
+}
+
+const linux_check = setInterval(() => {
+  const mod = Process.findModuleByName("spotify");
+  if (
+    mod !== null &&
+    Process.platform === "linux" &&
+    mod.base.equals(0x200000)
+  ) {
+    stopAllPlatformChecks();
+    console.log(`\rFound linux desktop binary loaded at ${mod.base}`);
+    replaceServerKeyLinux(mod);
+    console.log(`[LINUX] Startup took ${Date.now() - SCRIPT_START}ms`);
+  }
+}, PLATFORM_CHECK_INTERVAL);
+
+const android_check = setInterval(() => {
+  const mod = Process.findModuleByName("liborbit-jni-spotify.so");
+  if (mod !== null && Process.platform === "linux") {
+    stopAllPlatformChecks();
+    console.log(`\rFound Android binary loaded at ${mod.base}`);
+    replaceServerKeyLinux(mod);
+    console.log(`[ANDROID] Startup took ${Date.now() - SCRIPT_START}ms`);
+  }
+}, PLATFORM_CHECK_INTERVAL);
+
+const ios_check = setInterval(() => {
+  const mod = Process.findModuleByName("Spotify");
+  if (mod !== null && Process.platform === "darwin") {
+    stopAllPlatformChecks();
+    console.log(`\rFound iOS binary loaded at ${mod.base}`);
+    replaceDarwinServerKey(mod);
+    console.log(`[iOS] Startup took ${Date.now() - SCRIPT_START}ms`);
+  }
+}, PLATFORM_CHECK_INTERVAL);
+
+const getaddrinfoCheck = setInterval(() => {
+  const getaddrinfo = Module.findExportByName(null, "getaddrinfo");
+  if (getaddrinfo !== null) {
+    clearInterval(getaddrinfoCheck);
+    Interceptor.attach(getaddrinfo, {
+      onEnter: function (args) {
+        const node = args[0].readCString() || "";
+        if (node.startsWith("apresolve")) {
+          args[0].writeUtf8String(APRESOLVE_OVERRIDE);
+          console.log(
+            `getaddrinfo(${node}) -> getaddrinfo(${APRESOLVE_OVERRIDE})`
+          );
+        } else if (
+          node.startsWith("ap.spotify.com") ||
+          node.startsWith("mobile-ap.spotify.com") ||
+          /ap-[a-z0-9]+\.spotify\.com/.test(node)
+        ) {
+          args[0].writeUtf8String(TARGET_IP);
+          console.log(`getaddrinfo(${node}) -> getaddrinfo(${TARGET_IP})`);
+        } else {
+          // console.log(`getaddrinfo(node=${node})`);
+        }
+      },
+    });
+    if (!AP_PORTS.includes(TARGET_PORT)) {
+      Interceptor.attach(Module.getExportByName(null, "connect"), {
         onEnter: function (args) {
-          const keyPtr = args[1];
-          const keyLen = args[2].toUInt32();
-          const key = arrayBuffer2Hex(keyPtr.readByteArray(keyLen));
-          console.log(
-            `sp::Rijndael::setKey(this=${args[0]}, key=${keyPtr} (${key}), keyLen=${keyLen})`
-          );
-        },
-      });
-      Interceptor.attach(JNI.base.add(AES_PROCESS), {
-        onEnter: function (args) {
-          const thisPtr = args[0];
-          const mode = thisPtr.add(20).readU8() ? "Encrypt" : "Decrypt";
-          const outPtr = args[1];
-          const inPtr = args[2];
-          const len = args[3].toUInt32();
-          console.log(
-            `ENTER sp::Rijndael::process(this=${thisPtr}, out=${outPtr}, in=${inPtr} (${arrayBuffer2Hex(
-              inPtr.readByteArray(len)
-            )}), len=${len}) Mode: ${mode}`
-          );
-          this.outPtr = outPtr;
-          this.inPtr = inPtr;
-          this.len = len;
-        },
-        onLeave: function (_) {
-          const outPtr: NativePointer = this.outPtr;
-          const len: number = this.len;
-          console.log(
-            `LEAVE sp::Rijndael::process() - out=${arrayBuffer2Hex(
-              outPtr.readByteArray(len)
-            )}`
-          );
-        },
-      });
-      Interceptor.attach(JNI.base.add(GRAIN_IV_SETUP), {
-        onEnter: function (args) {
-          const grainCtx = args[0];
-          const iv = args[1];
-          console.log(
-            `grain_iv_setup(${grainCtx}, ${arrayBuffer2Hex(
-              iv.readByteArray(16)
-            )}) Key: ${arrayBuffer2Hex(
-              grainCtx.add(256).readPointer().readByteArray(16)
-            )}`
-          );
-        },
-      });
-      Interceptor.attach(JNI.base.add(GRAIN_ENCRYPT), {
-        onEnter: function (args) {
-          const grainCtx = args[0];
-          const plainPtr = args[1];
-          const cipherPtr = args[2];
-          const len = args[3].toUInt32();
-          console.log(
-            `ENTER grain_encrypt_bytes(ctx=${grainCtx}, plain=${plainPtr} (${arrayBuffer2Hex(
-              plainPtr.readByteArray(len)
-            )}), cipherPtr=${cipherPtr}, len=${len})`
-          );
-          this.cipherPtr = cipherPtr;
-          this.len = len;
-        },
-        onLeave: function (_) {
-          const cipherPtr: NativePointer = this.cipherPtr;
-          const len: number = this.len;
-          console.log(
-            `LEAVE grain_encrypt_bytes() - ciphertext=${arrayBuffer2Hex(
-              cipherPtr.readByteArray(len)
-            )}`
-          );
+          const addr = args[1];
+          const sa_family = addr.add(0).readU16();
+          switch (sa_family) {
+            /* AF_INET */
+            case 0x02: {
+              const sin_port =
+                (addr.add(2).readU8() << 8) | addr.add(3).readU8();
+              const ip = [
+                addr.add(4 + 0).readU8(),
+                addr.add(4 + 1).readU8(),
+                addr.add(4 + 2).readU8(),
+                addr.add(4 + 3).readU8(),
+              ].join(".");
+              if (ip === TARGET_IP) {
+                if (sin_port != TARGET_PORT) {
+                  addr.add(2).writeU8((TARGET_PORT >> 8) & 0xff);
+                  addr.add(3).writeU8((TARGET_PORT >> 0) & 0xff);
+                  console.log(
+                    `connect(${ip}:${sin_port}) -> connect(${ip}:${TARGET_PORT})`
+                  );
+                } else {
+                  console.log(`connect(${ip}:${sin_port})`);
+                }
+              }
+            }
+          }
         },
       });
     }
   }
-}, 100);
+}, PLATFORM_CHECK_INTERVAL);
