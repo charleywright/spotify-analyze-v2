@@ -27,6 +27,7 @@ const OUR_SERVER_KEY = [
 
 /* DON'T MODIFY BEYOND THIS POINT */
 
+import { DosHeader, PEHeader, OptionalHeader, SectionHeader } from "./pe.js";
 import { ElfEndianReader, ElfHeader, ElfSegment, ElfSection } from "./elf.js";
 import {
   MachOHeader,
@@ -83,6 +84,75 @@ function replaceServerKey(locations: MemoryScanMatch[]) {
       })}`
     );
   }
+}
+
+function replaceServerKeyWin32(module: Module) {
+  const file = new File(module.path, "rb");
+
+  const header_buffer = file.readBytes(DosHeader.SIZE);
+  const header = new DosHeader(header_buffer.unwrap());
+  console.log(header);
+  if (!header.isValid()) {
+    console.error(
+      `Read invalid DOS header from ${module.path}:\n${hexdump(header_buffer)}`
+    );
+    return;
+  }
+
+  file.seek(header.pe_header_offset);
+  const pe_header_buffer = file.readBytes(PEHeader.SIZE);
+  const pe_header = new PEHeader(pe_header_buffer.unwrap());
+  console.log(pe_header);
+  if (!pe_header.isValid()) {
+    console.error(
+      `Read invalid PE header from ${module.path}:\n${hexdump(
+        pe_header_buffer
+      )}`
+    );
+    return;
+  }
+
+  const optional_header_buffer = file.readBytes(pe_header.optional_header_size);
+  const optional_header = new OptionalHeader(optional_header_buffer.unwrap());
+  console.log(optional_header);
+  if (!optional_header.isValid()) {
+    console.error(
+      `Read invalid optional header from ${module.path}:\n${hexdump(
+        optional_header_buffer
+      )}`
+    );
+    return;
+  }
+
+  let key_locations: MemoryScanMatch[] = [];
+  for (let i = 0; i < pe_header.section_count; i++) {
+    const section_header_buffer = file.readBytes(SectionHeader.SIZE);
+    const section_header = new SectionHeader(section_header_buffer.unwrap());
+    console.log(section_header);
+
+    if (section_header.name === ".rdata") {
+      // PE uses "RVA" values which don't include the image base, no need to calculate relocations
+      const section_address = module.base.add(section_header.virtual_addr);
+      console.log(
+        `Found .rdata at {${section_address} ${
+          module.name
+        }+0x${section_header.virtual_addr.toString(16)}}`
+      );
+      key_locations = Memory.scanSync(
+        section_address,
+        section_header.virtual_size,
+        AP_SERVER_KEY
+      );
+    }
+  }
+
+  if (key_locations.length === 0) {
+    console.warn(
+      "Failed to find server key in .rdata section, falling back to slower module scan"
+    );
+    key_locations = Memory.scanSync(module.base, module.size, AP_SERVER_KEY);
+  }
+  replaceServerKey(key_locations);
 }
 
 function replaceServerKeyLinux(module: Module) {
@@ -275,10 +345,23 @@ function replaceDarwinServerKey(module: Module) {
 }
 
 function stopAllPlatformChecks() {
+  clearInterval(windows_check);
   clearInterval(linux_check);
   clearInterval(ios_check);
   clearInterval(android_check);
 }
+
+const windows_check = setInterval(() => {
+  const mod = Process.findModuleByName("Spotify.exe");
+  if (mod !== null && Process.platform === "windows") {
+    stopAllPlatformChecks();
+    console.log(
+      `\rFound windows desktop binary loaded at ${mod.base} from ${mod.path}`
+    );
+    replaceServerKeyWin32(mod);
+    console.log(`[WINDOWS] Startup took ${Date.now() - SCRIPT_START}ms`);
+  }
+}, PLATFORM_CHECK_INTERVAL);
 
 const linux_check = setInterval(() => {
   const mod = Process.findModuleByName("spotify");
