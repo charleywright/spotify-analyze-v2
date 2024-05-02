@@ -15,7 +15,6 @@ use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
 use mio::{event::Event, net::TcpStream, Interest, Registry, Token};
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
-use pineapple_proto::{authentication_old::ClientResponseEncrypted, keyexchange_old as keyexchange};
 use protobuf::Message;
 use rand::{Rng, RngCore};
 use rsa::{
@@ -30,6 +29,7 @@ use super::{
     nonblocking::{NonblockingReader, NonblockingWriter},
     pcap::{Interface, InterfaceDirection, PcapWriter},
     pow,
+    proto::{authentication_old::ClientResponseEncrypted, keyexchange_old as keyexchange},
     shannon::{DecryptResult, ShannonCipher},
     token_manager::TokenManager,
 };
@@ -378,7 +378,8 @@ impl ProxySession {
                     self.downstream_addr = self.downstream.peer_addr()?;
                     let mut pcap_writer = self.pcap_writer.borrow_mut();
                     self.downstream_iface = Some(
-                        pcap_writer.create_interface(InterfaceDirection::Downstream, self.downstream.peer_addr().unwrap()),
+                        pcap_writer
+                            .create_interface(InterfaceDirection::Downstream, self.downstream.peer_addr().unwrap()),
                     );
 
                     let mut magic_bytes = [0; SPIRC_MAGIC.len()];
@@ -475,8 +476,9 @@ impl ProxySession {
 
                 if let Ok(_upstream_addr) = self.upstream.peer_addr() {
                     let mut pcap_writer = self.pcap_writer.borrow_mut();
-                    self.upstream_iface =
-                        Some(pcap_writer.create_interface(InterfaceDirection::Upstream, self.upstream.peer_addr().unwrap()));
+                    self.upstream_iface = Some(
+                        pcap_writer.create_interface(InterfaceDirection::Upstream, self.upstream.peer_addr().unwrap()),
+                    );
                     #[cfg(debug_assertions)]
                     println!("[{}] Connected to upstream {_upstream_addr}", self.downstream_addr);
                     self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
