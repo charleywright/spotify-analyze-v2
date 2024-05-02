@@ -1,7 +1,9 @@
 #![feature(if_let_guard)]
 
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 
+mod frida;
+mod launch;
 mod proto;
 mod proxy;
 
@@ -33,6 +35,58 @@ fn main() -> anyhow::Result<()> {
                     .help("Write a PCAPNG file containing all the captured packets to the specified file path"),
             ),
         )
+        .subcommand({
+            let mut cmd = Command::new("launch")
+                .about("Start an instance of the app on the desired platform and redirect traffic to the proxy")
+                .subcommand_required(true)
+                .arg(
+                    Arg::new("exec")
+                        .long("exec")
+                        .required(false)
+                        .help("The identifier to pass to Frida for spawning")
+                        .long_help(
+                            "The file path or identifier to pass to Frida for spawning. \n\
+                        By default pineapple will handle the default install routes for you:\n\
+                        - On Windows it will look for %APPDATA%\\Spotify\\Spotify.exe\n\
+                        - On Linux it will look for /opt/spotify/spotify\n\
+                        - On Android it will use the package com.spotify.music\n\
+                        - On iOS it will use the identifier com.spotify.client",
+                        ),
+                )
+                .arg(
+                    Arg::new("usb")
+                        .short('U')
+                        .long("usb")
+                        .required(false)
+                        .action(ArgAction::SetTrue)
+                        .help("Spawn the app on the first USB connected device running Frida"),
+                )
+                .arg(Arg::new("device").short('D').long("device").required(false).conflicts_with("usb").help(
+                    "Spawn the app on the device with the given ID. Use `frida-ls-devices` to find which ID to use",
+                ));
+            #[cfg(windows)]
+            (cmd = cmd.subcommand(
+                Command::new("windows")
+                    .about("If the current host is windows, spawn Spotify and redirect traffic")
+                    .disable_help_flag(true),
+            ));
+            #[cfg(unix)]
+            (cmd = cmd.subcommand(
+                Command::new("linux")
+                    .long_about("If the current host is linux, spawn Spotify and redirect traffic")
+                    .disable_help_flag(true),
+            ));
+            cmd.subcommand(
+                Command::new("android")
+                    .about("Spawn the app on a remote android device and redirect traffic")
+                    .disable_help_flag(true),
+            )
+            .subcommand(
+                Command::new("ios")
+                    .about("Spawn the app on a remote iOS device and redirect traffic")
+                    .disable_help_flag(true),
+            )
+        })
         .subcommand(
             Command::new("wireshark")
                 .about(
@@ -52,6 +106,7 @@ fn main() -> anyhow::Result<()> {
 
     match matches.subcommand() {
         Some(("listen", matches)) => proxy::run_proxy(matches),
+        Some(("launch", matches)) => launch::launch_app(matches),
         _ => unreachable!(),
     }
 }
