@@ -1,8 +1,7 @@
-// const TARGET_IP = `192.168.12.1`;
-const TARGET_IP = "127.0.0.1";
-const TARGET_PORT = 4070;
-
-const OUR_SERVER_KEY = [
+// The CLI injects a script before this which sets the configuration
+const TARGET_IP = (globalThis as any).TARGET_IP || "127.0.0.1";
+const TARGET_PORT = (globalThis as any).TARGET_PORT || 4070;
+const OUR_SERVER_KEY = (globalThis as any).OUR_SERVER_KEY || [
   0x94, 0x8f, 0x67, 0xa9, 0x51, 0xd7, 0x5f, 0x38, 0xa4, 0x36, 0x19, 0x11, 0x28,
   0x32, 0xad, 0x49, 0x33, 0xdd, 0x00, 0xf5, 0xdd, 0x24, 0xe6, 0xb9, 0x10, 0xed,
   0xd3, 0x8c, 0xcd, 0xd0, 0x0a, 0x3d, 0x77, 0x30, 0x8f, 0x91, 0x7c, 0x96, 0x43,
@@ -25,8 +24,13 @@ const OUR_SERVER_KEY = [
   0x9f, 0xe9, 0x12, 0x05, 0x3a, 0x0c, 0x0c, 0xa6, 0x93,
 ];
 
-/* DON'T MODIFY BEYOND THIS POINT */
-
+// Actual logic begins here. The basic idea of this script is as follows:
+// 1. Trigger a platform-specific entrypoint
+// 2. Locate and parse the correct binary for that platform
+// 3. Extract the file-to-memory mapping for that binary
+// 4. Find the section that contains the server key then use the file-to-memory mapping to find it in memory
+// 5. Scan that section for the server key, if not found fall back to scanning the whole binary
+// This gives us a potential speedup of 100x over scanning the whole binary
 import { DosHeader, PEHeader, OptionalHeader, SectionHeader } from "./pe.js";
 import { ElfEndianReader, ElfHeader, ElfSegment, ElfSection } from "./elf.js";
 import {
