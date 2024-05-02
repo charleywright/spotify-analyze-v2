@@ -1,2 +1,4 @@
 target/
 *.pcapng
+node_modules/
+_redirect.js

@@ -50,8 +50,9 @@ use std::io::{Error, ErrorKind};
 use byteorder::{BigEndian, ByteOrder};
 use hmac::{Hmac, Mac};
 use lazy_static::lazy_static;
-use pineapple_proto::keyexchange_old::PoWHashCashChallenge;
 use sha1::{Digest, Sha1};
+
+use super::proto::keyexchange_old::PoWHashCashChallenge;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -97,10 +98,9 @@ pub fn solve_hashcash(accumulator: &[u8], challenge: &PoWHashCashChallenge) -> R
 #[cfg(test)]
 mod tests {
     use lazy_static::lazy_static;
-    use pineapple_proto::keyexchange_old::APResponseMessage;
     use protobuf::Message;
 
-    use super::solve_hashcash;
+    use super::{super::proto::keyexchange_old::APResponseMessage, solve_hashcash};
 
     struct TestData {
         client_hello: Vec<u8>,

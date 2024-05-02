@@ -27,6 +27,8 @@ use pcap::PcapWriter;
 use proxy_session::{ProxySession, ProxyTimeoutAdvice};
 use token_manager::{TokenManager, SERVER_TOKEN};
 
+use super::proto;
+
 pub fn run_proxy(args: &ArgMatches) -> anyhow::Result<()> {
     let proxy_config = ProxyConfiguration::from_args(args)?;
     let is_running = Arc::new(RwLock::new(true));

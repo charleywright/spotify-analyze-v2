@@ -4,15 +4,9 @@ description = "A tool to perform a Man-In-The-Middle attack on Spotify to analyz
 version = "1.0.0"
 edition = "2021"
 
-[workspace]
-
 [[bin]]
 name = "pineapple"
 path = "src/main.rs"
-
-[dependencies.pineapple-proto]
-path = "proto"
-version = "1.0.0"
 
 [dependencies]
 aes = "0.8.3"
@@ -29,7 +23,6 @@ lazy_static = "1.4.0"
 mio = { version = "0.8.10", features = ["os-poll", "net"] }
 num-bigint-dig = "0.8.4"
 pcap-file = "2.0.0"
-protobuf = "3.3.0"
 rand = "0.8.5"
 rsa = { version = "0.9.4", features = ["sha1", "pem"] }
 sha1 = "0.10.6"
@@ -38,4 +31,11 @@ thiserror = "1.0.58"
 log = "0.4.20"
 env_logger = "0.11.3"
 nix = { version = "0.28.0", features = ["fs"] }
+protobuf = "3"
+
+[target.'cfg(unix)'.dependencies]
 inotify = { version = "0.10.2", default-features = false }
+
+[build-dependencies]
+protobuf-codegen = "3"
+npm_rs = "1.0.0"

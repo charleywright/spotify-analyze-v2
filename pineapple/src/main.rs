@@ -2,6 +2,7 @@
 
 use clap::{Arg, Command};
 
+mod proto;
 mod proxy;
 
 fn main() -> anyhow::Result<()> {

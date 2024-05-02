@@ -1,10 +1,10 @@
 {
   "type": "module",
   "name": "spotify-analyze-v2",
-  "main": "src/index.ts",
+  "main": "src/frida/index.ts",
   "scripts": {
-    "build": "frida-compile index.ts -o compiled.js -c",
-    "watch": "frida-compile index.ts -o compiled.js -w -c"
+    "build": "frida-compile src/frida/index.ts -o _redirect.js -c",
+    "watch": "frida-compile src/frida/index.ts -o _redirect.js -w -c"
   },
   "devDependencies": {
     "@types/frida-gum": "^18.5.1",
