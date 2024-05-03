@@ -39,6 +39,11 @@ enum ShannonTestResult {
   DECRYPT,
 }
 function testFunc(addr: NativePointer): ShannonTestResult {
+  info(
+    `Testing function at ${DebugSymbol.fromAddress(
+      addr
+    )} with prologue:\n${hexdump(addr, { length: 128 })}`
+  );
   const func = new NativeFunction(addr, "void", ["pointer", "pointer", "int"]);
   const buff = Memory.alloc(4);
   const ctx = Memory.alloc(CTX_SIZE);

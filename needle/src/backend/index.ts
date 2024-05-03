@@ -7,6 +7,7 @@ import { linuxInit } from "./linux";
 import { windowsInit } from "./windows";
 import { androidInit } from "./android";
 import { iosInit } from "./ios";
+import { info } from "console";
 
 export function preInit(launchArgs: any) {
   LaunchArguments.init(launchArgs);
@@ -23,6 +24,9 @@ export function preInit(launchArgs: any) {
 }
 
 export function postInit() {
+  info(
+    `Relocated arguments: serverKey=${LaunchArguments.serverKey} shnAddr1=${LaunchArguments.shnAddr1} shnAddr2=${LaunchArguments.shnAddr2}`
+  );
   hookShannonFunctions();
 }
 
