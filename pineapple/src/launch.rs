@@ -28,16 +28,26 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
     let device = args.get_one::<String>("device").map(String::to_owned);
 
     match args.subcommand() {
-        #[cfg(windows)]
-        Some(("windows", _matches)) => {
-            use known_folders::{get_known_folder_path, KnownFolder};
+        Some(("windows", _matches)) | Some(("linux", _matches)) => {
             let exec = match exec {
                 Some(exec) => PathBuf::from(exec),
                 None => {
-                    let appdata = get_known_folder_path(KnownFolder::RoamingAppData)
-                        .ok_or(anyhow!("Failed to get AppData folder"))?;
-                    debug!("Resolved appdata to {appdata:?}");
-                    appdata.join("Spotify").join("Spotify.exe")
+                    #[cfg(windows)]
+                    {
+                        use known_folders::{get_known_folder_path, KnownFolder};
+                        let appdata = get_known_folder_path(KnownFolder::RoamingAppData)
+                            .ok_or(anyhow!("Failed to get AppData folder"))?;
+                        debug!("Resolved appdata to {appdata:?}");
+                        appdata.join("Spotify").join("Spotify.exe")
+                    }
+                    #[cfg(unix)]
+                    {
+                        PathBuf::from("/opt/spotify/spotify")
+                    }
+                    #[cfg(all(not(windows), not(unix)))]
+                    {
+                        PathBuf::new()
+                    }
                 },
             };
             if !exec.exists() {
@@ -74,7 +84,6 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
             Ok(())
         },
         #[cfg(unix)]
-        Some(("linux", _matches)) => Ok(()),
         Some(("android", _matches)) => Ok(()),
         Some(("ios", _matches)) => Ok(()),
         _ => unreachable!(),
