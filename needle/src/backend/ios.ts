@@ -1,4 +1,4 @@
-import { status, info } from "../log";
+import { status } from "../log";
 import { postInit, preInit } from ".";
 import LaunchArguments from "../launchArguments";
 
@@ -30,7 +30,13 @@ function dyldGetImageHeader(index: number): NativePointer {
 
 export function iosInit(launchArgs: any) {
   preInit(launchArgs);
-  const spotifyBase = dyldGetImageHeader(0);
-  LaunchArguments.relocate(spotifyBase);
-  postInit();
+  const checkInt = setInterval(() => {
+    const mod = Process.findModuleByName("Spotify");
+    if (mod !== null) {
+      clearInterval(checkInt);
+      status(`Spotify binary loaded at ${mod.base}`);
+      LaunchArguments.relocate(mod.base);
+      postInit();
+    }
+  }, 100);
 }
