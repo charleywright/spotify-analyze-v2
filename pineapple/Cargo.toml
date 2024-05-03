@@ -9,6 +9,7 @@ name = "pineapple"
 path = "src/main.rs"
 
 [features]
+default = ["download-frida"]
 download-frida = ["frida/auto-download"]
 
 [dependencies]
