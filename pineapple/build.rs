@@ -1,9 +1,12 @@
 use std::{
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
 };
 
 use npm_rs::NpmEnv;
+use walkdir::WalkDir;
 
 fn compile_protobuf_files(current_dir: &Path) {
     let proto_base_dir = current_dir.join("src").join("proto");
@@ -21,6 +24,10 @@ fn compile_protobuf_files(current_dir: &Path) {
         .include(&proto_base_dir)
         .run()
         .expect("Failed to compile protobuf files");
+
+    for file in files.iter() {
+        println!("cargo::rerun-if-changed={}", file.to_string_lossy());
+    }
 }
 
 const SCRIPT_NAME: &str = "_redirect.js";
@@ -36,6 +43,13 @@ fn compile_frida_script(current_dir: &Path, out_dir: &Path) {
     let script_path = current_dir.join(SCRIPT_NAME);
     let target_script_path = out_dir.join(SCRIPT_NAME);
     fs::rename(script_path, target_script_path).expect("Failed to move Frida script to build directory");
+
+    let script_src_dir = current_dir.join("src").join("frida");
+    for entry in WalkDir::new(script_src_dir).into_iter().filter_map(|e| e.ok()) {
+        if entry.path().is_file() && entry.path().extension() == Some(OsStr::new("ts")) {
+            println!("cargo::rerun-if-changed={}", entry.path().to_string_lossy());
+        }
+    }
 }
 
 fn main() {
