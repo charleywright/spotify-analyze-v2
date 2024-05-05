@@ -1,15 +1,21 @@
 #![feature(if_let_guard)]
 
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Args, Command, FromArgMatches, Parser};
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 
 mod frida;
 mod launch;
 mod proto;
 mod proxy;
 
+#[derive(Parser)]
+struct VerbosityArgs {
+    #[command(flatten)]
+    verbosity: Verbosity<InfoLevel>,
+}
+
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
-    let matches = Command::new("pineapple")
+    let mut cli = Command::new("pineapple")
         .disable_help_subcommand(true)
         .subcommand_required(true)
         .arg(
@@ -101,8 +107,12 @@ fn main() -> anyhow::Result<()> {
                         .required(false)
                         .help("The directory that contains the Wireshark executable"),
                 ),
-        )
-        .get_matches();
+        );
+    cli = VerbosityArgs::augment_args(cli);
+    let matches = cli.get_matches();
+
+    let verbosity = VerbosityArgs::from_arg_matches(&matches)?;
+    env_logger::Builder::new().filter_level(verbosity.verbosity.log_level_filter()).init();
 
     match matches.subcommand() {
         Some(("listen", matches)) => proxy::run_proxy(matches),

@@ -1,3 +1,4 @@
+use log::error;
 use shannon::Shannon;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -70,7 +71,7 @@ impl ShannonCipher {
                 self.decrypt_nonce += 1;
                 self.decrypt_state = DecryptState::Header;
                 if expected_hmac != hmac {
-                    println!("Failed hmac test: {} != {}", hex::encode(&hmac), hex::encode(&expected_hmac));
+                    error!("Failed hmac test: {} != {}", hex::encode(&hmac), hex::encode(&expected_hmac));
                 }
                 DecryptResult::Body(data)
             },

@@ -115,5 +115,6 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
     frida_script.load()?;
     debug!("Loaded redirect script");
 
+    info!("Spawned and injected into pid {pid}");
     Ok(())
 }

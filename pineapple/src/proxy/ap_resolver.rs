@@ -1,5 +1,6 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 
+use log::error;
 const HOST: &str = "ap.spotify.com:4070";
 
 pub struct ApResolver {
@@ -19,7 +20,7 @@ impl ApResolver {
         match HOST.to_socket_addrs() {
             Ok(new_addresses) => self.addresses = new_addresses,
             Err(e) => {
-                println!("Failed to resolve {HOST}: {e}");
+                error!("Failed to resolve {HOST}: {e}");
             },
         }
         self.current_addr = self.addresses.next();

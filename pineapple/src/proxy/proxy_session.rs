@@ -12,6 +12,7 @@ use aes::cipher::{block_padding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use grain128::Grain128;
 use hmac::{Hmac, Mac};
 use keyexchange::{APResponseMessage, ClientHello, ClientResponsePlaintext};
+use log::trace;
 use mio::{event::Event, net::TcpStream, Interest, Registry, Token};
 #[cfg(debug_assertions)]
 use num_bigint_dig::BigUint;
@@ -412,8 +413,7 @@ impl ProxySession {
                     }
                     let client_hello_len = u32::from_be_bytes(client_hello_header) as usize;
                     let client_hello_len = client_hello_len - SPIRC_MAGIC.len();
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] ClientHelloSize: {} Protobuf: {}",
                         self.downstream_addr,
                         client_hello_len,
@@ -425,9 +425,8 @@ impl ProxySession {
                 // We have read the magic and the header and know the size, but haven't read the whole ClientHello
 
                 match self.downstream_reader.read(&mut self.downstream) {
-                    Ok(_bytes_read) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Read {_bytes_read} bytes of ClientHello", self.downstream_addr);
+                    Ok(bytes_read) => {
+                        trace!("[{}] Read {bytes_read} bytes of ClientHello", self.downstream_addr);
                     },
                     Err(error) => {
                         // Write what we have, could be useful for debugging
@@ -451,8 +450,7 @@ impl ProxySession {
                     PacketDirection::Recv,
                     Cow::Borrowed(&client_hello_buffer),
                 );
-                #[cfg(debug_assertions)]
-                println!("[{}] ClientHello: {}", self.downstream_addr, hex::encode(&client_hello_buffer));
+                trace!("[{}] ClientHello: {}", self.downstream_addr, hex::encode(&client_hello_buffer));
 
                 match ClientHello::parse_from_bytes(&client_hello_buffer[4..]) {
                     Ok(client_hello) => {
@@ -460,8 +458,7 @@ impl ProxySession {
                         state_data.downstream_accumulator.append(&mut client_hello_buffer);
                         drop(state_data);
                         self.state = ProxySessionState::ConnectingToUpstream(state.clone());
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                        trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         Ok(())
                     },
                     Err(parse_error) => {
@@ -474,16 +471,14 @@ impl ProxySession {
                     return Ok(());
                 }
 
-                if let Ok(_upstream_addr) = self.upstream.peer_addr() {
+                if let Ok(upstream_addr) = self.upstream.peer_addr() {
                     let mut pcap_writer = self.pcap_writer.borrow_mut();
                     self.upstream_iface = Some(
                         pcap_writer.create_interface(InterfaceDirection::Upstream, self.upstream.peer_addr().unwrap()),
                     );
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Connected to upstream {_upstream_addr}", self.downstream_addr);
+                    trace!("[{}] Connected to upstream {upstream_addr}", self.downstream_addr);
                     self.state = ProxySessionState::SendUpstreamClientHello(state.clone());
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                    trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 }
 
                 Ok(())
@@ -506,8 +501,7 @@ impl ProxySession {
                         Cow::Borrowed(&SPIRC_MAGIC),
                     );
                     state_data.upstream_accumulator.extend_from_slice(&SPIRC_MAGIC);
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Sent SPIRC magic to upstream", self.downstream_addr);
+                    trace!("[{}] Sent SPIRC magic to upstream", self.downstream_addr);
 
                     let mut client_hello = ClientHello::new();
                     client_hello.build_info.clone_from(&state_data.downstream_client_hello.build_info);
@@ -555,8 +549,7 @@ impl ProxySession {
                     client_hello_buffer.reserve_exact(client_hello_len - SPIRC_MAGIC.len());
                     client_hello_buffer.extend_from_slice(&client_hello_len_bytes);
                     client_hello_buffer.extend_from_slice(&client_hello.write_to_bytes()?);
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] Sending {} bytes for ClientHello {}",
                         self.downstream_addr,
                         client_hello_len - SPIRC_MAGIC.len(),
@@ -568,9 +561,8 @@ impl ProxySession {
                 // ClientHello is serialized but we haven't finished sending it
 
                 match self.upstream_writer.write(&mut self.upstream) {
-                    Ok(_bytes_written) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Written {_bytes_written} bytes of ClientHello", self.downstream_addr);
+                    Ok(bytes_written) => {
+                        trace!("[{}] Written {bytes_written} bytes of ClientHello", self.downstream_addr);
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
@@ -595,8 +587,7 @@ impl ProxySession {
                 state_data.upstream_accumulator.append(&mut client_hello_buffer);
                 drop(state_data);
                 self.state = ProxySessionState::ReadUpstreamAPChallenge(state.clone());
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
             ProxySessionState::ReadUpstreamAPChallenge(ref state) => {
@@ -616,8 +607,7 @@ impl ProxySession {
                         return Ok(());
                     }
                     let ap_response_len = u32::from_be_bytes(ap_response_header) as usize;
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] APResponseSize: {} Protobuf: {}",
                         self.downstream_addr,
                         ap_response_len,
@@ -629,9 +619,8 @@ impl ProxySession {
                 // We know the size but haven't finished reading yet
 
                 match self.upstream_reader.read(&mut self.upstream) {
-                    Ok(_bytes_read) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Read {_bytes_read} bytes of APResponse", self.downstream_addr);
+                    Ok(bytes_read) => {
+                        trace!("[{}] Read {bytes_read} bytes of APResponse", self.downstream_addr);
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
@@ -654,8 +643,7 @@ impl ProxySession {
                     PacketDirection::Recv,
                     Cow::Borrowed(&ap_response_buffer),
                 );
-                #[cfg(debug_assertions)]
-                println!("[{}] APResponse: {}", self.downstream_addr, hex::encode(&ap_response_buffer));
+                trace!("[{}] APResponse: {}", self.downstream_addr, hex::encode(&ap_response_buffer));
 
                 match APResponseMessage::parse_from_bytes(&ap_response_buffer[4..]) {
                     Ok(ap_response) => {
@@ -670,8 +658,7 @@ impl ProxySession {
                         state_data.upstream_accumulator.append(&mut ap_response_buffer);
                         drop(state_data);
                         self.state = ProxySessionState::SendDownstreamAPChallenge(state.clone());
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                        trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                         Ok(())
                     },
                     Err(parse_error) => Err(Error::new(
@@ -796,8 +783,7 @@ impl ProxySession {
                     ap_response_buffer.extend_from_slice(&ap_response_len_bytes);
                     ap_response_buffer.extend_from_slice(&ap_response.write_to_bytes()?);
                     state_data.downstream_ap_response = ap_response;
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] Sending {} bytes for APResponseMessage {}",
                         self.downstream_addr,
                         ap_response_len,
@@ -809,9 +795,8 @@ impl ProxySession {
                 // APResponseMessage is serialized but we haven't finished sending it
 
                 match self.downstream_writer.write(&mut self.downstream) {
-                    Ok(_bytes_written) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Written {_bytes_written} bytes of APResponseMessage", self.downstream_addr);
+                    Ok(bytes_written) => {
+                        trace!("[{}] Written {bytes_written} bytes of APResponseMessage", self.downstream_addr);
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
@@ -836,8 +821,7 @@ impl ProxySession {
                 state_data.downstream_accumulator.append(&mut ap_response_buffer);
                 drop(state_data);
                 self.state = ProxySessionState::ReadDownstreamClientResponsePlaintext(state.clone());
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
             ProxySessionState::ReadDownstreamClientResponsePlaintext(ref state) => {
@@ -857,8 +841,7 @@ impl ProxySession {
                         return Ok(());
                     }
                     let client_response_len = u32::from_be_bytes(client_response_header) as usize;
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] ClientResponsePlaintextSize: {} Protobuf: {}",
                         self.downstream_addr,
                         client_response_len,
@@ -868,9 +851,8 @@ impl ProxySession {
                 }
 
                 match self.downstream_reader.read(&mut self.downstream) {
-                    Ok(_bytes_read) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Read {_bytes_read} bytes of ClientResponsePlaintext", self.downstream_addr);
+                    Ok(bytes_read) => {
+                        trace!("[{}] Read {bytes_read} bytes of ClientResponsePlaintext", self.downstream_addr);
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
@@ -892,12 +874,7 @@ impl ProxySession {
                     PacketDirection::Recv,
                     Cow::Borrowed(&client_response_buffer),
                 );
-                #[cfg(debug_assertions)]
-                println!(
-                    "[{}] ClientResponsePlaintext: {}",
-                    self.downstream_addr,
-                    hex::encode(&client_response_buffer)
-                );
+                trace!("[{}] ClientResponsePlaintext: {}", self.downstream_addr, hex::encode(&client_response_buffer));
 
                 match ClientResponsePlaintext::parse_from_bytes(&client_response_buffer[4..]) {
                     Ok(client_response) => {
@@ -955,8 +932,7 @@ impl ProxySession {
                         ));
                     }
 
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] Computed hmac: {} downstream key: {} proxy key: {}",
                         self.downstream_addr,
                         hex::encode(&computed_hmac),
@@ -976,8 +952,7 @@ impl ProxySession {
                     let computed_suffix = pow::solve_hashcash(&state_data.downstream_accumulator, challenge)?;
                     let downstream_suffix =
                         Vec::from(state_data.downstream_client_response_plaintext.pow_response.hash_cash.hash_suffix());
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] Downstream hash cash solution - suffix: {} prefix: {} length: {} target: {} accumulator: {}",
                         self.downstream_addr,
                         hex::encode(&computed_suffix),
@@ -1000,19 +975,16 @@ impl ProxySession {
 
                 if state_data.downstream_client_response_plaintext.crypto_response.is_some() {
                     if state_data.downstream_client_response_plaintext.crypto_response.shannon.is_some() {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Downstream sent shannon crypto response solution", self.downstream_addr);
+                        trace!("[{}] Downstream sent shannon crypto response solution", self.downstream_addr);
                     }
                     if state_data.downstream_client_response_plaintext.crypto_response.rc4_sha1_hmac.is_some() {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Downstream sent RC4 SHA1 crypto response solution", self.downstream_addr);
+                        trace!("[{}] Downstream sent RC4 SHA1 crypto response solution", self.downstream_addr);
                     }
                 }
 
                 drop(state_data);
                 self.state = ProxySessionState::ReadDownstreamClientResponseEncrypted(state.clone());
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
             ProxySessionState::ReadDownstreamClientResponseEncrypted(ref state) => {
@@ -1048,18 +1020,18 @@ impl ProxySession {
                     }
                     let packet_len = packet_len as usize + 4; // 4 byte MAC after encrypted bytes
 
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] ClientResponseEncrypted - Type: {:#02X} Length: {}",
-                        self.downstream_addr, packet_type, packet_len
+                        self.downstream_addr,
+                        packet_type,
+                        packet_len
                     );
                     self.downstream_reader = NonblockingReader::new(packet_len);
                 }
 
                 match self.downstream_reader.read(&mut self.downstream) {
-                    Ok(_bytes_read) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Read {_bytes_read} bytes of ClientResponseEncrypted", self.downstream_addr);
+                    Ok(bytes_read) => {
+                        trace!("[{}] Read {bytes_read} bytes of ClientResponseEncrypted", self.downstream_addr);
                     },
                     Err(error) => return Err(error),
                 }
@@ -1083,8 +1055,7 @@ impl ProxySession {
                     tmp.extend(packet);
                     tmp
                 };
-                #[cfg(debug_assertions)]
-                println!("[{}] ClientResponseEncrypted: {}", self.downstream_addr, hex::encode(&packet));
+                trace!("[{}] ClientResponseEncrypted: {}", self.downstream_addr, hex::encode(&packet));
                 self.pcap_writer.borrow_mut().write_packet(
                     self.downstream_iface.unwrap(),
                     PacketDirection::Recv,
@@ -1142,12 +1113,7 @@ impl ProxySession {
 
                         // All good
                         self.downstream_grain_key.copy_from_slice(&grain_key);
-                        #[cfg(debug_assertions)]
-                        println!(
-                            "[{}] Verified downstream grain key {}",
-                            self.downstream_addr,
-                            hex::encode(&grain_key)
-                        );
+                        trace!("[{}] Verified downstream grain key {}", self.downstream_addr, hex::encode(&grain_key));
                     }
                     if state_data.downstream_client_response_encrypted.fingerprint_response.hmac_ripemd.is_some() {
                         unimplemented!("HMAC RipeMD is unknown, please open an issue on Github");
@@ -1156,8 +1122,7 @@ impl ProxySession {
 
                 drop(state_data);
                 self.state = ProxySessionState::SendUpstreamClientResponsePlaintext(state.clone());
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
             ProxySessionState::SendUpstreamClientResponsePlaintext(ref state) => {
@@ -1203,8 +1168,7 @@ impl ProxySession {
                             let computed_hmac: [u8; 20] = computed_hmac.finalize().into_bytes().into();
                             let computed_hmac = Vec::<u8>::from(computed_hmac);
 
-                            #[cfg(debug_assertions)]
-                            println!(
+                            trace!(
                                 "[{}] Computed hmac: {} Proxy key: {} Upstream key: {} ",
                                 self.downstream_addr,
                                 hex::encode(&computed_hmac),
@@ -1225,8 +1189,7 @@ impl ProxySession {
                     if let Some(pow_challenge) = state_data.upstream_ap_response.challenge.pow_challenge.as_ref() {
                         if let Some(hash_cash_challenge) = pow_challenge.hash_cash.as_ref() {
                             let suffix = pow::solve_hashcash(&state_data.upstream_accumulator, hash_cash_challenge)?;
-                            #[cfg(debug_assertions)]
-                            println!(
+                            trace!(
                                 "[{}] Upstream hash cash solution - suffix: {} prefix: {} length: {} target: {} accumulator: {}",
                                 self.downstream_addr,
                                 hex::encode(&suffix),
@@ -1261,8 +1224,7 @@ impl ProxySession {
                     client_response_buffer.reserve_exact(client_response_len as usize);
                     client_response_buffer.extend_from_slice(&client_response_len_bytes);
                     client_response_buffer.extend_from_slice(&client_response.write_to_bytes()?);
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] Sending {} bytes for ClientResponsePlaintext {}",
                         self.downstream_addr,
                         client_response_len,
@@ -1272,12 +1234,8 @@ impl ProxySession {
                 }
 
                 match self.upstream_writer.write(&mut self.upstream) {
-                    Ok(_bytes_written) => {
-                        #[cfg(debug_assertions)]
-                        println!(
-                            "[{}] Written {_bytes_written} bytes of ClientResponsePlaintext",
-                            self.downstream_addr,
-                        );
+                    Ok(bytes_written) => {
+                        trace!("[{}] Written {bytes_written} bytes of ClientResponsePlaintext", self.downstream_addr,);
                     },
                     Err(error) => {
                         self.pcap_writer.borrow_mut().write_packet(
@@ -1300,8 +1258,7 @@ impl ProxySession {
                 );
                 drop(state_data);
                 self.state = ProxySessionState::SendUpstreamClientResponseEncrypted(state.clone());
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
 
                 Ok(())
             },
@@ -1342,8 +1299,7 @@ impl ProxySession {
                                 .grain
                                 .mut_or_insert_default()
                                 .set_encrypted_key(encrypted_key);
-                            #[cfg(debug_assertions)]
-                            println!(
+                            trace!(
                                 "[{}] Sent upstream grain key: {}",
                                 self.downstream_addr,
                                 hex::encode(&self.upstream_grain_key)
@@ -1371,8 +1327,7 @@ impl ProxySession {
                         PacketDirection::Send,
                         Cow::Borrowed(&packet),
                     );
-                    #[cfg(debug_assertions)]
-                    println!(
+                    trace!(
                         "[{}] Sending {} bytes for ClientResponseEncrypted {}",
                         self.downstream_addr,
                         packet.len() + 4,
@@ -1383,12 +1338,8 @@ impl ProxySession {
                 }
 
                 match self.upstream_writer.write(&mut self.upstream) {
-                    Ok(_bytes_written) => {
-                        #[cfg(debug_assertions)]
-                        println!(
-                            "[{}] Written {_bytes_written} bytes of ClientResponseEncrypted",
-                            self.downstream_addr,
-                        );
+                    Ok(bytes_written) => {
+                        trace!("[{}] Written {bytes_written} bytes of ClientResponseEncrypted", self.downstream_addr,);
                     },
                     Err(error) => return Err(error),
                 }
@@ -1400,8 +1351,7 @@ impl ProxySession {
                 let _ = self.upstream_writer.take();
                 drop(state_data);
                 self.state = ProxySessionState::Idle;
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
 
                 Ok(())
             },
@@ -1425,8 +1375,7 @@ impl ProxySession {
                     self.downstream_decrypt_packet_len = packet_len;
                     self.downstream_reader = NonblockingReader::new(packet_len as usize + 4);
                     self.state = ProxySessionState::ReadDownstream;
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                    trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                     Ok(())
                 } else if *token == self.upstream_token {
                     if !event.is_readable() {
@@ -1447,8 +1396,7 @@ impl ProxySession {
                     self.upstream_decrypt_packet_len = packet_len;
                     self.upstream_reader = NonblockingReader::new(packet_len as usize + 4);
                     self.state = ProxySessionState::ReadUpstream;
-                    #[cfg(debug_assertions)]
-                    println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                    trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                     Ok(())
                 } else {
                     panic!("Token {token:?} doesn't belong to us {self}");
@@ -1460,9 +1408,8 @@ impl ProxySession {
                 }
 
                 match self.downstream_reader.read(&mut self.downstream) {
-                    Ok(_bytes_read) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Read {_bytes_read} bytes from downstream", self.downstream_addr);
+                    Ok(bytes_read) => {
+                        trace!("[{}] Read {bytes_read} bytes from downstream", self.downstream_addr);
                     },
                     Err(error) => return Err(error),
                 }
@@ -1498,8 +1445,7 @@ impl ProxySession {
                 upstream_cipher.encrypt(&mut encrypted_packet);
                 self.upstream_writer = NonblockingWriter::new(encrypted_packet);
                 self.state = ProxySessionState::SendUpstream;
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
             ProxySessionState::SendUpstream => {
@@ -1508,9 +1454,8 @@ impl ProxySession {
                 }
 
                 match self.upstream_writer.write(&mut self.upstream) {
-                    Ok(_bytes_written) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Wrote {_bytes_written} bytes to upstream", self.downstream_addr);
+                    Ok(bytes_written) => {
+                        trace!("[{}] Wrote {bytes_written} bytes to upstream", self.downstream_addr);
                     },
                     Err(error) => return Err(error),
                 }
@@ -1521,8 +1466,7 @@ impl ProxySession {
 
                 let _ = self.upstream_writer.take();
                 self.state = ProxySessionState::Idle;
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
 
                 Ok(())
             },
@@ -1532,9 +1476,8 @@ impl ProxySession {
                 }
 
                 match self.upstream_reader.read(&mut self.upstream) {
-                    Ok(_bytes_read) => {
-                        #[cfg(debug_assertions)]
-                        println!("[{}] Read {_bytes_read} bytes from upstream", self.downstream_addr);
+                    Ok(bytes_read) => {
+                        trace!("[{}] Read {bytes_read} bytes from upstream", self.downstream_addr);
                     },
                     Err(error) => return Err(error),
                 }
@@ -1571,8 +1514,7 @@ impl ProxySession {
                 self.upstream_decrypt_packet_type = 0;
                 self.downstream_writer = NonblockingWriter::new(encrypted_packet);
                 self.state = ProxySessionState::SendDownstream;
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
                 Ok(())
             },
             ProxySessionState::SendDownstream => {
@@ -1581,8 +1523,8 @@ impl ProxySession {
                 }
 
                 match self.downstream_writer.write(&mut self.downstream) {
-                    Ok(_bytes_written) => {
-                        println!("[{}] Wrote {_bytes_written} bytes to downstream", self.downstream_addr);
+                    Ok(bytes_written) => {
+                        trace!("[{}] Wrote {bytes_written} bytes to downstream", self.downstream_addr);
                     },
                     Err(error) => return Err(error),
                 }
@@ -1593,8 +1535,7 @@ impl ProxySession {
 
                 let _ = self.downstream_writer.take();
                 self.state = ProxySessionState::Idle;
-                #[cfg(debug_assertions)]
-                println!("[{}] Updated state to {}", self.downstream_addr, self.state);
+                trace!("[{}] Updated state to {}", self.downstream_addr, self.state);
 
                 Ok(())
             },
