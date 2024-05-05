@@ -20,31 +20,28 @@ fn get_config_script_src(host: &SocketAddr) -> anyhow::Result<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum LaunchTarget {
-    Host,
-    Remote,
+enum Target {
+    Windows,
+    Linux,
+    #[allow(non_camel_case_types)]
+    iOS,
+    Android,
 }
 
-fn get_device_for_target<'d>(
-    target: LaunchTarget, device_manager: &'d DeviceManager, usb: bool, id: Option<&String>,
-) -> anyhow::Result<Device<'d>> {
-    match target {
-        LaunchTarget::Host => device_manager
-            .get_device_by_type(DeviceType::Local)
-            .map_err(|_| anyhow!("Failed to get local device when spawning on host. This is likely a Frida bug")),
-        LaunchTarget::Remote => {
-            if usb {
-                return Ok(device_manager.get_device_by_type(DeviceType::USB)?);
-            }
-            if let Some(id) = id {
-                return Ok(device_manager.get_device_by_id(id)?);
-            }
-            device_manager
-                .enumerate_all_devices()
-                .into_iter()
-                .next()
-                .ok_or(anyhow!("Failed to find device, is frida-server running?"))
-        },
+fn determine_device_target(device: &Device) -> anyhow::Result<Target> {
+    let info = device.query_system_parameters()?;
+    let Some(os_info) = info.get("os").and_then(|info| info.get_map()) else {
+        return Err(anyhow!("Expected device info to contain OS info"));
+    };
+    let Some(os_id) = os_info.get("id").and_then(|id| id.get_string()) else {
+        return Err(anyhow!("Expected OS info to contain ID"));
+    };
+    match os_id {
+        "windows" => Ok(Target::Windows),
+        "linux" => Ok(Target::Linux),
+        "ios" => Ok(Target::iOS),
+        "android" => Ok(Target::Android),
+        _ => Err(anyhow!("Failed to detect target from OS ID: {os_id}")),
     }
 }
 
@@ -56,10 +53,29 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
     let usb = args.get_flag("usb");
     let device_id = args.get_one::<String>("device").map(String::to_owned);
 
-    let (exec, target) = match args.subcommand() {
-        Some(("windows", _matches)) | Some(("linux", _matches)) => {
-            let (exec, target) = match exec {
-                Some(exec) => (PathBuf::from(exec), LaunchTarget::Host),
+    let frida = unsafe { Frida::obtain() };
+    let device_manager = DeviceManager::obtain(&frida);
+    let device = {
+        if let Some(device_id) = device_id.as_deref() {
+            device_manager.get_device_by_id(device_id).ok()
+        } else if usb {
+            device_manager.get_device_by_type(DeviceType::USB).ok()
+        } else {
+            device_manager.enumerate_all_devices().into_iter().next()
+        }
+    };
+    let Some(mut device) = device else {
+        return Err(anyhow!("Failed to get device. Try run frida-ls-devices"));
+    };
+    debug!("Found device {}, trying to determine platform...", device.get_name());
+    let target = determine_device_target(&device)?;
+    debug!("Determined device platform as {target:?}");
+    info!("Trying to launch on {} ({target:?})", device.get_name());
+
+    let exec = match target {
+        Target::Windows | Target::Linux => {
+            let exec = match exec {
+                Some(exec) => PathBuf::from(exec),
                 None => {
                     #[cfg(windows)]
                     {
@@ -67,11 +83,11 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
                         let appdata = get_known_folder_path(KnownFolder::RoamingAppData)
                             .ok_or(anyhow!("Failed to get AppData folder"))?;
                         debug!("Resolved appdata to {appdata:?}");
-                        (appdata.join("Spotify").join("Spotify.exe"), LaunchTarget::Host)
+                        appdata.join("Spotify").join("Spotify.exe")
                     }
                     #[cfg(unix)]
                     {
-                        (PathBuf::from("/opt/spotify/spotify"), LaunchTarget::Host)
+                        PathBuf::from("/opt/spotify/spotify")
                     }
                     #[cfg(all(not(windows), not(unix)))]
                     {
@@ -82,18 +98,13 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
             if !exec.exists() {
                 panic!("Spotify is not installed. If installed from the Microsoft Store please uninstall then install from https://download.scdn.co/SpotifySetup.exe");
             }
-            (exec.to_string_lossy().to_string(), target)
+            exec.to_string_lossy().to_string()
         },
-        Some(("android", _matches)) => (exec.unwrap_or("com.spotify.music".to_owned()), LaunchTarget::Remote),
-        Some(("ios", _matches)) => (exec.unwrap_or("com.spotify.client".to_owned()), LaunchTarget::Remote),
-        _ => unreachable!(),
+        Target::iOS => exec.unwrap_or("com.spotify.client".to_owned()),
+        Target::Android => exec.unwrap_or("com.spotify.music".to_owned()),
     };
-    info!("Using executable {}", exec);
+    info!("Using executable {exec}");
 
-    let frida = unsafe { Frida::obtain() };
-    let device_manager = DeviceManager::obtain(&frida);
-    let mut device = get_device_for_target(target, &device_manager, usb, device_id.as_ref())?;
-    info!("Trying to launch on {}", device.get_name());
     let spawn_options = SpawnOptions::new();
     let pid = device.spawn(&exec, &spawn_options)?;
     debug!("Spawned process {pid}, attaching...");
