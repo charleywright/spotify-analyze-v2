@@ -42,9 +42,8 @@ fn main() -> anyhow::Result<()> {
             ),
         )
         .subcommand({
-            let mut cmd = Command::new("launch")
+            Command::new("launch")
                 .about("Start an instance of the app on the desired platform and redirect traffic to the proxy")
-                .subcommand_required(true)
                 .arg(
                     Arg::new("exec")
                         .long("exec")
@@ -69,29 +68,7 @@ fn main() -> anyhow::Result<()> {
                 )
                 .arg(Arg::new("device").short('D').long("device").required(false).conflicts_with("usb").help(
                     "Spawn the app on the device with the given ID. Use `frida-ls-devices` to find which ID to use",
-                ));
-            #[cfg(windows)]
-            (cmd = cmd.subcommand(
-                Command::new("windows")
-                    .about("If the current host is windows, spawn Spotify and redirect traffic")
-                    .disable_help_flag(true),
-            ));
-            #[cfg(unix)]
-            (cmd = cmd.subcommand(
-                Command::new("linux")
-                    .long_about("If the current host is linux, spawn Spotify and redirect traffic")
-                    .disable_help_flag(true),
-            ));
-            cmd.subcommand(
-                Command::new("android")
-                    .about("Spawn the app on a remote android device and redirect traffic")
-                    .disable_help_flag(true),
-            )
-            .subcommand(
-                Command::new("ios")
-                    .about("Spawn the app on a remote iOS device and redirect traffic")
-                    .disable_help_flag(true),
-            )
+                ))
         })
         .subcommand(
             Command::new("wireshark")
