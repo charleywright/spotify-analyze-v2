@@ -173,7 +173,7 @@ impl ProxyConfiguration {
         #[cfg(target_os = "linux")]
         let fifo_path = PathBuf::from("/tmp").join(fifo_filename);
         #[cfg(target_os = "windows")]
-        let fifo_path = PathBuf::from(r"\\.\pipe\").join(fifo_filename);
+        let fifo_path = PathBuf::from(fifo_filename);
 
         Ok(Self { host, pcap_path, fifo_path })
     }
