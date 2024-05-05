@@ -30,18 +30,23 @@ enum Target {
 
 fn determine_device_target(device: &Device) -> anyhow::Result<Target> {
     let info = device.query_system_parameters()?;
+    debug!("Device info: {info:?}");
+    let Some(platform) = info.get("platform").and_then(|platform| platform.get_string()) else {
+        return Err(anyhow!("Expected device info to contain platform"));
+    };
     let Some(os_info) = info.get("os").and_then(|info| info.get_map()) else {
         return Err(anyhow!("Expected device info to contain OS info"));
     };
     let Some(os_id) = os_info.get("id").and_then(|id| id.get_string()) else {
         return Err(anyhow!("Expected OS info to contain ID"));
     };
-    match os_id {
-        "windows" => Ok(Target::Windows),
-        "linux" => Ok(Target::Linux),
-        "ios" => Ok(Target::iOS),
-        "android" => Ok(Target::Android),
-        _ => Err(anyhow!("Failed to detect target from OS ID: {os_id}")),
+    match (platform, os_id) {
+        ("linux", "android") => Ok(Target::Android),
+        ("darwin", "ios") => Ok(Target::iOS),
+        ("windows", "windows") => Ok(Target::Windows),
+        // On Linux the OS ID depends on the distribution
+        ("linux", _) => Ok(Target::Linux),
+        (_, _) => Err(anyhow!("Failed to detect target from platform {platform} and ID {os_id}")),
     }
 }
 
