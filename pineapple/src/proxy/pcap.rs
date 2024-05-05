@@ -130,13 +130,15 @@ impl WiresharkWriter {
         Ok(Self { buffer: Vec::new(), pcap_file, fifo_tx, fifo_thread })
     }
 
+    const FIFO_BUFFER_INIT_SIZE: usize = 0x100000 /* 1MB */;
+
     #[cfg(target_os = "linux")]
     fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
         use std::{os::unix::prelude::OpenOptionsExt, sync::mpsc::RecvTimeoutError};
 
         use inotify::{Inotify, WatchMask};
         use interprocess::os::unix::fifo_file;
-        use log::trace;
+        use log::{error, trace};
         use nix::errno::Errno;
 
         if fifo_path.exists() {
@@ -154,7 +156,7 @@ impl WiresharkWriter {
         let mut inotify_buffer = [0; 1024];
 
         let mut fifo_handle = None;
-        let mut buffer = Vec::with_capacity(0x100000 /* 1MB */);
+        let mut buffer = Vec::with_capacity(Self::FIFO_BUFFER_INIT_SIZE);
         let mut buffer_pos = 0;
         loop {
             // Check if we have been sent any data, if so add to the buffer
@@ -181,10 +183,12 @@ impl WiresharkWriter {
                             break;
                         },
                         _ => {
-                            panic!("Failed to handle open() return code {err:?}");
+                            error!("FIFO: Failed to open file: {err:?}");
+                            return Err(err.into());
                         },
                     },
                     Err(err) => {
+                        error!("FIFO: Failed to open file: {err:?}");
                         return Err(err.into());
                     },
                 }
@@ -201,7 +205,7 @@ impl WiresharkWriter {
                     },
                     Err(err) => {
                         // TODO: There should be a case when Wireshark disconnected and we try to write
-                        info!("FIFO: Failed to write to fifo: {err:?}");
+                        error!("FIFO: Failed to write to fifo: {err:?}");
                         break;
                     },
                 }
@@ -235,8 +239,94 @@ impl WiresharkWriter {
     }
 
     #[cfg(target_os = "windows")]
-    fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) {
-        unimplemented!("fifo_thread")
+    fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
+        use std::{io::ErrorKind, sync::mpsc::RecvTimeoutError};
+
+        use interprocess::os::windows::named_pipe::{ByteWriterPipeStream, PipeListenerOptions};
+        use log::{error, trace};
+        use winapi::shared::winerror::ERROR_PIPE_LISTENING;
+
+        struct ClientHandle {
+            writer: ByteWriterPipeStream,
+            buffer_pos: usize,
+        }
+
+        info!(r"FIFO: Creating server at \\.\pipe\{}", fifo_path.to_string_lossy());
+        let listener = PipeListenerOptions::new()
+            .name(fifo_path.as_os_str())
+            .nonblocking(true)
+            .create::<ByteWriterPipeStream>()?;
+        info!("FIFO: Created FIFO listener");
+
+        let mut buffer = Vec::with_capacity(Self::FIFO_BUFFER_INIT_SIZE);
+        // If we close one handle and open a new one before the next attempt to write, we will miss the disconnection.
+        // On Linux we use inotify to detect when the reader closes the file, we can't do this on Windows. Instead we
+        // allow more than one client to be opened then detect the disconnect on the next write.
+        let mut clients: [Option<ClientHandle>; 5] = Default::default();
+        loop {
+            for client_handle in clients.iter_mut() {
+                if let Some(client) = client_handle.as_mut() {
+                    let to_write = &buffer[client.buffer_pos..];
+                    if to_write.is_empty() {
+                        continue;
+                    }
+                    match client.writer.write(to_write) {
+                        Ok(bytes_written) => {
+                            trace!("FIFO: Wrote {} to FIFO", hex::encode(&to_write[0..bytes_written]));
+                            client.buffer_pos += bytes_written;
+                            continue;
+                        },
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
+                        Err(err) if err.kind() == ErrorKind::BrokenPipe => {
+                            info!("FIFO: Disconnected from client");
+                        },
+                        Err(err) => {
+                            error!("FIFO: Failed to write to fifo: {err:?}");
+                        },
+                    };
+                    // If we reach here, remove the client from our list
+                    info!("FIFO: Client got disconnected");
+                    let _ = std::mem::take(client_handle);
+                }
+            }
+
+            // Check if we have been sent any data, if so add to the buffer
+            match rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(mut data) => buffer.append(&mut data),
+                Err(err) => match err {
+                    RecvTimeoutError::Timeout => {},
+                    RecvTimeoutError::Disconnected => {
+                        info!("FIFO: The other thread hung up");
+                        break;
+                    },
+                },
+            }
+
+            // Check if a new client has tried to connect
+            for client in clients.iter_mut() {
+                if client.is_none() {
+                    match listener.accept() {
+                        Ok(stream) => {
+                            info!("FIFO: Accepted new client");
+                            *client = Some(ClientHandle { writer: stream, buffer_pos: 0 });
+                        },
+                        Err(err) if let Some(os_err) = err.raw_os_error() => match os_err as u32 {
+                            ERROR_PIPE_LISTENING => {},
+                            _ => {
+                                error!("FIFO: Failed to handle os error when accepting a client: {err:?}");
+                                return Err(err.into());
+                            },
+                        },
+                        Err(err) => {
+                            info!("FIFO: Got error while accepting fifo {err:?}");
+                            return Err(err.into());
+                        },
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
