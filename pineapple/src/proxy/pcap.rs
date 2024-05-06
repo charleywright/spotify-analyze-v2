@@ -242,20 +242,18 @@ impl WiresharkWriter {
     fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
         use std::{io::ErrorKind, sync::mpsc::RecvTimeoutError};
 
-        use interprocess::os::windows::named_pipe::{ByteWriterPipeStream, PipeListenerOptions};
+        use interprocess::os::windows::named_pipe::{pipe_mode, PipeListenerOptions, PipeStream};
         use log::{error, trace};
         use winapi::shared::winerror::ERROR_PIPE_LISTENING;
 
         struct ClientHandle {
-            writer: ByteWriterPipeStream,
+            writer: PipeStream<pipe_mode::None, pipe_mode::Bytes>,
             buffer_pos: usize,
         }
 
-        info!(r"FIFO: Creating server at \\.\pipe\{}", fifo_path.to_string_lossy());
-        let listener = PipeListenerOptions::new()
-            .name(fifo_path.as_os_str())
-            .nonblocking(true)
-            .create::<ByteWriterPipeStream>()?;
+        info!("FIFO: Creating server at {}", fifo_path.to_string_lossy());
+        let listener =
+            PipeListenerOptions::new().path(fifo_path).nonblocking(true).create_send_only::<pipe_mode::Bytes>()?;
         info!("FIFO: Created FIFO listener");
 
         let mut buffer = Vec::with_capacity(Self::FIFO_BUFFER_INIT_SIZE);
