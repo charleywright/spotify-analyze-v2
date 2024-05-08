@@ -2,16 +2,16 @@ use std::{
     borrow::Cow,
     collections::VecDeque,
     fs::File,
-    io::{self, Write},
+    io::{self, ErrorKind, Write},
     mem,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use log::info;
+use log::{error, info, trace};
 use pcap_file::{
     pcapng::{
         blocks::{
@@ -134,11 +134,11 @@ impl WiresharkWriter {
 
     #[cfg(target_os = "linux")]
     fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
-        use std::{os::unix::prelude::OpenOptionsExt, sync::mpsc::RecvTimeoutError};
+        use std::os::unix::prelude::OpenOptionsExt;
 
         use inotify::{Inotify, WatchMask};
         use interprocess::os::unix::fifo_file;
-        use log::{error, trace};
+        use log::debug;
         use nix::errno::Errno;
 
         if fifo_path.exists() {
@@ -203,8 +203,11 @@ impl WiresharkWriter {
                         trace!("FIFO: Wrote {} to FIFO", hex::encode(&to_write[0..bytes_written]));
                         buffer_pos += bytes_written;
                     },
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        // This can happen if we are receiving data and the user opens Wireshark
+                        debug!("FIFO: Ignoring error while trying to write to fifo: {err:?}");
+                    },
                     Err(err) => {
-                        // TODO: There should be a case when Wireshark disconnected and we try to write
                         error!("FIFO: Failed to write to fifo: {err:?}");
                         break;
                     },
@@ -240,10 +243,7 @@ impl WiresharkWriter {
 
     #[cfg(target_os = "windows")]
     fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
-        use std::{io::ErrorKind, sync::mpsc::RecvTimeoutError};
-
         use interprocess::os::windows::named_pipe::{pipe_mode, PipeListenerOptions, PipeStream};
-        use log::{error, trace};
         use winapi::shared::winerror::ERROR_PIPE_LISTENING;
 
         struct ClientHandle {
