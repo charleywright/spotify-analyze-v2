@@ -1,17 +1,53 @@
 #![feature(if_let_guard)]
 
-use clap::{Arg, ArgAction, Args, Command, FromArgMatches, Parser};
+use std::{
+    net::{SocketAddr, SocketAddrV4},
+    path::PathBuf,
+};
+
+use anyhow::anyhow;
+use clap::{Arg, ArgAction, ArgMatches, Args, Command, FromArgMatches, Parser};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 
 mod frida;
 mod launch;
 mod proto;
 mod proxy;
+mod wireshark;
 
 #[derive(Parser)]
 struct VerbosityArgs {
     #[command(flatten)]
     verbosity: Verbosity<InfoLevel>,
+}
+
+pub struct HostConfiguration(SocketAddrV4);
+
+impl HostConfiguration {
+    pub fn from_args(args: &ArgMatches) -> anyhow::Result<Self> {
+        // Safe to unwrap() due to default value
+        let host = args.get_one::<String>("host").unwrap();
+        let host = host.parse()?;
+        match host {
+            SocketAddr::V4(addr) => Ok(Self(addr)),
+            SocketAddr::V6(_) => Err(anyhow!("Host must be IPv4")),
+        }
+    }
+
+    pub fn fifo_path(&self) -> PathBuf {
+        let mut raw_socket_addr = self.0.ip().octets().to_vec();
+        raw_socket_addr.extend_from_slice(&self.0.port().to_be_bytes());
+        let fifo_filename = format!("pineapple-{}", hex::encode(raw_socket_addr));
+        #[cfg(target_os = "linux")]
+        let fifo_path = PathBuf::from("/tmp").join(fifo_filename);
+        #[cfg(target_os = "windows")]
+        let fifo_path = PathBuf::from(r"\\.\pipe\").join(fifo_filename);
+        fifo_path
+    }
+
+    pub fn as_socket_addr(&self) -> SocketAddr {
+        SocketAddr::V4(self.0)
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -77,7 +113,7 @@ fn main() -> anyhow::Result<()> {
                     Note: When running multiple instances --host should be specified to select an instance",
                 )
                 .arg(
-                    Arg::new("dir")
+                    Arg::new("wireshark-dir")
                         .short('d')
                         .long("dir")
                         .value_name("install dir")
@@ -94,6 +130,7 @@ fn main() -> anyhow::Result<()> {
     match matches.subcommand() {
         Some(("listen", matches)) => proxy::run_proxy(matches),
         Some(("launch", matches)) => launch::launch_app(matches),
+        Some(("wireshark", matches)) => wireshark::launch_wireshark(matches),
         _ => unreachable!(),
     }
 }

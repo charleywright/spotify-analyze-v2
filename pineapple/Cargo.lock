@@ -1113,7 +1113,9 @@ dependencies = [
  "protobuf",
  "protobuf-codegen",
  "rand",
+ "registry",
  "rsa",
+ "same-file",
  "sha1",
  "shannon",
  "thiserror",
@@ -1306,6 +1308,19 @@ name = "regex-syntax"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adad44e29e4c806119491a7f06f03de4d1af22c3a680dd47f1e6e179439d1f56"
+
+[[package]]
+name = "registry"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf3b6d580d46b9d6d6c291f90c5d762e8b93a268a96e429556419fcd7e349f94"
+dependencies = [
+ "bitflags 1.3.2",
+ "log",
+ "thiserror",
+ "utfx",
+ "winapi",
+]
 
 [[package]]
 name = "reqwest"
@@ -1820,6 +1835,12 @@ name = "utf8parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
+
+[[package]]
+name = "utfx"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "133bf74f01486773317ddfcde8e2e20d2933cc3b68ab797e5d718bef996a81de"
 
 [[package]]
 name = "version_check"

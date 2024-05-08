@@ -5,7 +5,7 @@ use std::{
     io::{self, Write},
     mem,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{channel, Receiver, Sender},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -24,7 +24,7 @@ use pcap_file::{
     DataLink, Endianness,
 };
 
-use super::ProxyConfiguration;
+use super::HostConfiguration;
 
 #[derive(Debug, Clone, Copy)]
 pub enum InterfaceDirection {
@@ -66,8 +66,8 @@ impl PcapWriter {
         }
     }
 
-    pub fn new(proxy_config: &ProxyConfiguration) -> anyhow::Result<Self> {
-        let writer = WiresharkWriter::new(proxy_config)?;
+    pub fn new(host_config: &HostConfiguration, pcap_path: Option<&Path>) -> anyhow::Result<Self> {
+        let writer = WiresharkWriter::new(host_config, pcap_path)?;
         let section = SectionHeaderBlock {
             endianness: Endianness::native(),
             options: vec![SectionHeaderOption::UserApplication("Spotify Analyze V2 (Pineapple)".into())],
@@ -121,10 +121,10 @@ struct WiresharkWriter {
 }
 
 impl WiresharkWriter {
-    pub fn new(config: &ProxyConfiguration) -> anyhow::Result<Self> {
-        let pcap_file = config.pcap_path.as_ref().map(File::create).transpose()?.map(|f| (VecDeque::new(), f));
+    pub fn new(host_config: &HostConfiguration, pcap_path: Option<&Path>) -> anyhow::Result<Self> {
+        let pcap_file = pcap_path.map(File::create).transpose()?.map(|f| (VecDeque::new(), f));
         let (fifo_tx, fifo_rx) = channel();
-        let fifo_path = config.fifo_path.clone();
+        let fifo_path = host_config.fifo_path();
         let fifo_thread =
             Some(thread::spawn(move || info!("FIFO: Thread complete {:?}", Self::fifo_thread(fifo_rx, fifo_path))));
         Ok(Self { buffer: Vec::new(), pcap_file, fifo_tx, fifo_thread })

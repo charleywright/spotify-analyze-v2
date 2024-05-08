@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     io::ErrorKind,
-    net::{AddrParseError, SocketAddr},
     path::PathBuf,
     rc::Rc,
     sync::{Arc, RwLock},
@@ -11,8 +10,8 @@ use std::{
 
 use clap::ArgMatches;
 use mio::{net::TcpListener, Events, Interest, Poll};
-use thiserror::Error;
 
+use super::HostConfiguration;
 mod ap_resolver;
 mod dh;
 mod nonblocking;
@@ -30,11 +29,12 @@ use token_manager::{TokenManager, SERVER_TOKEN};
 use super::proto;
 
 pub fn run_proxy(args: &ArgMatches) -> anyhow::Result<()> {
-    let proxy_config = ProxyConfiguration::from_args(args)?;
+    let host_config = HostConfiguration::from_args(args)?;
+    let pcap_path = args.get_one::<String>("pcap-write").map(PathBuf::from);
     let is_running = Arc::new(RwLock::new(true));
     {
         let is_running = is_running.clone();
-        let host = proxy_config.host;
+        let host = host_config.as_socket_addr();
         ctrlc::set_handler(move || {
             *is_running.write().unwrap() = false;
             // Trigger running check
@@ -45,15 +45,15 @@ pub fn run_proxy(args: &ArgMatches) -> anyhow::Result<()> {
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
-    let mut server = TcpListener::bind(proxy_config.host)?;
-    let pcap_writer = Rc::new(RefCell::new(PcapWriter::new(&proxy_config)?));
+    let mut server = TcpListener::bind(host_config.as_socket_addr())?;
+    let pcap_writer = Rc::new(RefCell::new(PcapWriter::new(&host_config, pcap_path.as_deref())?));
     let mut token_manager = TokenManager::new();
     poll.registry().register(&mut server, SERVER_TOKEN, Interest::READABLE)?;
     let mut ap_resolver = ApResolver::new();
     let mut connections = HashMap::new();
     let mut connection_timeouts = Vec::new();
 
-    println!("Listening on {}", proxy_config.host);
+    println!("Listening on {}", host_config.as_socket_addr());
 
     while *is_running.read().unwrap() {
         if let Err(poll_error) = poll.poll(&mut events, Some(Duration::from_secs(1))) {
@@ -140,41 +140,4 @@ pub fn run_proxy(args: &ArgMatches) -> anyhow::Result<()> {
 
     println!("\rServer shutdown");
     Ok(())
-}
-
-pub struct ProxyConfiguration {
-    pub host: SocketAddr,
-    pub pcap_path: Option<PathBuf>,
-    pub fifo_path: PathBuf,
-}
-
-#[derive(Error, Debug)]
-pub enum ProxyConfigurationError {
-    #[error("Failed to parse host string")]
-    FailedToParseHost(#[from] AddrParseError),
-    #[error("Host must be IPv4")]
-    NonIPv4Host,
-}
-
-impl ProxyConfiguration {
-    pub fn from_args(args: &ArgMatches) -> Result<Self, ProxyConfigurationError> {
-        // Safe to unwrap() due to default value
-        let host = args.get_one::<String>("host").unwrap();
-        let host = host.parse()?;
-
-        let pcap_path = args.get_one::<String>("pcap-write").map(PathBuf::from);
-
-        let mut raw_socket_addr = match host {
-            SocketAddr::V4(v4) => v4.ip().octets().to_vec(),
-            _ => return Err(ProxyConfigurationError::NonIPv4Host),
-        };
-        raw_socket_addr.extend_from_slice(&host.port().to_be_bytes());
-        let fifo_filename = format!("pineapple-{}", hex::encode(raw_socket_addr));
-        #[cfg(target_os = "linux")]
-        let fifo_path = PathBuf::from("/tmp").join(fifo_filename);
-        #[cfg(target_os = "windows")]
-        let fifo_path = PathBuf::from(r"\\.\pipe\").join(fifo_filename);
-
-        Ok(Self { host, pcap_path, fifo_path })
-    }
 }
