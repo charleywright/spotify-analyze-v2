@@ -38,6 +38,8 @@ clap-verbosity-flag = "2.2.0"
 [target.'cfg(windows)'.dependencies]
 known-folders = "1.1.0"
 winapi = { version = "0.3.9", features = ["winerror"] }
+registry = "1.2.3"
+same-file = "1.0.6"
 
 [target.'cfg(unix)'.dependencies]
 inotify = { version = "0.10.2", default-features = false }
