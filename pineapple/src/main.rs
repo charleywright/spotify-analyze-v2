@@ -38,9 +38,9 @@ impl HostConfiguration {
         let mut raw_socket_addr = self.0.ip().octets().to_vec();
         raw_socket_addr.extend_from_slice(&self.0.port().to_be_bytes());
         let fifo_filename = format!("pineapple-{}", hex::encode(raw_socket_addr));
-        #[cfg(target_os = "linux")]
+        #[cfg(target_family = "unix")]
         let fifo_path = PathBuf::from("/tmp").join(fifo_filename);
-        #[cfg(target_os = "windows")]
+        #[cfg(target_family = "windows")]
         let fifo_path = PathBuf::from(r"\\.\pipe\").join(fifo_filename);
         fifo_path
     }

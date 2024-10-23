@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::anyhow;
 use clap::ArgMatches;
@@ -23,6 +27,7 @@ fn get_config_script_src(host: &SocketAddr) -> anyhow::Result<String> {
 enum Target {
     Windows,
     Linux,
+    Mac,
     #[allow(non_camel_case_types)]
     iOS,
     Android,
@@ -43,10 +48,37 @@ fn determine_device_target(device: &Device) -> anyhow::Result<Target> {
     match (platform, os_id) {
         ("linux", "android") => Ok(Target::Android),
         ("darwin", "ios") => Ok(Target::iOS),
+        ("darwin", "macos") => Ok(Target::Mac),
         ("windows", "windows") => Ok(Target::Windows),
         // On Linux the OS ID depends on the distribution
         ("linux", _) => Ok(Target::Linux),
         (_, _) => Err(anyhow!("Failed to detect target from platform {platform} and ID {os_id}")),
+    }
+}
+
+fn try_fixup_exec_path(exec: &Path, target: Target) -> Option<PathBuf> {
+    if target == Target::Mac {
+        if let Ok(exec_metadata) = std::fs::metadata(exec) {
+            // We want to map /Applications/Spotify.app to /Applications/Spotify.app/Contents/MacOS/Spotify automatically
+            if exec_metadata.is_dir() {
+                let spotify_binary = exec.join("Contents").join("MacOS").join("Spotify");
+                if spotify_binary.exists() {
+                    debug!("Mapped {} to {}", exec.display(), spotify_binary.display());
+                    return Some(spotify_binary);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn wait_for_exit(device: &Device, pid: u32) {
+    loop {
+        if device.is_lost() || !device.enumerate_processes().into_iter().any(|proc| proc.get_pid() == pid) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(3));
     }
 }
 
@@ -78,7 +110,7 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
     info!("Trying to launch on {} ({target:?})", device.get_name());
 
     let exec = match target {
-        Target::Windows | Target::Linux => {
+        Target::Windows | Target::Linux | Target::Mac => {
             let exec = match exec {
                 Some(exec) => PathBuf::from(exec),
                 None => {
@@ -90,11 +122,15 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
                         debug!("Resolved appdata to {appdata:?}");
                         appdata.join("Spotify").join("Spotify.exe")
                     }
-                    #[cfg(unix)]
+                    #[cfg(target_os = "linux")]
                     {
                         PathBuf::from("/opt/spotify/spotify")
                     }
-                    #[cfg(all(not(windows), not(unix)))]
+                    #[cfg(target_os = "macos")]
+                    {
+                        PathBuf::from("/Applications/Spotify.app")
+                    }
+                    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
                     {
                         unreachable!()
                     }
@@ -103,7 +139,11 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
             if !exec.exists() {
                 panic!("Spotify is not installed. If installed from the Microsoft Store please uninstall then install from https://download.scdn.co/SpotifySetup.exe");
             }
-            exec.to_string_lossy().to_string()
+            if let Some(fixed_path) = try_fixup_exec_path(&exec, target) {
+                fixed_path.to_string_lossy().to_string()
+            } else {
+                exec.to_string_lossy().to_string()
+            }
         },
         Target::iOS => exec.unwrap_or("com.spotify.client".to_owned()),
         Target::Android => exec.unwrap_or("com.spotify.music".to_owned()),
@@ -132,5 +172,8 @@ pub fn launch_app(args: &ArgMatches) -> anyhow::Result<()> {
     debug!("Loaded redirect script");
 
     info!("Spawned and injected into pid {pid}");
+    if target == Target::Mac && cfg!(target_os = "macos") {
+        wait_for_exit(&device, pid);
+    }
     Ok(())
 }
