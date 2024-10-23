@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::VecDeque,
     fs::File,
-    io::{self, ErrorKind, Write},
+    io::{self, Write},
     mem,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use log::{error, info, trace};
+use log::info;
 use pcap_file::{
     pcapng::{
         blocks::{
@@ -134,11 +134,11 @@ impl WiresharkWriter {
 
     #[cfg(target_os = "linux")]
     fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
-        use std::os::unix::prelude::OpenOptionsExt;
+        use std::{io::ErrorKind, os::unix::prelude::OpenOptionsExt};
 
         use inotify::{Inotify, WatchMask};
         use interprocess::os::unix::fifo_file;
-        use log::debug;
+        use log::{debug, error, trace};
         use nix::errno::Errno;
 
         if fifo_path.exists() {
@@ -243,7 +243,10 @@ impl WiresharkWriter {
 
     #[cfg(target_os = "windows")]
     fn fifo_thread(rx: Receiver<Vec<u8>>, fifo_path: PathBuf) -> anyhow::Result<()> {
+        use std::io::ErrorKind;
+
         use interprocess::os::windows::named_pipe::{pipe_mode, PipeListenerOptions, PipeStream};
+        use log::{error, trace};
         use winapi::shared::winerror::ERROR_PIPE_LISTENING;
 
         struct ClientHandle {
@@ -321,6 +324,35 @@ impl WiresharkWriter {
                         },
                     }
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fifo_thread(rx: Receiver<Vec<u8>>, _fifo_path: PathBuf) -> anyhow::Result<()> {
+        use log::warn;
+
+        // TODO: How do we detect when Wireshark disconnects?
+        //       If we write a packet to the FIFO then Wireshark disconnects and reconnects, we have no way of knowing.
+        //       This is a problem because Wireshark will now be expecting the PCAP[NG] header but we think we're
+        //       already connected so we send the next data packet, causing Wireshark to error. On Linux we use inotify
+        //       which tells us when a process closes a handle for reading. Windows allows multiple clients so we don't
+        //       have this problem
+        warn!("Wireshark live updates are not supported on MacOS");
+        let _ = Self::FIFO_BUFFER_INIT_SIZE;
+
+        loop {
+            match rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(_data) => {},
+                Err(err) => match err {
+                    RecvTimeoutError::Timeout => {},
+                    RecvTimeoutError::Disconnected => {
+                        info!("FIFO: The other thread hung up");
+                        break;
+                    },
+                },
             }
         }
 

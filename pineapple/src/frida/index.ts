@@ -79,9 +79,9 @@ function replaceServerKey(locations: MemoryScanMatch[]) {
         location.address
       )}\n${hexdump(location.address, { length: AP_SERVER_KEY_LEN })}`
     );
-    Memory.protect(location.address, AP_SERVER_KEY_LEN, "rwx");
-    location.address.writeByteArray(OUR_SERVER_KEY);
-    Memory.protect(location.address, AP_SERVER_KEY_LEN, "r-x");
+    Memory.patchCode(location.address, AP_SERVER_KEY_LEN, (location) =>
+      location.writeByteArray(OUR_SERVER_KEY)
+    );
     console.log(
       `Replaced server key\n${hexdump(location.address, {
         length: AP_SERVER_KEY_LEN,
@@ -351,7 +351,7 @@ function replaceDarwinServerKey(module: Module) {
 function stopAllPlatformChecks() {
   clearInterval(windows_check);
   clearInterval(linux_check);
-  clearInterval(ios_check);
+  clearInterval(darwin_check);
   clearInterval(android_check);
 }
 
@@ -391,13 +391,13 @@ const android_check = setInterval(() => {
   }
 }, PLATFORM_CHECK_INTERVAL);
 
-const ios_check = setInterval(() => {
+const darwin_check = setInterval(() => {
   const mod = Process.findModuleByName("Spotify");
   if (mod !== null && Process.platform === "darwin") {
     stopAllPlatformChecks();
-    console.log(`\rFound iOS binary loaded at ${mod.base}`);
+    console.log(`\rFound Darwin binary loaded at ${mod.base}`);
     replaceDarwinServerKey(mod);
-    console.log(`[iOS] Startup took ${Date.now() - SCRIPT_START}ms`);
+    console.log(`[Darwin] Startup took ${Date.now() - SCRIPT_START}ms`);
   }
 }, PLATFORM_CHECK_INTERVAL);
 
