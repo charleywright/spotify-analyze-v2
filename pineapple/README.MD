@@ -62,15 +62,36 @@ The goto tool for inspecting binary protocols is wireshark due to its extensive 
 
 As detailed in [Architecture](#architecture) you would run an instance of the proxy then spawn the Spotify app on the target(s) which would connect to the proxy instead of Spotify's servers. That could look like this:
 
-```bash
-# On one machine (192.168.1.10)
-cargo run --release -- listen -vv --write spirc.pcapng
+### Running the proxy
 
-# On the target or a machine connected to the target
-cargo run --release -- launch -vv --host 192.168.1.10
+```bash
+# On one machine (192.168.1.10) run the proxy
+cargo run --release -- listen -vv --write spirc.pcapng
 ```
 
-Pretty simple. The proxy can be run on different ports/interfaces using `-host` and optionally written to a file. On supported platforms (Linux & Windows) Wireshark can also open a live stream of decrypted SPIRC messages.
+### Launching the app and redirecting traffic to the proxy
+
+```bash
+# On the target or a machine connected to the target, launch the app and point it at the proxy
+cargo run --release -- launch -vv --host 192.168.1.10
+
+# Launch the app on an Android phone over ADB that is on the same network
+cargo run --release -- launch -vv --host 192.168.1.10 --usb
+
+# If you have multiple devices
+frida-ls-devices
+# Id              Type    Name                   OS
+# --------------  ------  ---------------------  ------------
+# local           local   Local System           macOS 15.0.1
+# emulator-5554   usb     Android Emulator 5554  Android 15
+# 33201FDH20070B  usb     Pixel 7                Android 14
+# barebone        remote  GDB Remote Stub
+# socket          remote  Local Socket
+
+cargo run --release -- launch -vv --host 192.168.1.10 --device 33201FDH20070B # Spawn on Pixel 7
+```
+
+Pretty simple. The proxy can be run on different ports/interfaces using `--host` and optionally written to a file. On supported platforms (Linux & Windows) Wireshark can also open a live stream of decrypted SPIRC messages.
 
 ## TODO List
 
