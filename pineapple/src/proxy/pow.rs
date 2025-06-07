@@ -45,7 +45,7 @@
 //   00000008 endPtr          dq ?                    ; void*
 //   00000010 base::Array     ends
 
-use std::io::{Error, ErrorKind};
+use std::io::Error;
 
 use byteorder::{BigEndian, ByteOrder};
 use hmac::{Hmac, Mac};
@@ -64,8 +64,8 @@ lazy_static! {
 }
 
 pub fn solve_hashcash(accumulator: &[u8], challenge: &PoWHashCashChallenge) -> Result<Vec<u8>, Error> {
-    let mut hmac_ctx = HmacSha1::new_from_slice(&HASHCASH_KEY)
-        .map_err(|_| Error::new(ErrorKind::Other, "Failed to create HMAC instance"))?;
+    let mut hmac_ctx =
+        HmacSha1::new_from_slice(&HASHCASH_KEY).map_err(|_| Error::other("Failed to create HMAC instance"))?;
     hmac_ctx.update(accumulator);
     let context_bytes = hmac_ctx.finalize().into_bytes();
     let mut context = BigEndian::read_u64(&context_bytes);

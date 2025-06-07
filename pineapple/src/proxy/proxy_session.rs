@@ -183,7 +183,7 @@ impl ProxySession {
         let upstream_token = token_manager.next();
 
         let Some(upstream_addr) = ap_resolver.get_resolved_ap() else {
-            return Err(Error::new(ErrorKind::Other, "Failed to resolve AP"));
+            return Err(Error::other("Failed to resolve AP"));
         };
         let upstream = TcpStream::connect(upstream_addr)?;
 
@@ -462,7 +462,7 @@ impl ProxySession {
                         Ok(())
                     },
                     Err(parse_error) => {
-                        Err(Error::new(ErrorKind::InvalidData, format!("Failed to parse ClientHello: {}", parse_error)))
+                        Err(Error::new(ErrorKind::InvalidData, format!("Failed to parse ClientHello: {parse_error}")))
                     },
                 }
             },
@@ -663,7 +663,7 @@ impl ProxySession {
                     },
                     Err(parse_error) => Err(Error::new(
                         ErrorKind::InvalidData,
-                        format!("Failed to parse APResponseMessage: {}", parse_error),
+                        format!("Failed to parse APResponseMessage: {parse_error}"),
                     )),
                 }
             },
@@ -883,7 +883,7 @@ impl ProxySession {
                     Err(parse_error) => {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
-                            format!("Failed to parse ClientResponsePlaintext: {}", parse_error),
+                            format!("Failed to parse ClientResponsePlaintext: {parse_error}"),
                         ))
                     },
                 }
@@ -994,10 +994,7 @@ impl ProxySession {
 
                 let mut state_data = state.borrow_mut();
                 let Some(downstream_cipher) = self.downstream_cipher.as_mut() else {
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        "No downstream cipher while trying to read ClientResponseEncrypted",
-                    ));
+                    return Err(Error::other("No downstream cipher while trying to read ClientResponseEncrypted"));
                 };
 
                 if self.downstream_reader.is_empty() {
@@ -1015,7 +1012,7 @@ impl ProxySession {
                     if packet_type != LOGIN_PACKET {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
-                            format!("Expected {LOGIN_PACKET} for ClientResponseEncrypted, got {:#02X}", packet_type),
+                            format!("Expected {LOGIN_PACKET} for ClientResponseEncrypted, got {packet_type:#02X}"),
                         ));
                     }
                     let packet_len = packet_len as usize + 4; // 4 byte MAC after encrypted bytes
@@ -1069,7 +1066,7 @@ impl ProxySession {
                     Err(parse_error) => {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
-                            format!("Failed to parse ClientResponseEncrypted: {}", parse_error),
+                            format!("Failed to parse ClientResponseEncrypted: {parse_error}"),
                         ))
                     },
                 }
@@ -1092,7 +1089,7 @@ impl ProxySession {
                         let Ok(grain_key) = Aes128CbcDecrypt::new(&encrypted_hash.into(), &[0u8; 16].into())
                             .decrypt_padded_vec_mut::<block_padding::NoPadding>(encrypted_key)
                         else {
-                            return Err(Error::new(ErrorKind::Other, "Failed to decrypt grain key"));
+                            return Err(Error::other("Failed to decrypt grain key"));
                         };
 
                         // Verify the key by decrypting client_nonce
@@ -1311,10 +1308,7 @@ impl ProxySession {
                     }
 
                     let Some(upstream_cipher) = self.upstream_cipher.as_mut() else {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            "No upstream cipher while trying to send ClientResponseEncrypted",
-                        ));
+                        return Err(Error::other("No upstream cipher while trying to send ClientResponseEncrypted"));
                     };
                     let mut packet = vec![];
                     packet.push(LOGIN_PACKET);

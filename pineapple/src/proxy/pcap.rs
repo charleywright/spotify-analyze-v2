@@ -371,9 +371,7 @@ impl Write for WiresharkWriter {
         }
 
         // Write to the FIFO tunnel
-        self.fifo_tx
-            .send(buf.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to send data to FIFO channel"))?;
+        self.fifo_tx.send(buf.to_vec()).map_err(|_| io::Error::other("Failed to send data to FIFO channel"))?;
 
         // Write to the in-memory buffer
         self.buffer.extend_from_slice(buf);
