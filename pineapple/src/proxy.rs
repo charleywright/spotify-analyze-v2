@@ -15,14 +15,14 @@ use super::HostConfiguration;
 mod ap_resolver;
 mod dh;
 mod nonblocking;
-mod pcap;
+mod pcap_writer;
 mod pow;
 mod proxy_session;
 mod shannon;
 mod token_manager;
 
 use ap_resolver::ApResolver;
-use pcap::PcapWriter;
+use pcap_writer::PcapWriter;
 use proxy_session::{ProxySession, ProxyTimeoutAdvice};
 use token_manager::{TokenManager, SERVER_TOKEN};
 

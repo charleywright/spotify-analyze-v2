@@ -34,6 +34,8 @@ nix = { version = "0.28.0", features = ["fs"] }
 protobuf = "3"
 frida = { version = "0.14.2" }
 clap-verbosity-flag = "2.2.0"
+ratatui = "0.29.0"
+crossterm = "0.29.0"
 
 [target.'cfg(windows)'.dependencies]
 known-folders = "1.1.0"

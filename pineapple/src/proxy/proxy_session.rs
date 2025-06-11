@@ -28,13 +28,13 @@ use super::{
     ap_resolver::ApResolver,
     dh::DiffieHellman,
     nonblocking::{NonblockingReader, NonblockingWriter},
-    pcap::{Interface, InterfaceDirection, PcapWriter},
+    pcap_writer::PcapWriter,
     pow,
     proto::{authentication_old::ClientResponseEncrypted, keyexchange_old as keyexchange},
     shannon::{DecryptResult, ShannonCipher},
     token_manager::TokenManager,
 };
-use crate::proxy::pcap::PacketDirection;
+use crate::pcap::{Interface, InterfaceDirection, PacketDirection};
 
 type HmacSha1 = Hmac<Sha1>;
 type Aes128CbcEncrypt = cbc::Encryptor<aes::Aes128>;

@@ -11,6 +11,8 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 
 mod frida;
 mod launch;
+mod parse;
+mod pcap;
 mod proto;
 mod proxy;
 mod wireshark;
@@ -77,7 +79,7 @@ fn main() -> anyhow::Result<()> {
                     .help("Write a PCAPNG file containing all the captured packets to the specified file path"),
             ),
         )
-        .subcommand({
+        .subcommand(
             Command::new("launch")
                 .about("Start an instance of the app on the desired platform and redirect traffic to the proxy")
                 .arg(
@@ -104,8 +106,13 @@ fn main() -> anyhow::Result<()> {
                 )
                 .arg(Arg::new("device").short('D').long("device").required(false).conflicts_with("usb").help(
                     "Spawn the app on the device with the given ID. Use `frida-ls-devices` to find which ID to use",
-                ))
-        })
+                )),
+        )
+        .subcommand(
+            Command::new("parse")
+                .about("Parse a PcapNG capture file and display it in an interactive terminal UI")
+                .arg(Arg::new("file").required(true).help("File to parse packets from")),
+        )
         .subcommand(
             Command::new("wireshark")
                 .about(
@@ -130,6 +137,7 @@ fn main() -> anyhow::Result<()> {
     match matches.subcommand() {
         Some(("listen", matches)) => proxy::run_proxy(matches),
         Some(("launch", matches)) => launch::launch_app(matches),
+        Some(("parse", matches)) => parse::launch_tui(matches),
         Some(("wireshark", matches)) => wireshark::launch_wireshark(matches),
         _ => unreachable!(),
     }

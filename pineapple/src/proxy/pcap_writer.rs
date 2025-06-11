@@ -25,33 +25,7 @@ use pcap_file::{
 };
 
 use super::HostConfiguration;
-
-#[derive(Debug, Clone, Copy)]
-pub enum InterfaceDirection {
-    Downstream,
-    Upstream,
-}
-impl From<InterfaceDirection> for DataLink {
-    fn from(value: InterfaceDirection) -> Self {
-        match value {
-            InterfaceDirection::Downstream => DataLink::USER0,
-            InterfaceDirection::Upstream => DataLink::USER1,
-        }
-    }
-}
-pub type Interface = u32;
-pub enum PacketDirection {
-    Send,
-    Recv,
-}
-impl PacketDirection {
-    pub fn as_flag(&self) -> u32 {
-        match self {
-            PacketDirection::Send => 1 << 1, // Outbound
-            PacketDirection::Recv => 1 << 0, // Inbound
-        }
-    }
-}
+use crate::pcap::{Interface, InterfaceDirection, PacketDirection};
 
 pub struct PcapWriter {
     writer: PcapNgWriter<WiresharkWriter>,
