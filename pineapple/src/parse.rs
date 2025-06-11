@@ -196,6 +196,23 @@ impl CaptureFile {
             todo!()
         }
     }
+
+    fn select(&mut self) {
+        if self.active_connection_index.is_none() {
+            if let Some(idx) = self.connection_state.selected() {
+                self.active_connection_index = Some(idx);
+            }
+        } else {
+            todo!()
+        }
+    }
+
+    fn unselect(&mut self) {
+        // TODO: Check if packet is selected
+        if self.active_connection_index.is_some() {
+            self.active_connection_index = None;
+        }
+    }
 }
 
 impl Renderable for CaptureFile {
@@ -254,6 +271,8 @@ impl Renderable for CaptureFile {
         match key_event.code {
             KeyCode::Up => self.previous(),
             KeyCode::Down => self.next(),
+            KeyCode::Enter => self.select(),
+            KeyCode::Backspace => self.unselect(),
             _ => return HandleEventResult::Ignored,
         }
         HandleEventResult::Consumed
