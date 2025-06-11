@@ -402,60 +402,69 @@ const darwin_check = setInterval(() => {
 }, PLATFORM_CHECK_INTERVAL);
 
 const getaddrinfoCheck = setInterval(() => {
-  const getaddrinfo = Module.findExportByName(null, "getaddrinfo");
-  if (getaddrinfo !== null) {
-    clearInterval(getaddrinfoCheck);
-    Interceptor.attach(getaddrinfo, {
+  const libc = Process.findModuleByName("libc.so");
+  if (libc === null) return;
+  console.log(
+    `[GETADDRINFO] Found libc at ${libc.base} loaded from ${libc.path}`
+  );
+  const getaddrinfo = libc.findExportByName("getaddrinfo");
+  if (getaddrinfo === null) {
+    console.error("[GETADDRINFO] Found libc but failed to find getaddrinfo");
+    return;
+  }
+  console.log(
+    `[GETADDRINFO] Found getaddrinfo at ${DebugSymbol.fromAddress(getaddrinfo)}`
+  );
+  clearInterval(getaddrinfoCheck);
+  Interceptor.attach(getaddrinfo, {
+    onEnter: function (args) {
+      const node = args[0].readCString() || "";
+      if (node.startsWith("apresolve")) {
+        args[0].writeUtf8String(APRESOLVE_OVERRIDE);
+        console.log(
+          `getaddrinfo(${node}) -> getaddrinfo(${APRESOLVE_OVERRIDE})`
+        );
+      } else if (
+        node.startsWith("ap.spotify.com") ||
+        node.startsWith("mobile-ap.spotify.com") ||
+        /ap-[a-z0-9]+\.spotify\.com/.test(node)
+      ) {
+        args[0].writeUtf8String(TARGET_IP);
+        console.log(`getaddrinfo(${node}) -> getaddrinfo(${TARGET_IP})`);
+      } else {
+        // console.log(`getaddrinfo(node=${node})`);
+      }
+    },
+  });
+  if (!AP_PORTS.includes(TARGET_PORT)) {
+    Interceptor.attach(Module.getExportByName(null, "connect"), {
       onEnter: function (args) {
-        const node = args[0].readCString() || "";
-        if (node.startsWith("apresolve")) {
-          args[0].writeUtf8String(APRESOLVE_OVERRIDE);
-          console.log(
-            `getaddrinfo(${node}) -> getaddrinfo(${APRESOLVE_OVERRIDE})`
-          );
-        } else if (
-          node.startsWith("ap.spotify.com") ||
-          node.startsWith("mobile-ap.spotify.com") ||
-          /ap-[a-z0-9]+\.spotify\.com/.test(node)
-        ) {
-          args[0].writeUtf8String(TARGET_IP);
-          console.log(`getaddrinfo(${node}) -> getaddrinfo(${TARGET_IP})`);
-        } else {
-          // console.log(`getaddrinfo(node=${node})`);
-        }
-      },
-    });
-    if (!AP_PORTS.includes(TARGET_PORT)) {
-      Interceptor.attach(Module.getExportByName(null, "connect"), {
-        onEnter: function (args) {
-          const addr = args[1];
-          const sa_family = addr.add(0).readU16();
-          switch (sa_family) {
-            /* AF_INET */
-            case 0x02: {
-              const sin_port =
-                (addr.add(2).readU8() << 8) | addr.add(3).readU8();
-              const ip = [
-                addr.add(4 + 0).readU8(),
-                addr.add(4 + 1).readU8(),
-                addr.add(4 + 2).readU8(),
-                addr.add(4 + 3).readU8(),
-              ].join(".");
-              if (ip === TARGET_IP) {
-                if (sin_port != TARGET_PORT) {
-                  addr.add(2).writeU8((TARGET_PORT >> 8) & 0xff);
-                  addr.add(3).writeU8((TARGET_PORT >> 0) & 0xff);
-                  console.log(
-                    `connect(${ip}:${sin_port}) -> connect(${ip}:${TARGET_PORT})`
-                  );
-                } else {
-                  console.log(`connect(${ip}:${sin_port})`);
-                }
+        const addr = args[1];
+        const sa_family = addr.add(0).readU16();
+        switch (sa_family) {
+          /* AF_INET */
+          case 0x02: {
+            const sin_port = (addr.add(2).readU8() << 8) | addr.add(3).readU8();
+            const ip = [
+              addr.add(4 + 0).readU8(),
+              addr.add(4 + 1).readU8(),
+              addr.add(4 + 2).readU8(),
+              addr.add(4 + 3).readU8(),
+            ].join(".");
+            if (ip === TARGET_IP) {
+              if (sin_port != TARGET_PORT) {
+                addr.add(2).writeU8((TARGET_PORT >> 8) & 0xff);
+                addr.add(3).writeU8((TARGET_PORT >> 0) & 0xff);
+                console.log(
+                  `connect(${ip}:${sin_port}) -> connect(${ip}:${TARGET_PORT})`
+                );
+              } else {
+                console.log(`connect(${ip}:${sin_port})`);
               }
             }
           }
-        },
-      });
-    }
+        }
+      },
+    });
   }
 }, PLATFORM_CHECK_INTERVAL);
