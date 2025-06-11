@@ -61,8 +61,17 @@ pub struct PcapWriter {
 impl PcapWriter {
     fn socket_addr_to_pcap(addr: &SocketAddr) -> InterfaceDescriptionOption {
         match addr {
-            SocketAddr::V4(addr) => InterfaceDescriptionOption::IfIpv4Addr(Cow::Owned(Vec::from(addr.ip().octets()))),
-            SocketAddr::V6(addr) => InterfaceDescriptionOption::IfIpv6Addr(Cow::Owned(Vec::from(addr.ip().octets()))),
+            SocketAddr::V4(addr) => {
+                let ip = addr.ip().octets();
+                let mask = [255, 255, 255, 255]; // We could query the OS for interfaces instead
+                InterfaceDescriptionOption::IfIpv4Addr(Cow::Owned([ip, mask].concat()))
+            },
+            SocketAddr::V6(addr) => {
+                let ip = addr.ip().octets();
+                let mut buffer = Vec::from(ip);
+                buffer.push(64);
+                InterfaceDescriptionOption::IfIpv6Addr(Cow::Owned(buffer))
+            },
         }
     }
 
