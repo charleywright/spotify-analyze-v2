@@ -2,9 +2,21 @@ use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{anyhow, Context};
 use clap::ArgMatches;
+use count_digits::CountDigits;
+use crossterm::event::{self, Event, KeyCode};
 use pcap_file::{
-    pcapng::{blocks::enhanced_packet::EnhancedPacketOption, Block, PcapNgParser},
+    pcapng::{
+        blocks::{enhanced_packet::EnhancedPacketOption, interface_description::InterfaceDescriptionOption},
+        Block, PcapNgParser,
+    },
     DataLink, PcapError,
+};
+use ratatui::{
+    layout::{Constraint, Layout, Margin, Rect},
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState},
+    Frame,
 };
 
 use crate::pcap::{Interface, InterfaceDirection, PacketDirection};
@@ -17,19 +29,58 @@ pub fn launch_tui(args: &ArgMatches) -> anyhow::Result<()> {
         return Err(anyhow!("Failed to read file: File not found"));
     }
     let file_contents = std::fs::read(&file_path)?;
-    let capture = CaptureFile::from_slice(&file_contents)?;
+    let mut capture = CaptureFile::from_slice(&file_contents)?;
 
-    todo!("Display capture");
+    let mut status_bar = StatusBar::new(&capture);
+    let mut terminal = ratatui::init();
+    'render_loop: loop {
+        if status_bar.should_quit {
+            break 'render_loop;
+        }
+
+        terminal
+            .draw(|frame| {
+                use Constraint::{Length, Min};
+
+                let vertical = Layout::vertical([Min(1), Length(1)]);
+                let [capture_container, status_bar_area] = vertical.areas(frame.area());
+                capture.render(frame, capture_container);
+                status_bar.render(frame, status_bar_area);
+            })
+            .expect("Failed to draw frame");
+
+        let event = event::read().expect("Failed to read event");
+        if status_bar.handle_event(&event) == HandleEventResult::Consumed {
+            continue;
+        }
+        capture.handle_event(&event);
+    }
+    ratatui::restore();
 
     Ok(())
 }
 
+trait Renderable {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect);
+
+    fn handle_event(&mut self, event: &Event) -> HandleEventResult;
+}
+
+#[derive(PartialEq, Eq)]
+enum HandleEventResult {
+    Ignored,
+    Consumed,
+}
+
 struct CaptureFile {
     connections: Vec<CapturedConnection>,
+    connection_state: TableState,
+    connection_scroll_state: ScrollbarState,
+    active_connection_index: Option<usize>,
 }
 
 impl CaptureFile {
-    pub fn from_slice(input: &[u8]) -> anyhow::Result<Self> {
+    fn from_slice(input: &[u8]) -> anyhow::Result<Self> {
         // Parse the packet header
         let (mut input, mut parser) = PcapNgParser::new(input).context("Create PcapNG parser")?;
 
@@ -59,8 +110,15 @@ impl CaptureFile {
                     DataLink::USER1 => ConnectionDirection::Upstream,
                     _ => return None,
                 };
+                let description = iface.options.iter().find_map(|option| {
+                    if let InterfaceDescriptionOption::IfDescription(description) = option {
+                        Some(description.to_string())
+                    } else {
+                        None
+                    }
+                })?;
                 let interface = iface_idx as Interface;
-                let connection = CapturedConnection { direction, interface, packets: Vec::new() };
+                let connection = CapturedConnection { direction, interface, description, packets: Vec::new() };
                 Some((interface, connection))
             })
             .collect::<HashMap<_, _>>();
@@ -91,16 +149,132 @@ impl CaptureFile {
 
         let mut connections = connections.into_values().collect::<Vec<_>>();
         connections.sort_by_key(|connection| connection.interface);
+        let connection_count = connections.len();
 
-        Ok(Self { connections })
+        Ok(Self {
+            connections,
+            connection_state: TableState::new().with_selected(0),
+            connection_scroll_state: ScrollbarState::new(connection_count),
+            active_connection_index: None,
+        })
+    }
+
+    fn previous(&mut self) {
+        if self.active_connection_index.is_none() {
+            let i = match self.connection_state.selected() {
+                Some(i) => {
+                    if i == 0 {
+                        self.connections.len().saturating_sub(1)
+                    } else {
+                        i - 1
+                    }
+                },
+                None => 0,
+            };
+            self.connection_state.select(Some(i));
+            self.connection_scroll_state = self.connection_scroll_state.position(i);
+        } else {
+            todo!()
+        }
+    }
+
+    fn next(&mut self) {
+        if self.active_connection_index.is_none() {
+            let i = match self.connection_state.selected() {
+                Some(i) => {
+                    if i >= self.connections.len() - 1 {
+                        0
+                    } else {
+                        i + 1
+                    }
+                },
+                None => 0,
+            };
+            self.connection_state.select(Some(i));
+            self.connection_scroll_state = self.connection_scroll_state.position(i);
+        } else {
+            todo!()
+        }
+    }
+}
+
+impl Renderable for CaptureFile {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if self.active_connection_index.is_none() {
+            let header = ["Id".bold(), "Direction".bold(), "# Packets".bold(), "Description".bold()]
+                .into_iter()
+                .map(Cell::from)
+                .collect::<Row>()
+                .height(1);
+            let rows = self
+                .connections
+                .iter()
+                .enumerate()
+                .map(|(i, conn)| {
+                    [
+                        i.to_string().into(),
+                        conn.direction.display(),
+                        conn.packets.len().to_string().into(),
+                        Span::from(&conn.description),
+                    ]
+                    .into_iter()
+                    .map(Cell::from)
+                    .collect::<Row>()
+                })
+                .collect::<Vec<_>>();
+            let table = Table::new(rows, [
+                Constraint::Length(std::cmp::max(self.connections.len().count_digits() as u16 + 1, 5)),
+                Constraint::Length(11),
+                Constraint::Length(std::cmp::max(
+                    self.connections.iter().map(|conn| conn.packets.len()).max().unwrap_or(0).count_digits() as u16 + 1,
+                    10,
+                )),
+                Constraint::Fill(1),
+            ])
+            .header(header)
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            frame.render_stateful_widget(table, area, &mut self.connection_state);
+
+            let scrollbar = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None);
+            frame.render_stateful_widget(
+                scrollbar,
+                area.inner(Margin { vertical: 1, horizontal: 1 }),
+                &mut self.connection_scroll_state,
+            );
+        }
+    }
+
+    fn handle_event(&mut self, event: &Event) -> HandleEventResult {
+        let Event::Key(key_event) = event else {
+            return HandleEventResult::Ignored;
+        };
+        match key_event.code {
+            KeyCode::Up => self.previous(),
+            KeyCode::Down => self.next(),
+            _ => return HandleEventResult::Ignored,
+        }
+        HandleEventResult::Consumed
     }
 }
 
 type ConnectionDirection = InterfaceDirection;
 
+impl ConnectionDirection {
+    fn display(&self) -> Span {
+        match self {
+            Self::Downstream => Span::from("Downstream").light_red(),
+            Self::Upstream => Span::from("Upstream").light_green(),
+        }
+    }
+}
+
 struct CapturedConnection {
     direction: ConnectionDirection,
     interface: Interface,
+    description: String,
     packets: Vec<CapturedPacket>,
 }
 
@@ -114,4 +288,60 @@ enum FormattedString {
     NotAttempted,
     Success(String),
     Failed(String),
+}
+
+struct StatusBar {
+    help_text: Line<'static>,
+    capture_summary: Line<'static>,
+    capture_summary_width: u16,
+    should_quit: bool,
+}
+
+impl StatusBar {
+    fn new(capture: &CaptureFile) -> Self {
+        let help_text = Line::from(vec![
+            "q".bold(),
+            " to quit | ".into(),
+            "Enter".bold(),
+            " to select | ".into(),
+            "Backspace".bold(),
+            " to deselect | ".into(),
+            "Arrow[Up|Down]".bold(),
+            " to navigate".into(),
+        ])
+        .fg(Color::White)
+        .bg(Color::DarkGray);
+
+        let connection_count = capture.connections.len().to_string();
+        let packet_count =
+            capture.connections.iter().map(|connection| connection.packets.len()).sum::<usize>().to_string();
+        let capture_summary_width = (connection_count.len() + 15 + packet_count.len() + 8) as u16;
+        let capture_summary =
+            Line::from(vec![connection_count.bold(), " connections | ".into(), packet_count.bold(), " packets".into()])
+                .fg(Color::White)
+                .bg(Color::DarkGray);
+
+        Self { help_text, capture_summary, capture_summary_width, should_quit: false }
+    }
+}
+
+impl Renderable for StatusBar {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        use Constraint::{Fill, Length};
+
+        let horizontal = Layout::horizontal([Fill(1), Length(self.capture_summary_width)]);
+        let [help_text_area, summary_area] = horizontal.areas(area);
+        frame.render_widget(&self.help_text, help_text_area);
+        frame.render_widget(&self.capture_summary, summary_area);
+    }
+
+    fn handle_event(&mut self, event: &Event) -> HandleEventResult {
+        if let Event::Key(key_event) = event {
+            if key_event.code == KeyCode::Char('q') {
+                self.should_quit = true;
+                return HandleEventResult::Consumed;
+            }
+        }
+        HandleEventResult::Ignored
+    }
 }
