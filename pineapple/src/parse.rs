@@ -42,9 +42,10 @@ pub fn launch_tui(args: &ArgMatches) -> anyhow::Result<()> {
             .draw(|frame| {
                 use Constraint::{Length, Min};
 
-                let vertical = Layout::vertical([Min(1), Length(1)]);
+                let vertical = Layout::vertical([Min(1), Length(2)]);
                 let [capture_container, status_bar_area] = vertical.areas(frame.area());
                 capture.render(frame, capture_container);
+                status_bar.set_status(capture.get_status());
                 status_bar.render(frame, status_bar_area);
             })
             .expect("Failed to draw frame");
@@ -213,6 +214,20 @@ impl CaptureFile {
             self.active_connection_index = None;
         }
     }
+
+    fn get_status(&self) -> String {
+        match self.active_connection_index {
+            Some(connection_idx) => {
+                let connection = &self.connections[connection_idx];
+                format!(
+                    "Viewing {} connection {connection_idx} with {} packets",
+                    connection.direction.as_str(),
+                    connection.packets.len()
+                )
+            },
+            None => "Select a connection".to_owned(),
+        }
+    }
 }
 
 impl Renderable for CaptureFile {
@@ -230,7 +245,7 @@ impl Renderable for CaptureFile {
                 .map(|(i, conn)| {
                     [
                         i.to_string().into(),
-                        conn.direction.display(),
+                        conn.direction.as_span(),
                         conn.packets.len().to_string().into(),
                         Span::from(&conn.description),
                     ]
@@ -282,7 +297,14 @@ impl Renderable for CaptureFile {
 type ConnectionDirection = InterfaceDirection;
 
 impl ConnectionDirection {
-    fn display(&self) -> Span {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Downstream => "Downstream",
+            Self::Upstream => "Upstream",
+        }
+    }
+
+    fn as_span(&self) -> Span {
         match self {
             Self::Downstream => Span::from("Downstream").light_red(),
             Self::Upstream => Span::from("Upstream").light_green(),
@@ -313,6 +335,7 @@ struct StatusBar {
     help_text: Line<'static>,
     capture_summary: Line<'static>,
     capture_summary_width: u16,
+    status: String,
     should_quit: bool,
 }
 
@@ -340,7 +363,11 @@ impl StatusBar {
                 .fg(Color::White)
                 .bg(Color::DarkGray);
 
-        Self { help_text, capture_summary, capture_summary_width, should_quit: false }
+        Self { help_text, capture_summary, capture_summary_width, status: String::new(), should_quit: false }
+    }
+
+    fn set_status(&mut self, new_status: String) {
+        self.status = new_status;
     }
 }
 
@@ -348,8 +375,11 @@ impl Renderable for StatusBar {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use Constraint::{Fill, Length};
 
+        let vertical = Layout::vertical([Length(1), Length(1)]);
+        let [status_area, details_area] = vertical.areas(area);
+        frame.render_widget(Line::from(self.status.as_str()).fg(Color::White).bg(Color::DarkGray), status_area);
         let horizontal = Layout::horizontal([Fill(1), Length(self.capture_summary_width)]);
-        let [help_text_area, summary_area] = horizontal.areas(area);
+        let [help_text_area, summary_area] = horizontal.areas(details_area);
         frame.render_widget(&self.help_text, help_text_area);
         frame.render_widget(&self.capture_summary, summary_area);
     }
