@@ -951,6 +951,11 @@ impl PacketFormatter {
                 let doc = authentication::format_client_response_encrypted(client_response, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
+            Self::APWelcome(ap_welcome) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = authentication::format_ap_welcome(ap_welcome, &arena);
+                Paragraph::new(render_doc(doc, area.width as usize))
+            },
             Self::MercuryPacket(mercury_packet) => {
                 let arena = pretty::Arena::<()>::new();
                 let doc = mercury::format_mercury_packet(mercury_packet, &arena);
@@ -961,7 +966,6 @@ impl PacketFormatter {
                 let doc = mercury::format_mercury_packet_with_header(mercury_packet, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
-            _ => Paragraph::new("Unsupported"),
         };
         let block = Block::new().borders(Borders::TOP);
         frame.render_widget(paragraph.block(block), area);
@@ -1841,9 +1845,9 @@ mod authentication {
 
     use super::{pb_bytes_str, INDENT_SIZE};
     use crate::proto::authentication_old::{
-        ClientInfo, ClientInfoFacebook, ClientResponseEncrypted, FingerprintGrainResponse,
-        FingerprintHmacRipemdResponse, FingerprintResponseUnion, LibspotifyAppKey, LoginCredentials, PeerTicketOld,
-        PeerTicketPublicKey, PeerTicketUnion, SystemInfo,
+        APWelcome, AccountInfo, AccountInfoFacebook, ClientInfo, ClientInfoFacebook, ClientResponseEncrypted,
+        FingerprintGrainResponse, FingerprintHmacRipemdResponse, FingerprintResponseUnion, LibspotifyAppKey,
+        LoginCredentials, PeerTicketOld, PeerTicketPublicKey, PeerTicketUnion, SystemInfo,
     };
 
     pub fn format_client_response_encrypted<'a>(
@@ -2267,6 +2271,130 @@ mod authentication {
                 .append(arena.text("machine_id:"))
                 .append(arena.space())
                 .append(arena.text(client_info.machine_id()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    pub fn format_ap_welcome<'a>(
+        ap_welcome: &'a APWelcome, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if ap_welcome.has_canonical_username() {
+            doc = doc
+                .append(arena.text("canonical_username:"))
+                .append(arena.space())
+                .append(arena.text(ap_welcome.canonical_username()))
+                .append(arena.hardline());
+        }
+
+        if ap_welcome.has_account_type_logged_in() {
+            doc = doc
+                .append(arena.text("account_type_logged_in:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", ap_welcome.account_type_logged_in())))
+                .append(arena.hardline());
+        }
+
+        if ap_welcome.has_credentials_type_logged_in() {
+            doc = doc
+                .append(arena.text("credentials_type_logged_in:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", ap_welcome.credentials_type_logged_in())))
+                .append(arena.hardline());
+        }
+
+        if ap_welcome.has_reusable_auth_credentials_type() {
+            doc = doc
+                .append(arena.text("reusable_auth_credentials_type:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", ap_welcome.reusable_auth_credentials_type())))
+                .append(arena.hardline());
+        }
+
+        if ap_welcome.has_reusable_auth_credentials() {
+            doc = doc
+                .append(arena.text("reusable_auth_credentials:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(ap_welcome.reusable_auth_credentials())))
+                .append(arena.hardline());
+        }
+
+        if ap_welcome.has_lfs_secret() {
+            doc = doc
+                .append(arena.text("lfs_secret:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(ap_welcome.lfs_secret())))
+                .append(arena.hardline());
+        }
+
+        if let Some(account_info) = ap_welcome.account_info.as_ref() {
+            doc = doc
+                .append(arena.text("account_info {"))
+                .append(arena.hardline())
+                .append(format_account_info(account_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(account_info) = ap_welcome.fb.as_ref() {
+            doc = doc
+                .append(arena.text("fb {"))
+                .append(arena.hardline())
+                .append(format_account_info_facebook(account_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_account_info<'a>(
+        account_info: &'a AccountInfo, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(_account_info) = account_info.spotify.as_ref() {
+            doc = doc
+                .append(arena.text("spotify {"))
+                .append(arena.hardline())
+                // No fields
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(account_info) = account_info.facebook.as_ref() {
+            doc = doc
+                .append(arena.text("facebook {"))
+                .append(arena.hardline())
+                .append(format_account_info_facebook(account_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_account_info_facebook<'a>(
+        account_info: &'a AccountInfoFacebook, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if account_info.has_access_token() {
+            doc = doc
+                .append(arena.text("access_token:"))
+                .append(arena.space())
+                .append(arena.text(account_info.access_token()))
+                .append(arena.hardline());
+        }
+
+        if account_info.has_machine_id() {
+            doc = doc
+                .append(arena.text("machine_id:"))
+                .append(arena.space())
+                .append(arena.text(account_info.machine_id()))
                 .append(arena.hardline());
         }
 
