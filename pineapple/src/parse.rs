@@ -560,7 +560,7 @@ impl CapturedPacket {
                         None
                     };
                     self.short_string =
-                        Some(format!("Product: {product:?} Platform: {platform:?} Version: {version:?}"));
+                        Some(format!("Product: {product:?}  Platform: {platform:?}  Version: {version:?}"));
                     self.details_formatter = PacketFormatter::ClientHello(client_hello);
                     return;
                 }
@@ -677,6 +677,20 @@ impl CapturedPacket {
                         self.short_string =
                             Some(format!("Username: {username}  Platform: {platform}  Version: {version}"));
                         self.details_formatter = PacketFormatter::ClientResponseEncrypted(client_response);
+                    },
+                    Err(parse_error) => {
+                        self.short_string = Some(format!("Failed to parse: {parse_error}"));
+                        self.details_formatter = PacketFormatter::Hex(buffer);
+                    },
+                }
+                Ok(())
+            },
+            PacketType::APWelcome => {
+                match authentication_old::APWelcome::parse_from_bytes(&buffer) {
+                    Ok(ap_welcome) => {
+                        let username = ap_welcome.canonical_username.as_deref().unwrap_or("<missing>");
+                        self.short_string = Some(format!("Logged in to {username}"));
+                        self.details_formatter = PacketFormatter::APWelcome(ap_welcome);
                     },
                     Err(parse_error) => {
                         self.short_string = Some(format!("Failed to parse: {parse_error}"));
@@ -820,6 +834,7 @@ enum PacketFormatter {
     APResponseMessage(keyexchange_old::APResponseMessage),
     ClientResponsePlaintext(keyexchange_old::ClientResponsePlaintext),
     ClientResponseEncrypted(authentication_old::ClientResponseEncrypted),
+    APWelcome(authentication_old::APWelcome),
     MercuryPacket(MercuryPacket),
     MercuryPacketWithHeader(MercuryPacketWithHeader),
 }
