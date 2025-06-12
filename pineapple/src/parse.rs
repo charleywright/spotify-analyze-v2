@@ -363,7 +363,7 @@ impl Renderable for CaptureFile {
                 .packets
                 .iter_mut()
                 .map(|p| {
-                    p.try_parse();
+                    p.try_parse(connection.direction);
                     p.packet_len.unwrap_or(0)
                 })
                 .max()
@@ -379,7 +379,7 @@ impl Renderable for CaptureFile {
                 .enumerate()
                 .map(|(i, packet)| {
                     if packet.packet_type.is_none() {
-                        packet.try_parse();
+                        packet.try_parse(connection.direction);
                     }
                     [
                         i.to_string().into(),
@@ -515,7 +515,7 @@ struct CapturedPacket {
 }
 
 impl CapturedPacket {
-    fn try_parse(&mut self) {
+    fn try_parse(&mut self, connection_direction: ConnectionDirection) {
         if self.data.is_empty() {
             self.packet_type = Some(PacketType::None);
             self.packet_len = Some(0);
@@ -560,20 +560,27 @@ impl CapturedPacket {
                     return;
                 }
             } else if len == self.data.len() {
-                if matches!(self.direction, PacketDirection::Recv) {
-                    if let Ok(ap_response) = APResponseMessage::parse_from_bytes(&self.data[4..]) {
-                        self.packet_type = Some(PacketType::APChallenge);
-                        self.packet_len = Some(len as u16);
-                        self.short_string = None;
-                        self.details_formatter = PacketFormatter::APResponseMessage(ap_response);
-                        return;
-                    }
-                } else if let Ok(client_response) = ClientResponsePlaintext::parse_from_bytes(&self.data[4..]) {
-                    self.packet_type = Some(PacketType::ClientResponsePlaintext);
-                    self.packet_len = Some(len as u16);
-                    self.short_string = None;
-                    self.details_formatter = PacketFormatter::ClientResponsePlaintext(client_response);
-                    return;
+                match (connection_direction, &self.direction) {
+                    (ConnectionDirection::Upstream, PacketDirection::Recv) |
+                    (ConnectionDirection::Downstream, PacketDirection::Send) => {
+                        if let Ok(ap_response) = APResponseMessage::parse_from_bytes(&self.data[4..]) {
+                            self.packet_type = Some(PacketType::APChallenge);
+                            self.packet_len = Some(len as u16);
+                            self.short_string = None;
+                            self.details_formatter = PacketFormatter::APResponseMessage(ap_response);
+                            return;
+                        }
+                    },
+                    (ConnectionDirection::Upstream, PacketDirection::Send) |
+                    (ConnectionDirection::Downstream, PacketDirection::Recv) => {
+                        if let Ok(client_response) = ClientResponsePlaintext::parse_from_bytes(&self.data[4..]) {
+                            self.packet_type = Some(PacketType::ClientResponsePlaintext);
+                            self.packet_len = Some(len as u16);
+                            self.short_string = None;
+                            self.details_formatter = PacketFormatter::ClientResponsePlaintext(client_response);
+                            return;
+                        }
+                    },
                 }
             }
         }
