@@ -621,7 +621,36 @@ impl CapturedPacket {
                         {
                             self.packet_type = Some(PacketType::ClientResponsePlaintext);
                             self.packet_len = Some(len as u16);
-                            self.short_string = None;
+
+                            let mut notes = Vec::new();
+                            if client_response
+                                .login_crypto_response
+                                .get_or_default()
+                                .diffie_hellman
+                                .get_or_default()
+                                .has_hmac()
+                            {
+                                notes.push("DiffieHellmanHmac");
+                            }
+                            if client_response
+                                .pow_response
+                                .get_or_default()
+                                .hash_cash
+                                .get_or_default()
+                                .has_hash_suffix()
+                            {
+                                notes.push("HashCashSuffix");
+                            }
+                            if let Some(crypto_response) = client_response.crypto_response.as_ref() {
+                                if crypto_response.shannon.is_some() {
+                                    notes.push("EmptyShannonResponse");
+                                }
+                                if crypto_response.rc4_sha1_hmac.is_some() {
+                                    notes.push("EmptyRC4Sha1HMACResponse")
+                                }
+                            }
+                            self.short_string = Some(notes.join(", "));
+
                             self.details_formatter = PacketFormatter::ClientResponsePlaintext(client_response);
                             return;
                         }
@@ -912,6 +941,11 @@ impl PacketFormatter {
                 let doc = keyexchange::format_ap_response(ap_response, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
+            Self::ClientResponsePlaintext(client_response) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = keyexchange::format_client_response_plaintext(client_response, &arena);
+                Paragraph::new(render_doc(doc, area.width as usize))
+            },
             Self::MercuryPacket(mercury_packet) => {
                 let arena = pretty::Arena::<()>::new();
                 let doc = mercury::format_mercury_packet(mercury_packet, &arena);
@@ -1033,10 +1067,12 @@ mod keyexchange {
 
     use super::{pb_bytes_str, pb_enum_str, INDENT_SIZE};
     use crate::proto::keyexchange_old::{
-        APChallenge, APLoginFailed, APResponseMessage, BuildInfo, ClientHello, CryptoChallengeUnion, FeatureSet,
+        APChallenge, APLoginFailed, APResponseMessage, BuildInfo, ClientHello, ClientResponsePlaintext,
+        CryptoChallengeUnion, CryptoRc4Sha1HmacResponse, CryptoResponseUnion, CryptoShannonResponse, FeatureSet,
         FingerprintChallengeUnion, FingerprintGrainChallenge, FingerprintHmacRipemdChallenge,
         LoginCryptoChallengeUnion, LoginCryptoDiffieHellmanChallenge, LoginCryptoDiffieHellmanHello,
-        LoginCryptoHelloUnion, PoWChallengeUnion, PoWHashCashChallenge, StreamingRules, Trial, UpgradeRequiredMessage,
+        LoginCryptoDiffieHellmanResponse, LoginCryptoHelloUnion, LoginCryptoResponseUnion, PoWChallengeUnion,
+        PoWHashCashChallenge, PoWHashCashResponse, PoWResponseUnion, StreamingRules, Trial, UpgradeRequiredMessage,
     };
 
     pub fn format_client_hello<'a>(
@@ -1629,6 +1665,165 @@ mod keyexchange {
                 .append(arena.text("error_description:"))
                 .append(arena.space())
                 .append(arena.text(login_failed.error_description()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    pub fn format_client_response_plaintext<'a>(
+        client_response: &'a ClientResponsePlaintext, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(login_crypto_response) = client_response.login_crypto_response.as_ref() {
+            doc = doc
+                .append(arena.text("login_crypto_response {"))
+                .append(arena.hardline())
+                .append(format_login_crypto_response(login_crypto_response, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(pow_response) = client_response.pow_response.as_ref() {
+            doc = doc
+                .append(arena.text("pow_response {"))
+                .append(arena.hardline())
+                .append(format_pow_response(pow_response, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(crypto_response) = client_response.crypto_response.as_ref() {
+            doc = doc
+                .append(arena.text("crypto_response {"))
+                .append(arena.hardline())
+                .append(format_crypto_response(crypto_response, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_crypto_response<'a>(
+        login_crypto_response: &'a LoginCryptoResponseUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(diffie_hellman) = login_crypto_response.diffie_hellman.as_ref() {
+            doc = doc
+                .append(arena.text("diffie_hellman {"))
+                .append(arena.hardline())
+                .append(format_login_crypto_diffie_hellman_response(diffie_hellman, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_crypto_diffie_hellman_response<'a>(
+        diffie_hellman: &'a LoginCryptoDiffieHellmanResponse, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if diffie_hellman.has_hmac() {
+            doc = doc
+                .append(arena.text("hmac:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(diffie_hellman.hmac())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_pow_response<'a>(
+        pow_response: &'a PoWResponseUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(hash_cash) = pow_response.hash_cash.as_ref() {
+            doc = doc
+                .append(arena.text("hash_cash {"))
+                .append(arena.hardline())
+                .append(format_pow_hash_cash_response(hash_cash, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_pow_hash_cash_response<'a>(
+        hash_cash: &'a PoWHashCashResponse, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if hash_cash.has_hash_suffix() {
+            doc = doc
+                .append(arena.text("hash_suffix:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(hash_cash.hash_suffix())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_crypto_response<'a>(
+        crypto_response: &'a CryptoResponseUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(shannon) = crypto_response.shannon.as_ref() {
+            doc = doc
+                .append(arena.text("shannon {"))
+                .append(arena.hardline())
+                .append(format_crypto_shannon_response(shannon, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(rc4_sha1_hmac) = crypto_response.rc4_sha1_hmac.as_ref() {
+            doc = doc
+                .append(arena.text("rc4_sha1_hmac {"))
+                .append(arena.hardline())
+                .append(format_crypto_rc4_sha1_hmac_response(rc4_sha1_hmac, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_crypto_shannon_response<'a>(
+        shannon: &'a CryptoShannonResponse, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if shannon.has_dummy() {
+            doc = doc
+                .append(arena.text("dummy:"))
+                .append(arena.space())
+                .append(arena.text(shannon.dummy().to_string()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_crypto_rc4_sha1_hmac_response<'a>(
+        rc4_sha1_hmac: &'a CryptoRc4Sha1HmacResponse, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if rc4_sha1_hmac.has_dummy() {
+            doc = doc
+                .append(arena.text("dummy:"))
+                .append(arena.space())
+                .append(arena.text(rc4_sha1_hmac.dummy().to_string()))
                 .append(arena.hardline());
         }
 
