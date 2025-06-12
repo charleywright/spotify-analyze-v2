@@ -1,6 +1,7 @@
-use std::{collections::HashMap, path::PathBuf, rc::Rc};
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{anyhow, Context};
+use bytes::{Buf, Bytes};
 use clap::ArgMatches;
 use count_digits::CountDigits;
 use crossterm::event::{self, Event, KeyCode};
@@ -219,7 +220,7 @@ impl CaptureFile {
             let Some(connection) = connections.get_mut(&packet.interface_id) else {
                 continue;
             };
-            let data = Rc::new(packet.data.to_vec());
+            let data = Bytes::from(packet.data.to_vec());
             connection.packets.push(CapturedPacket {
                 direction,
                 data: data.clone(),
@@ -507,7 +508,7 @@ struct CapturedConnection {
 
 struct CapturedPacket {
     direction: PacketDirection,
-    data: Rc<Vec<u8>>,
+    data: Bytes,
     packet_type: Option<PacketType>,
     packet_len: Option<u16>,
     short_string: Option<String>,
@@ -524,7 +525,7 @@ impl CapturedPacket {
             return;
         }
 
-        if self.data.len() == 2 && self.data.as_slice() == [0x00, 0x04] {
+        if self.data.len() == 2 && self.data[0..2] == [0x00, 0x04] {
             self.packet_type = Some(PacketType::SPIRCMagic);
             self.packet_len = Some(2);
             self.short_string = Some("SPIRC Magic - 0x00 0x04".to_owned());
@@ -603,10 +604,77 @@ impl CapturedPacket {
             return;
         }
 
-        // TODO: Implement parsing for the rest of the packet types
-        let hex = hex::encode(&self.data[3..]);
-        self.short_string = Some(hex.clone());
-        self.details_formatter = PacketFormatter::Hex(self.data.clone());
+        if self.try_parse_packet(packet_type, self.data.slice(3..)).is_err() {
+            // TODO: Implement parsing for the rest of the packet types
+            let hex = hex::encode(&self.data[3..]);
+            self.short_string = Some(hex.clone());
+            self.details_formatter = PacketFormatter::Hex(self.data.clone());
+        }
+    }
+
+    fn try_parse_packet(&mut self, packet_type: PacketType, mut buffer: Bytes) -> anyhow::Result<()> {
+        let mut parse_mercury = || {
+            let seq_len = buffer.try_get_u16()?;
+            let seq = match seq_len {
+                2 => buffer.try_get_u16()? as u64,
+                4 => buffer.try_get_u32()? as u64,
+                8 => buffer.try_get_u64()?,
+                _ => return Err(anyhow!("Invalid sequence length {seq_len}")),
+            };
+            let flags = buffer.try_get_u8()?;
+            let part_count = buffer.try_get_u16()?;
+            let mut parts = Vec::with_capacity(part_count as usize);
+            for _ in 0..part_count {
+                let part_len = buffer.try_get_u16()?;
+                let part = buffer.slice(0..(part_len as usize));
+                buffer.advance(part_len as usize);
+                parts.push((part_len, part));
+            }
+            let parts = parts.into_boxed_slice();
+            let mercury_packet = MercuryPacket { seq_len, seq, flags, parts };
+            Ok(mercury_packet)
+        };
+        let mercury_string = |packet: &MercuryPacket| {
+            format!(
+                "SeqLen: {}  Seq: {:#018x}  Flags: {}  Parts: {}",
+                packet.seq_len,
+                packet.seq,
+                if packet.flags == 1 {
+                    "M_FINAL"
+                } else {
+                    "M_NONE"
+                },
+                packet.parts.len()
+            )
+        };
+
+        match packet_type {
+            PacketType::MercuryReq => {
+                let packet = parse_mercury()?;
+                self.short_string = Some(mercury_string(&packet));
+                self.details_formatter = PacketFormatter::MercuryReq(packet);
+                Ok(())
+            },
+            PacketType::MercurySub => {
+                let packet = parse_mercury()?;
+                self.short_string = Some(mercury_string(&packet));
+                self.details_formatter = PacketFormatter::MercurySub(packet);
+                Ok(())
+            },
+            PacketType::MercuryUnsub => {
+                let packet = parse_mercury()?;
+                self.short_string = Some(mercury_string(&packet));
+                self.details_formatter = PacketFormatter::MercuryUnsub(packet);
+                Ok(())
+            },
+            PacketType::MercuryEvent => {
+                let packet = parse_mercury()?;
+                self.short_string = Some(mercury_string(&packet));
+                self.details_formatter = PacketFormatter::MercuryEvent(packet);
+                Ok(())
+            },
+            _ => Err(anyhow!("Unhandled packet type")),
+        }
     }
 }
 
@@ -701,10 +769,14 @@ impl std::fmt::Display for PacketType {
 
 enum PacketFormatter {
     String(String),
-    Hex(Rc<Vec<u8>>),
+    Hex(Bytes),
     ClientHello(ClientHello),
     APResponseMessage(APResponseMessage),
     ClientResponsePlaintext(ClientResponsePlaintext),
+    MercuryReq(MercuryPacket),
+    MercurySub(MercuryPacket),
+    MercuryUnsub(MercuryPacket),
+    MercuryEvent(MercuryPacket),
 }
 
 impl PacketFormatter {
@@ -717,7 +789,7 @@ impl PacketFormatter {
             Self::String(str) => Paragraph::new(str.as_str()),
             Self::Hex(bytes) => {
                 let width = area.width as usize / 2;
-                let lines = bytes.as_slice().par_chunks(width).map(hex::encode).map(Line::from).collect::<Vec<_>>();
+                let lines = bytes.par_chunks(width).map(hex::encode).map(Line::from).collect::<Vec<_>>();
                 Paragraph::new(lines)
             },
             Self::ClientHello(client_hello) => {
@@ -741,6 +813,13 @@ impl PacketFormatter {
         let block = Block::new().borders(Borders::TOP);
         frame.render_widget(paragraph.block(block), area);
     }
+}
+
+struct MercuryPacket {
+    seq_len: u16,
+    seq: u64,
+    flags: u8,
+    parts: Box<[(u16, Bytes)]>,
 }
 
 fn pb_enum_str<E: protobuf::Enum + std::fmt::Debug>(e: &protobuf::EnumOrUnknown<E>) -> String {
