@@ -7,8 +7,9 @@ use crossterm::event::{self, Event, KeyCode};
 use num_enum::FromPrimitive;
 use pcap_file::{
     pcapng::{
+        self,
         blocks::{enhanced_packet::EnhancedPacketOption, interface_description::InterfaceDescriptionOption},
-        Block, PcapNgParser,
+        PcapNgParser,
     },
     DataLink, PcapError,
 };
@@ -16,8 +17,10 @@ use protobuf::Message;
 use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
-    widgets::{Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState},
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+    },
     Frame,
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
@@ -200,7 +203,7 @@ impl CaptureFile {
             .collect::<HashMap<_, _>>();
 
         for block in blocks {
-            let Block::EnhancedPacket(packet) = block else {
+            let pcapng::Block::EnhancedPacket(packet) = block else {
                 continue;
             };
             let direction = packet.options.iter().find_map(|option| {
@@ -703,13 +706,12 @@ impl PacketFormatter {
     }
 
     fn render(&self, frame: &mut Frame<'_>, area: Rect) {
-        match self {
-            Self::String(str) => frame.render_widget(Paragraph::new(str.as_str()), area),
+        let paragraph = match self {
+            Self::String(str) => Paragraph::new(str.as_str()),
             Self::Hex(bytes) => {
                 let width = area.width as usize / 2;
                 let lines = bytes.as_slice().par_chunks(width).map(hex::encode).map(Line::from).collect::<Vec<_>>();
-                let text = Text::from(lines);
-                frame.render_widget(text, area);
+                Paragraph::new(lines)
             },
             Self::ClientHello(client_hello) => {
                 let arena = pretty::Arena::<()>::new();
@@ -725,10 +727,12 @@ impl PacketFormatter {
                         }
                     }
                 };
-                frame.render_widget(Paragraph::new(text), area);
+                Paragraph::new(text)
             },
-            _ => frame.render_widget(Span::raw("Unsupported"), area),
-        }
+            _ => Paragraph::new("Unsupported"),
+        };
+        let block = Block::new().borders(Borders::TOP);
+        frame.render_widget(paragraph.block(block), area);
     }
 }
 
