@@ -659,6 +659,13 @@ impl CapturedPacket {
                 self.details_formatter = PacketFormatter::String(display);
                 Ok(())
             },
+            PacketType::CountryCode => {
+                let code = String::from_utf8(buffer.to_vec())?;
+                let display = format!("Country Code: {code}");
+                self.short_string = Some(display.clone());
+                self.details_formatter = PacketFormatter::String(display);
+                Ok(())
+            },
             PacketType::MercuryReq => {
                 let packet = parse_mercury()?;
                 self.short_string = Some(mercury_string(&packet));
