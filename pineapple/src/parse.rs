@@ -14,6 +14,7 @@ use pcap_file::{
     },
     DataLink, PcapError,
 };
+use pretty::DocBuilder;
 use protobuf::Message;
 use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
@@ -29,7 +30,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     pcap::{Interface, InterfaceDirection, PacketDirection},
-    proto::keyexchange_old::{APResponseMessage, ClientHello, ClientResponsePlaintext},
+    proto::{keyexchange_old, mercury_old},
 };
 
 pub fn launch_tui(args: &ArgMatches) -> anyhow::Result<()> {
@@ -540,7 +541,7 @@ impl CapturedPacket {
         if self.data.len() > 4 {
             let len = u32::from_be_bytes(self.data[0..4].try_into().unwrap()) as usize;
             if len == self.data.len() + 2 {
-                if let Ok(client_hello) = ClientHello::parse_from_bytes(&self.data[4..]) {
+                if let Ok(client_hello) = keyexchange_old::ClientHello::parse_from_bytes(&self.data[4..]) {
                     self.packet_type = Some(PacketType::ClientHello);
                     self.packet_len = Some(self.data.len() as u16);
                     let product = if client_hello.build_info.has_product() {
@@ -567,7 +568,7 @@ impl CapturedPacket {
                 match (connection_direction, &self.direction) {
                     (ConnectionDirection::Upstream, PacketDirection::Recv) |
                     (ConnectionDirection::Downstream, PacketDirection::Send) => {
-                        if let Ok(ap_response) = APResponseMessage::parse_from_bytes(&self.data[4..]) {
+                        if let Ok(ap_response) = keyexchange_old::APResponseMessage::parse_from_bytes(&self.data[4..]) {
                             self.packet_type = Some(PacketType::APChallenge);
                             self.packet_len = Some(len as u16);
                             self.short_string = None;
@@ -577,7 +578,9 @@ impl CapturedPacket {
                     },
                     (ConnectionDirection::Upstream, PacketDirection::Send) |
                     (ConnectionDirection::Downstream, PacketDirection::Recv) => {
-                        if let Ok(client_response) = ClientResponsePlaintext::parse_from_bytes(&self.data[4..]) {
+                        if let Ok(client_response) =
+                            keyexchange_old::ClientResponsePlaintext::parse_from_bytes(&self.data[4..])
+                        {
                             self.packet_type = Some(PacketType::ClientResponsePlaintext);
                             self.packet_len = Some(len as u16);
                             self.short_string = None;
@@ -608,7 +611,6 @@ impl CapturedPacket {
         }
 
         if self.try_parse_packet(packet_type, self.data.slice(3..)).is_err() {
-            // TODO: Implement parsing for the rest of the packet types
             let hex = hex::encode(&self.data[3..]);
             self.short_string = Some(hex.clone());
             self.details_formatter = PacketFormatter::Hex(self.data.clone());
@@ -616,41 +618,6 @@ impl CapturedPacket {
     }
 
     fn try_parse_packet(&mut self, packet_type: PacketType, mut buffer: Bytes) -> anyhow::Result<()> {
-        let mut parse_mercury = || {
-            let seq_len = buffer.try_get_u16()?;
-            let seq = match seq_len {
-                2 => buffer.try_get_u16()? as u64,
-                4 => buffer.try_get_u32()? as u64,
-                8 => buffer.try_get_u64()?,
-                _ => return Err(anyhow!("Invalid sequence length {seq_len}")),
-            };
-            let flags = buffer.try_get_u8()?;
-            let part_count = buffer.try_get_u16()?;
-            let mut parts = Vec::with_capacity(part_count as usize);
-            for _ in 0..part_count {
-                let part_len = buffer.try_get_u16()?;
-                let part = buffer.slice(0..(part_len as usize));
-                buffer.advance(part_len as usize);
-                parts.push((part_len, part));
-            }
-            let parts = parts.into_boxed_slice();
-            let mercury_packet = MercuryPacket { seq_len, seq, flags, parts };
-            Ok(mercury_packet)
-        };
-        let mercury_string = |packet: &MercuryPacket| {
-            format!(
-                "SeqLen: {}  Seq: {:#018x}  Flags: {}  Parts: {}",
-                packet.seq_len,
-                packet.seq,
-                if packet.flags == 1 {
-                    "M_FINAL"
-                } else {
-                    "M_NONE"
-                },
-                packet.parts.len()
-            )
-        };
-
         match packet_type {
             PacketType::Ping => {
                 let unix_offset = Duration::from_secs(buffer.try_get_u32()? as _);
@@ -695,27 +662,32 @@ impl CapturedPacket {
                 Ok(())
             },
             PacketType::MercuryReq => {
-                let packet = parse_mercury()?;
-                self.short_string = Some(mercury_string(&packet));
-                self.details_formatter = PacketFormatter::MercuryReq(packet);
+                let packet = MercuryPacket::try_from_bytes(buffer)?;
+                if let Ok(request) = MercuryRequest::try_from_packet(&packet) {
+                    self.short_string = Some(request.short_description());
+                    self.details_formatter = PacketFormatter::MercuryRequest(request);
+                } else {
+                    self.short_string = Some(packet.short_description());
+                    self.details_formatter = PacketFormatter::MercuryPacket(packet);
+                }
                 Ok(())
             },
             PacketType::MercurySub => {
-                let packet = parse_mercury()?;
-                self.short_string = Some(mercury_string(&packet));
-                self.details_formatter = PacketFormatter::MercurySub(packet);
+                let packet = MercuryPacket::try_from_bytes(buffer)?;
+                self.short_string = Some(packet.short_description());
+                self.details_formatter = PacketFormatter::MercuryPacket(packet);
                 Ok(())
             },
             PacketType::MercuryUnsub => {
-                let packet = parse_mercury()?;
-                self.short_string = Some(mercury_string(&packet));
-                self.details_formatter = PacketFormatter::MercuryUnsub(packet);
+                let packet = MercuryPacket::try_from_bytes(buffer)?;
+                self.short_string = Some(packet.short_description());
+                self.details_formatter = PacketFormatter::MercuryPacket(packet);
                 Ok(())
             },
             PacketType::MercuryEvent => {
-                let packet = parse_mercury()?;
-                self.short_string = Some(mercury_string(&packet));
-                self.details_formatter = PacketFormatter::MercuryEvent(packet);
+                let packet = MercuryPacket::try_from_bytes(buffer)?;
+                self.short_string = Some(packet.short_description());
+                self.details_formatter = PacketFormatter::MercuryPacket(packet);
                 Ok(())
             },
             _ => Err(anyhow!("Unhandled packet type")),
@@ -815,13 +787,11 @@ impl std::fmt::Display for PacketType {
 enum PacketFormatter {
     String(String),
     Hex(Bytes),
-    ClientHello(ClientHello),
-    APResponseMessage(APResponseMessage),
-    ClientResponsePlaintext(ClientResponsePlaintext),
-    MercuryReq(MercuryPacket),
-    MercurySub(MercuryPacket),
-    MercuryUnsub(MercuryPacket),
-    MercuryEvent(MercuryPacket),
+    ClientHello(keyexchange_old::ClientHello),
+    APResponseMessage(keyexchange_old::APResponseMessage),
+    ClientResponsePlaintext(keyexchange_old::ClientResponsePlaintext),
+    MercuryPacket(MercuryPacket),
+    MercuryRequest(MercuryRequest),
 }
 
 impl PacketFormatter {
@@ -830,6 +800,18 @@ impl PacketFormatter {
     }
 
     fn render(&self, frame: &mut Frame<'_>, area: Rect) {
+        fn render_doc<'a>(doc: DocBuilder<'a, pretty::Arena<'a>>, width: usize) -> String {
+            let mut buffer = Vec::new();
+            if let Err(render_error) = doc.1.render(width, &mut buffer) {
+                format!("Failed to render: {render_error:?}")
+            } else {
+                match String::from_utf8(buffer) {
+                    Ok(text) => text,
+                    Err(utf8_error) => format!("Failed to decode rendered text: {utf8_error}"),
+                }
+            }
+        }
+
         let paragraph = match self {
             Self::String(str) => Paragraph::new(str.as_str()),
             Self::Hex(bytes) => {
@@ -840,18 +822,17 @@ impl PacketFormatter {
             Self::ClientHello(client_hello) => {
                 let arena = pretty::Arena::<()>::new();
                 let doc = keyexchange::format_client_hello(client_hello, &arena);
-                let text = {
-                    let mut buffer = Vec::new();
-                    if let Err(render_error) = doc.1.render(area.width as usize, &mut buffer) {
-                        format!("Failed to render: {render_error:?}")
-                    } else {
-                        match String::from_utf8(buffer) {
-                            Ok(text) => text,
-                            Err(utf8_error) => format!("Failed to decode rendered text: {utf8_error}"),
-                        }
-                    }
-                };
-                Paragraph::new(text)
+                Paragraph::new(render_doc(doc, area.width as usize))
+            },
+            Self::MercuryPacket(mercury_packet) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = mercury::format_mercury_packet(mercury_packet, &arena);
+                Paragraph::new(render_doc(doc, area.width as usize))
+            },
+            Self::MercuryRequest(mercury_request) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = mercury::format_mercury_request(mercury_request, &arena);
+                Paragraph::new(render_doc(doc, area.width as usize))
             },
             _ => Paragraph::new("Unsupported"),
         };
@@ -860,11 +841,85 @@ impl PacketFormatter {
     }
 }
 
+#[derive(Clone)]
 struct MercuryPacket {
     seq_len: u16,
     seq: u64,
     flags: u8,
     parts: Box<[(u16, Bytes)]>,
+}
+
+impl MercuryPacket {
+    fn try_from_bytes(mut buffer: Bytes) -> anyhow::Result<Self> {
+        let seq_len = buffer.try_get_u16()?;
+        let seq = match seq_len {
+            2 => buffer.try_get_u16()? as u64,
+            4 => buffer.try_get_u32()? as u64,
+            8 => buffer.try_get_u64()?,
+            _ => return Err(anyhow!("Invalid sequence length {seq_len}")),
+        };
+        let flags = buffer.try_get_u8()?;
+        let part_count = buffer.try_get_u16()?;
+        let mut parts = Vec::with_capacity(part_count as usize);
+        for _ in 0..part_count {
+            let part_len = buffer.try_get_u16()?;
+            let part = buffer.slice(0..(part_len as usize));
+            buffer.advance(part_len as usize);
+            parts.push((part_len, part));
+        }
+        let parts = parts.into_boxed_slice();
+        Ok(Self { seq_len, seq, flags, parts })
+    }
+
+    fn short_description(&self) -> String {
+        format!(
+            "SeqLen: {}  Seq: {:#018x}  Flags: {}  Parts: {}",
+            self.seq_len,
+            self.seq,
+            if self.flags == 1 {
+                "M_FINAL"
+            } else {
+                "M_NONE"
+            },
+            self.parts.len()
+        )
+    }
+}
+
+struct MercuryRequest {
+    packet: MercuryPacket,
+    header: mercury_old::Header,
+    parts: Box<[(u16, Bytes)]>,
+}
+
+impl MercuryRequest {
+    fn try_from_packet(packet: &MercuryPacket) -> anyhow::Result<Self> {
+        if packet.parts.is_empty() {
+            return Err(anyhow!("Missing header in mercury request"));
+        }
+        let (_, header_buffer) = &packet.parts[0];
+        let header = mercury_old::Header::parse_from_bytes(header_buffer)?;
+        let parts = packet.parts.iter().skip(1).cloned().collect::<Box<[_]>>();
+        Ok(Self { packet: packet.clone(), header, parts })
+    }
+
+    fn short_description(&self) -> String {
+        format!(
+            "Seq: {:#018x}  Method: {}  URI: {}  Parts: {}",
+            self.packet.seq,
+            if self.header.has_method() {
+                self.header.method()
+            } else {
+                "<none>"
+            },
+            if self.header.has_uri() {
+                self.header.uri()
+            } else {
+                "<none>"
+            },
+            self.parts.len(),
+        )
+    }
 }
 
 fn pb_enum_str<E: protobuf::Enum + std::fmt::Debug>(e: &protobuf::EnumOrUnknown<E>) -> String {
@@ -874,19 +929,24 @@ fn pb_enum_str<E: protobuf::Enum + std::fmt::Debug>(e: &protobuf::EnumOrUnknown<
 fn pb_bytes_str(bytes: &[u8]) -> String {
     use base64::Engine;
 
-    let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
-    format!("(bytes) {b64}")
+    if let Ok(str) = str::from_utf8(bytes) {
+        let str = str.replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r");
+        format!("(bytes) {str}")
+    } else {
+        let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
+        format!("(bytes) {b64}")
+    }
 }
+
+const INDENT_SIZE: usize = 2;
 
 mod keyexchange {
     use pretty::{DocAllocator, DocBuilder};
 
-    use super::{pb_bytes_str, pb_enum_str};
+    use super::{pb_bytes_str, pb_enum_str, INDENT_SIZE};
     use crate::proto::keyexchange_old::{
         BuildInfo, ClientHello, FeatureSet, LoginCryptoDiffieHellmanHello, LoginCryptoHelloUnion, StreamingRules, Trial,
     };
-
-    const INDENT_SIZE: usize = 2;
 
     pub fn format_client_hello<'a>(
         client_hello: &'a ClientHello, arena: &'a pretty::Arena<'a>,
@@ -1129,6 +1189,169 @@ mod keyexchange {
                 .append(arena.text("no_autostart:"))
                 .append(arena.space())
                 .append(trial.no_autostart().to_string())
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+}
+
+mod mercury {
+    use bytes::Bytes;
+    use pretty::{DocAllocator, DocBuilder};
+
+    use super::{pb_bytes_str, MercuryPacket, MercuryRequest, INDENT_SIZE};
+    use crate::proto::mercury_old::Header;
+
+    fn format_mercury_packet_fields<'a>(
+        mercury_packet: &'a MercuryPacket, mut doc: DocBuilder<'a, pretty::Arena<'a>>, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        doc = doc
+            .append(arena.text("seq_len:"))
+            .append(arena.space())
+            .append(mercury_packet.seq_len.to_string())
+            .append(arena.hardline());
+        doc = doc
+            .append(arena.text("sequence:"))
+            .append(arena.space())
+            .append(format!("{:#018x}", mercury_packet.seq))
+            .append(arena.hardline());
+        doc = doc
+            .append(arena.text("flags:"))
+            .append(arena.space())
+            .append(if mercury_packet.flags == 1 {
+                "M_FINAL"
+            } else {
+                "M_NONE"
+            })
+            .append(arena.hardline());
+        doc = doc
+            .append(arena.text("part_count:"))
+            .append(arena.space())
+            .append(mercury_packet.parts.len().to_string())
+            .append(arena.hardline());
+        doc
+    }
+
+    fn format_mercury_packet_parts<'a>(
+        parts: &[(u16, Bytes)], mut doc: DocBuilder<'a, pretty::Arena<'a>>, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        for (part_len, part) in parts {
+            doc = doc
+                .append(arena.text("part {"))
+                .append(arena.hardline())
+                .append(
+                    {
+                        let mut doc = arena.nil();
+
+                        doc = doc
+                            .append(arena.text("part_len:"))
+                            .append(arena.space())
+                            .append(part_len.to_string())
+                            .append(arena.hardline());
+
+                        doc = doc
+                            .append(arena.text("part:"))
+                            .append(arena.space())
+                            .append(pb_bytes_str(part))
+                            .append(arena.hardline());
+
+                        doc
+                    }
+                    .indent(INDENT_SIZE),
+                )
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+        doc
+    }
+
+    pub fn format_mercury_packet<'a>(
+        mercury_packet: &'a MercuryPacket, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+        doc = format_mercury_packet_fields(mercury_packet, doc, arena);
+        doc = format_mercury_packet_parts(&mercury_packet.parts, doc, arena);
+        doc
+    }
+
+    pub fn format_mercury_request<'a>(
+        mercury_request: &'a MercuryRequest, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+        doc = format_mercury_packet_fields(&mercury_request.packet, doc, arena);
+
+        doc = doc
+            .append(arena.text("header {"))
+            .append(arena.hardline())
+            .append(format_header(&mercury_request.header, arena).indent(INDENT_SIZE))
+            .append(arena.text("}"))
+            .append(arena.hardline());
+
+        doc = format_mercury_packet_parts(&mercury_request.parts, doc, arena);
+        doc
+    }
+
+    fn format_header<'a>(header: &'a Header, arena: &'a pretty::Arena<'a>) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if header.has_uri() {
+            doc = doc.append(arena.text("uri:")).append(arena.space()).append(header.uri()).append(arena.hardline());
+        }
+
+        if header.has_content_type() {
+            doc = doc
+                .append(arena.text("content_type:"))
+                .append(arena.space())
+                .append(header.content_type())
+                .append(arena.hardline());
+        }
+
+        if header.has_method() {
+            doc = doc
+                .append(arena.text("method:"))
+                .append(arena.space())
+                .append(header.method())
+                .append(arena.hardline());
+        }
+
+        if header.has_status_code() {
+            doc = doc
+                .append(arena.text("status_code:"))
+                .append(arena.space())
+                .append(header.status_code().to_string())
+                .append(arena.hardline());
+        }
+
+        for user_field in &header.user_fields {
+            doc = doc
+                .append(arena.text("user_field {"))
+                .append(arena.hardline())
+                .append(
+                    {
+                        let mut doc = arena.nil();
+
+                        if user_field.has_key() {
+                            doc = doc
+                                .append(arena.text("key:"))
+                                .append(arena.space())
+                                .append(user_field.key())
+                                .append(arena.hardline());
+                        }
+
+                        if user_field.has_value() {
+                            doc = doc
+                                .append(arena.text("value:"))
+                                .append(arena.space())
+                                .append(pb_bytes_str(user_field.value()))
+                                .append(arena.hardline());
+                        }
+
+                        doc
+                    }
+                    .indent(INDENT_SIZE),
+                )
+                .append(arena.text("}"))
                 .append(arena.hardline());
         }
 
