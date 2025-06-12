@@ -358,6 +358,8 @@ impl Renderable for CaptureFile {
                 }),
             ]);
             let [packet_list_area, packet_details_area] = vertical.areas(area);
+            let horizontal = Layout::horizontal([Constraint::Fill(1), Constraint::Length(3)]);
+            let [packet_list_area, packet_list_scroll_area] = horizontal.areas(packet_list_area);
 
             let connection = &mut self.connections[connection_index];
             let packet_count = connection.packets.len();
@@ -412,7 +414,7 @@ impl Renderable for CaptureFile {
                 .end_symbol(None);
             frame.render_stateful_widget(
                 scrollbar,
-                packet_list_area.inner(Margin { vertical: 1, horizontal: 1 }),
+                packet_list_scroll_area.inner(Margin { vertical: 1, horizontal: 1 }),
                 &mut self.packet_scroll_state,
             );
 
