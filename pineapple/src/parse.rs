@@ -30,7 +30,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     pcap::{Interface, InterfaceDirection, PacketDirection},
-    proto::{keyexchange_old, mercury_old},
+    proto::{authentication_old, keyexchange_old, mercury_old},
 };
 
 pub fn launch_tui(args: &ArgMatches) -> anyhow::Result<()> {
@@ -667,6 +667,24 @@ impl CapturedPacket {
                 self.details_formatter = PacketFormatter::String(display);
                 Ok(())
             },
+            PacketType::Login => {
+                match authentication_old::ClientResponseEncrypted::parse_from_bytes(&buffer) {
+                    Ok(client_response) => {
+                        let username =
+                            client_response.login_credentials.get_or_default().username.as_deref().unwrap_or("<none>");
+                        let platform = client_response.platform_model.as_deref().unwrap_or("<none>");
+                        let version = client_response.version_string.as_deref().unwrap_or("<none>");
+                        self.short_string =
+                            Some(format!("Username: {username}  Platform: {platform}  Version: {version}"));
+                        self.details_formatter = PacketFormatter::ClientResponseEncrypted(client_response);
+                    },
+                    Err(parse_error) => {
+                        self.short_string = Some(format!("Failed to parse: {parse_error}"));
+                        self.details_formatter = PacketFormatter::Hex(buffer);
+                    },
+                }
+                Ok(())
+            },
             PacketType::MercuryReq => {
                 let packet = MercuryPacket::try_from_bytes(buffer)?;
                 if let Ok(request) = MercuryPacketWithHeader::try_from_packet(&packet) {
@@ -801,6 +819,7 @@ enum PacketFormatter {
     ClientHello(keyexchange_old::ClientHello),
     APResponseMessage(keyexchange_old::APResponseMessage),
     ClientResponsePlaintext(keyexchange_old::ClientResponsePlaintext),
+    ClientResponseEncrypted(authentication_old::ClientResponseEncrypted),
     MercuryPacket(MercuryPacket),
     MercuryPacketWithHeader(MercuryPacketWithHeader),
 }
