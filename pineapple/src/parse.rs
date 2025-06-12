@@ -661,6 +661,12 @@ impl CapturedPacket {
                 self.details_formatter = PacketFormatter::String(display);
                 Ok(())
             },
+            PacketType::LegacyWelcome => {
+                let display = "Welcome! (empty packet)".to_owned();
+                self.short_string = Some(display.clone());
+                self.details_formatter = PacketFormatter::String(display);
+                Ok(())
+            },
             PacketType::MercuryReq => {
                 let packet = MercuryPacket::try_from_bytes(buffer)?;
                 if let Ok(request) = MercuryPacketWithHeader::try_from_packet(&packet) {
