@@ -946,6 +946,11 @@ impl PacketFormatter {
                 let doc = keyexchange::format_client_response_plaintext(client_response, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
+            Self::ClientResponseEncrypted(client_response) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = authentication::format_client_response_encrypted(client_response, &arena);
+                Paragraph::new(render_doc(doc, area.width as usize))
+            },
             Self::MercuryPacket(mercury_packet) => {
                 let arena = pretty::Arena::<()>::new();
                 let doc = mercury::format_mercury_packet(mercury_packet, &arena);
@@ -1824,6 +1829,444 @@ mod keyexchange {
                 .append(arena.text("dummy:"))
                 .append(arena.space())
                 .append(arena.text(rc4_sha1_hmac.dummy().to_string()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+}
+
+mod authentication {
+    use pretty::{DocAllocator, DocBuilder};
+
+    use super::{pb_bytes_str, INDENT_SIZE};
+    use crate::proto::authentication_old::{
+        ClientInfo, ClientInfoFacebook, ClientResponseEncrypted, FingerprintGrainResponse,
+        FingerprintHmacRipemdResponse, FingerprintResponseUnion, LibspotifyAppKey, LoginCredentials, PeerTicketOld,
+        PeerTicketPublicKey, PeerTicketUnion, SystemInfo,
+    };
+
+    pub fn format_client_response_encrypted<'a>(
+        client_response: &'a ClientResponseEncrypted, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(login_credentials) = client_response.login_credentials.as_ref() {
+            doc = doc
+                .append(arena.text("login_credentials {"))
+                .append(arena.hardline())
+                .append(format_login_credentials(login_credentials, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if client_response.has_account_creation() {
+            doc = doc
+                .append(arena.text("account_creation:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", client_response.account_creation())))
+                .append(arena.hardline());
+        }
+
+        if let Some(fingerprint_response) = client_response.fingerprint_response.as_ref() {
+            doc = doc
+                .append(arena.text("fingerprint_response {"))
+                .append(arena.hardline())
+                .append(format_fingerprint_response(fingerprint_response, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(peer_ticket) = client_response.peer_ticket.as_ref() {
+            doc = doc
+                .append(arena.text("peer_ticket {"))
+                .append(arena.hardline())
+                .append(format_peer_ticket(peer_ticket, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(system_info) = client_response.system_info.as_ref() {
+            doc = doc
+                .append(arena.text("system_info {"))
+                .append(arena.hardline())
+                .append(format_system_info(system_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if client_response.has_platform_model() {
+            doc = doc
+                .append(arena.text("platform_model:"))
+                .append(arena.space())
+                .append(arena.text(client_response.platform_model()))
+                .append(arena.hardline());
+        }
+
+        if client_response.has_version_string() {
+            doc = doc
+                .append(arena.text("version_string:"))
+                .append(arena.space())
+                .append(arena.text(client_response.version_string()))
+                .append(arena.hardline());
+        }
+
+        if let Some(app_key) = client_response.appkey.as_ref() {
+            doc = doc
+                .append(arena.text("appkey {"))
+                .append(arena.hardline())
+                .append(format_libspotify_app_key(app_key, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(client_info) = client_response.client_info.as_ref() {
+            doc = doc
+                .append(arena.text("client_info {"))
+                .append(arena.hardline())
+                .append(format_client_info(client_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_credentials<'a>(
+        login_credentials: &'a LoginCredentials, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if login_credentials.has_username() {
+            doc = doc
+                .append(arena.text("username:"))
+                .append(arena.space())
+                .append(arena.text(login_credentials.username()))
+                .append(arena.hardline());
+        }
+
+        if login_credentials.has_typ() {
+            doc = doc
+                .append(arena.text("typ:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", login_credentials.typ())))
+                .append(arena.hardline());
+        }
+
+        if login_credentials.has_auth_data() {
+            doc = doc
+                .append(arena.text("auth_data:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(login_credentials.auth_data())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_fingerprint_response<'a>(
+        fingerprint_response: &'a FingerprintResponseUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(grain) = fingerprint_response.grain.as_ref() {
+            doc = doc
+                .append(arena.text("grain {"))
+                .append(arena.hardline())
+                .append(format_fingerprint_grain_response(grain, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(hmac_ripemd) = fingerprint_response.hmac_ripemd.as_ref() {
+            doc = doc
+                .append(arena.text("hmac_ripemd {"))
+                .append(arena.hardline())
+                .append(format_fingerprint_hmac_ripemd_response(hmac_ripemd, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_fingerprint_grain_response<'a>(
+        grain: &'a FingerprintGrainResponse, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if grain.has_encrypted_key() {
+            doc = doc
+                .append(arena.text("encrypted_key:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(grain.encrypted_key())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_fingerprint_hmac_ripemd_response<'a>(
+        hmac_ripemd: &'a FingerprintHmacRipemdResponse, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if hmac_ripemd.has_hmac() {
+            doc = doc
+                .append(arena.text("hmac:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(hmac_ripemd.hmac())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_peer_ticket<'a>(
+        peer_ticket: &'a PeerTicketUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(public_key) = peer_ticket.public_key.as_ref() {
+            doc = doc
+                .append(arena.text("public_key {"))
+                .append(arena.hardline())
+                .append(format_peer_ticket_public_key(public_key, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(old_ticket) = peer_ticket.old_ticket.as_ref() {
+            doc = doc
+                .append(arena.text("old_ticket {"))
+                .append(arena.hardline())
+                .append(format_peer_ticket_old_ticket(old_ticket, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_peer_ticket_public_key<'a>(
+        public_key: &'a PeerTicketPublicKey, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if public_key.has_public_key() {
+            doc = doc
+                .append(arena.text("public_key:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(public_key.public_key())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_peer_ticket_old_ticket<'a>(
+        old_ticket: &'a PeerTicketOld, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if old_ticket.has_peer_ticket() {
+            doc = doc
+                .append(arena.text("peer_ticket:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(old_ticket.peer_ticket())))
+                .append(arena.hardline());
+        }
+
+        if old_ticket.has_peer_ticket_signature() {
+            doc = doc
+                .append(arena.text("peer_ticket_signature:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(old_ticket.peer_ticket_signature())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_system_info<'a>(
+        system_info: &'a SystemInfo, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if system_info.has_cpu_family() {
+            doc = doc
+                .append(arena.text("cpu_family:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", system_info.cpu_family())))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_cpu_subtype() {
+            doc = doc
+                .append(arena.text("cpu_subtype:"))
+                .append(arena.space())
+                .append(arena.text(system_info.cpu_subtype().to_string()))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_cpu_ext() {
+            doc = doc
+                .append(arena.text("cpu_ext:"))
+                .append(arena.space())
+                .append(arena.text(system_info.cpu_ext().to_string()))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_brand() {
+            doc = doc
+                .append(arena.text("brand:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", system_info.brand())))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_brand_flags() {
+            doc = doc
+                .append(arena.text("brand_flags:"))
+                .append(arena.space())
+                .append(arena.text(system_info.brand_flags().to_string()))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_os() {
+            doc = doc
+                .append(arena.text("os:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", system_info.os())))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_os_version() {
+            doc = doc
+                .append(arena.text("os_version:"))
+                .append(arena.space())
+                .append(arena.text(system_info.os_version().to_string()))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_os_ext() {
+            doc = doc
+                .append(arena.text("os_ext:"))
+                .append(arena.space())
+                .append(arena.text(system_info.os_ext().to_string()))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_system_information_string() {
+            doc = doc
+                .append(arena.text("system_information_string:"))
+                .append(arena.space())
+                .append(arena.text(system_info.system_information_string()))
+                .append(arena.hardline());
+        }
+
+        if system_info.has_device_id() {
+            doc = doc
+                .append(arena.text("device_id:"))
+                .append(arena.space())
+                .append(arena.text(system_info.device_id()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_libspotify_app_key<'a>(
+        app_key: &'a LibspotifyAppKey, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if app_key.has_version() {
+            doc = doc
+                .append(arena.text("version:"))
+                .append(arena.space())
+                .append(arena.text(app_key.version().to_string()))
+                .append(arena.hardline());
+        }
+
+        if app_key.has_devkey() {
+            doc = doc
+                .append(arena.text("devkey:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(app_key.devkey())))
+                .append(arena.hardline());
+        }
+
+        if app_key.has_signature() {
+            doc = doc
+                .append(arena.text("signature:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(app_key.signature())))
+                .append(arena.hardline());
+        }
+
+        if app_key.has_useragent() {
+            doc = doc
+                .append(arena.text("useragent:"))
+                .append(arena.space())
+                .append(arena.text(app_key.useragent()))
+                .append(arena.hardline());
+        }
+
+        if app_key.has_callback_hash() {
+            doc = doc
+                .append(arena.text("callback_hash:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(app_key.callback_hash())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_client_info<'a>(
+        client_info: &'a ClientInfo, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if client_info.has_limited() {
+            doc = doc
+                .append(arena.text("limited:"))
+                .append(arena.space())
+                .append(arena.text(client_info.limited().to_string()))
+                .append(arena.hardline());
+        }
+
+        if let Some(client_info) = client_info.fb.as_ref() {
+            doc = doc
+                .append(arena.text("fb {"))
+                .append(arena.hardline())
+                .append(format_client_info_facebook(client_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if client_info.has_language() {
+            doc = doc
+                .append(arena.text("language:"))
+                .append(arena.space())
+                .append(arena.text(client_info.language()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_client_info_facebook<'a>(
+        client_info: &'a ClientInfoFacebook, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if client_info.has_machine_id() {
+            doc = doc
+                .append(arena.text("machine_id:"))
+                .append(arena.space())
+                .append(arena.text(client_info.machine_id()))
                 .append(arena.hardline());
         }
 
