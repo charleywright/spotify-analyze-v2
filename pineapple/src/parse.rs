@@ -569,9 +569,47 @@ impl CapturedPacket {
                     (ConnectionDirection::Upstream, PacketDirection::Recv) |
                     (ConnectionDirection::Downstream, PacketDirection::Send) => {
                         if let Ok(ap_response) = keyexchange_old::APResponseMessage::parse_from_bytes(&self.data[4..]) {
-                            self.packet_type = Some(PacketType::APChallenge);
+                            self.packet_type = Some(PacketType::APResponseMessage);
                             self.packet_len = Some(len as u16);
-                            self.short_string = None;
+
+                            let mut notes = Vec::new();
+                            if let Some(challenge) = ap_response.challenge.as_ref() {
+                                notes.push("Challenge");
+                                if let Some(login_crypto_challenge) = challenge.login_crypto_challenge.as_ref() {
+                                    if login_crypto_challenge.diffie_hellman.is_some() {
+                                        notes.push("LoginCryptoDiffieHellman");
+                                    }
+                                }
+                                if let Some(fingerprint_challenge) = challenge.fingerprint_challenge.as_ref() {
+                                    if fingerprint_challenge.grain.get_or_default().has_kek() {
+                                        notes.push("FingerprintGrain");
+                                    }
+                                    if fingerprint_challenge.hmac_ripemd.get_or_default().has_challenge() {
+                                        notes.push("FingerprintHmacRipeMD");
+                                    }
+                                }
+                                if let Some(pow_challenge) = challenge.pow_challenge.as_ref() {
+                                    if pow_challenge.hash_cash.get_or_default().has_target() {
+                                        notes.push("PoWHashCash");
+                                    }
+                                }
+                                if let Some(crypto_challenge) = challenge.crypto_challenge.as_ref() {
+                                    if crypto_challenge.shannon.is_some() {
+                                        notes.push("EmptyShannon");
+                                    }
+                                    if crypto_challenge.rc4_sha1_hmac.is_some() {
+                                        notes.push("EmptyRC4Sha1HMAC");
+                                    }
+                                }
+                            }
+                            if ap_response.upgrade.is_some() {
+                                notes.push("UpgradeRequired");
+                            }
+                            if ap_response.login_failed.is_some() {
+                                notes.push("LoginFailed");
+                            }
+                            self.short_string = Some(notes.join(", "));
+
                             self.details_formatter = PacketFormatter::APResponseMessage(ap_response);
                             return;
                         }
@@ -781,7 +819,7 @@ enum PacketType {
     // These aren't real, used for displaying
     SPIRCMagic = 0xf0,
     ClientHello = 0xf1,
-    APChallenge = 0xf2,
+    APResponseMessage = 0xf2,
     ClientResponsePlaintext = 0xf3,
 
     #[num_enum(catch_all)]
@@ -820,7 +858,7 @@ impl std::fmt::Display for PacketType {
             Self::PreferredLocale => write!(f, "PreferredLocale"),
             Self::SPIRCMagic => write!(f, "SPIRC Magic"),
             Self::ClientHello => write!(f, "ClientHello"),
-            Self::APChallenge => write!(f, "APChallenge"),
+            Self::APResponseMessage => write!(f, "APResponseMessage"),
             Self::ClientResponsePlaintext => write!(f, "ClientResponsePlaintext"),
             Self::Unknown(value) => write!(f, "Unknown({value:#04x})"),
         }
@@ -867,6 +905,11 @@ impl PacketFormatter {
             Self::ClientHello(client_hello) => {
                 let arena = pretty::Arena::<()>::new();
                 let doc = keyexchange::format_client_hello(client_hello, &arena);
+                Paragraph::new(render_doc(doc, area.width as usize))
+            },
+            Self::APResponseMessage(ap_response) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = keyexchange::format_ap_response(ap_response, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
             Self::MercuryPacket(mercury_packet) => {
@@ -990,7 +1033,10 @@ mod keyexchange {
 
     use super::{pb_bytes_str, pb_enum_str, INDENT_SIZE};
     use crate::proto::keyexchange_old::{
-        BuildInfo, ClientHello, FeatureSet, LoginCryptoDiffieHellmanHello, LoginCryptoHelloUnion, StreamingRules, Trial,
+        APChallenge, APLoginFailed, APResponseMessage, BuildInfo, ClientHello, CryptoChallengeUnion, FeatureSet,
+        FingerprintChallengeUnion, FingerprintGrainChallenge, FingerprintHmacRipemdChallenge,
+        LoginCryptoChallengeUnion, LoginCryptoDiffieHellmanChallenge, LoginCryptoDiffieHellmanHello,
+        LoginCryptoHelloUnion, PoWChallengeUnion, PoWHashCashChallenge, StreamingRules, Trial, UpgradeRequiredMessage,
     };
 
     pub fn format_client_hello<'a>(
@@ -1234,6 +1280,355 @@ mod keyexchange {
                 .append(arena.text("no_autostart:"))
                 .append(arena.space())
                 .append(trial.no_autostart().to_string())
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    pub fn format_ap_response<'a>(
+        ap_response: &'a APResponseMessage, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(challenge) = ap_response.challenge.as_ref() {
+            doc = doc
+                .append(arena.text("challenge {"))
+                .append(arena.hardline())
+                .append(format_ap_challenge(challenge, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(upgrade) = ap_response.upgrade.as_ref() {
+            doc = doc
+                .append(arena.text("upgrade {"))
+                .append(arena.hardline())
+                .append(format_ap_upgrade(upgrade, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(login_failed) = ap_response.login_failed.as_ref() {
+            doc = doc
+                .append(arena.text("login_failed {"))
+                .append(arena.hardline())
+                .append(format_login_failed(login_failed, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_ap_challenge<'a>(
+        ap_challenge: &'a APChallenge, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(login_crypto_challenge) = ap_challenge.login_crypto_challenge.as_ref() {
+            doc = doc
+                .append(arena.text("login_crypto_challenge {"))
+                .append(arena.hardline())
+                .append(format_login_crypto_challenge(login_crypto_challenge, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(fingerprint_challenge) = ap_challenge.fingerprint_challenge.as_ref() {
+            doc = doc
+                .append(arena.text("fingerprint_challenge {"))
+                .append(arena.hardline())
+                .append(format_fingerprint_challenge(fingerprint_challenge, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(pow_challenge) = ap_challenge.pow_challenge.as_ref() {
+            doc = doc
+                .append(arena.text("pow_challenge {"))
+                .append(arena.hardline())
+                .append(format_pow_challenge(pow_challenge, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(crypto_challenge) = ap_challenge.crypto_challenge.as_ref() {
+            doc = doc
+                .append(arena.text("crypto_challenge {"))
+                .append(arena.hardline())
+                .append(format_crypto_challenge(crypto_challenge, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if ap_challenge.has_server_nonce() {
+            doc = doc
+                .append(arena.text("server_nonce:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(ap_challenge.server_nonce())))
+                .append(arena.hardline());
+        }
+
+        if ap_challenge.has_padding() {
+            doc = doc
+                .append(arena.text("padding:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(ap_challenge.padding())))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_crypto_challenge<'a>(
+        login_crypto_challenge: &'a LoginCryptoChallengeUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(diffie_hellman) = login_crypto_challenge.diffie_hellman.as_ref() {
+            doc = doc
+                .append(arena.text("diffie_hellman {"))
+                .append(arena.hardline())
+                .append(format_login_crypto_diffie_hellman_challenge(diffie_hellman, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_crypto_diffie_hellman_challenge<'a>(
+        diffie_hellman: &'a LoginCryptoDiffieHellmanChallenge, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if diffie_hellman.has_gs() {
+            doc = doc
+                .append(arena.text("gs:"))
+                .append(arena.space())
+                .append(pb_bytes_str(diffie_hellman.gs()))
+                .append(arena.hardline());
+        }
+
+        if diffie_hellman.has_server_signature_key() {
+            doc = doc
+                .append(arena.text("server_signature_key:"))
+                .append(arena.space())
+                .append(diffie_hellman.server_signature_key().to_string())
+                .append(arena.hardline());
+        }
+
+        if diffie_hellman.has_gs_signature() {
+            doc = doc
+                .append(arena.text("gs_signature:"))
+                .append(arena.space())
+                .append(pb_bytes_str(diffie_hellman.gs_signature()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_fingerprint_challenge<'a>(
+        fingerprint_challenge: &'a FingerprintChallengeUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(grain) = fingerprint_challenge.grain.as_ref() {
+            doc = doc
+                .append(arena.text("grain {"))
+                .append(arena.hardline())
+                .append(format_fingerprint_grain_challenge(grain, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if let Some(hmac_ripemd) = fingerprint_challenge.hmac_ripemd.as_ref() {
+            doc = doc
+                .append(arena.text("hmac_ripemd {"))
+                .append(arena.hardline())
+                .append(format_fingerprint_hmac_ripemd_challenge(hmac_ripemd, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_fingerprint_grain_challenge<'a>(
+        grain: &'a FingerprintGrainChallenge, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if grain.has_kek() {
+            doc = doc
+                .append(arena.text("kek:"))
+                .append(arena.space())
+                .append(pb_bytes_str(grain.kek()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_fingerprint_hmac_ripemd_challenge<'a>(
+        hmac_ripemd: &'a FingerprintHmacRipemdChallenge, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if hmac_ripemd.has_challenge() {
+            doc = doc
+                .append(arena.text("challenge:"))
+                .append(arena.space())
+                .append(pb_bytes_str(hmac_ripemd.challenge()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_pow_challenge<'a>(
+        pow_challenge: &'a PoWChallengeUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(hash_cash) = pow_challenge.hash_cash.as_ref() {
+            doc = doc
+                .append(arena.text("hash_cash {"))
+                .append(arena.hardline())
+                .append(format_pow_hash_cash_challenge(hash_cash, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_pow_hash_cash_challenge<'a>(
+        hash_cash: &'a PoWHashCashChallenge, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if hash_cash.has_prefix() {
+            doc = doc
+                .append(arena.text("prefix:"))
+                .append(arena.space())
+                .append(pb_bytes_str(hash_cash.prefix()))
+                .append(arena.hardline());
+        }
+
+        if hash_cash.has_length() {
+            doc = doc
+                .append(arena.text("length:"))
+                .append(arena.space())
+                .append(hash_cash.length().to_string())
+                .append(arena.hardline());
+        }
+
+        if hash_cash.has_target() {
+            doc = doc
+                .append(arena.text("target:"))
+                .append(arena.space())
+                .append(hash_cash.target().to_string())
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_crypto_challenge<'a>(
+        crypto_challenge: &'a CryptoChallengeUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if crypto_challenge.shannon.is_some() {
+            doc = doc
+                .append(arena.text("shannon {"))
+                .append(arena.hardline())
+                // No fields
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if crypto_challenge.rc4_sha1_hmac.is_some() {
+            doc = doc
+                .append(arena.text("rc4_sha1_hmac {"))
+                .append(arena.hardline())
+                // No fields
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_ap_upgrade<'a>(
+        upgrade: &'a UpgradeRequiredMessage, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if upgrade.has_upgrade_signed_part() {
+            doc = doc
+                .append(arena.text("upgrade_signed_part:"))
+                .append(arena.space())
+                .append(pb_bytes_str(upgrade.upgrade_signed_part()))
+                .append(arena.hardline());
+        }
+
+        if upgrade.has_signature() {
+            doc = doc
+                .append(arena.text("signature:"))
+                .append(arena.space())
+                .append(pb_bytes_str(upgrade.signature()))
+                .append(arena.hardline());
+        }
+
+        if upgrade.has_http_suffix() {
+            doc = doc
+                .append(arena.text("http_suffix:"))
+                .append(arena.space())
+                .append(upgrade.http_suffix())
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_failed<'a>(
+        login_failed: &'a APLoginFailed, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if login_failed.has_error_code() {
+            doc = doc
+                .append(arena.text("error_code:"))
+                .append(arena.space())
+                .append(arena.text(format!("{:?}", login_failed.error_code())))
+                .append(arena.hardline());
+        }
+
+        if login_failed.has_retry_delay() {
+            doc = doc
+                .append(arena.text("retry_delay:"))
+                .append(arena.space())
+                .append(arena.text(login_failed.retry_delay().to_string()))
+                .append(arena.hardline());
+        }
+
+        if login_failed.has_expiry() {
+            doc = doc
+                .append(arena.text("expiry:"))
+                .append(arena.space())
+                .append(arena.text(login_failed.expiry().to_string()))
+                .append(arena.hardline());
+        }
+
+        if login_failed.has_error_description() {
+            doc = doc
+                .append(arena.text("error_description:"))
+                .append(arena.space())
+                .append(arena.text(login_failed.error_description()))
                 .append(arena.hardline());
         }
 
