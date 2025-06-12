@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use anyhow::{anyhow, Context};
 use bytes::{Buf, Bytes};
@@ -25,6 +25,7 @@ use ratatui::{
     Frame,
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime, PrimitiveDateTime};
 
 use crate::{
     pcap::{Interface, InterfaceDirection, PacketDirection},
@@ -649,6 +650,15 @@ impl CapturedPacket {
         };
 
         match packet_type {
+            PacketType::Ping => {
+                let unix_offset = Duration::from_secs(buffer.try_get_u32()? as _);
+                let timestamp = OffsetDateTime::UNIX_EPOCH + unix_offset;
+                let formatted_timestamp = timestamp.format(&Rfc3339).unwrap_or(unix_offset.as_secs().to_string());
+                let display = format!("Ping at {formatted_timestamp}");
+                self.short_string = Some(display.clone());
+                self.details_formatter = PacketFormatter::String(display);
+                Ok(())
+            },
             PacketType::MercuryReq => {
                 let packet = parse_mercury()?;
                 self.short_string = Some(mercury_string(&packet));
