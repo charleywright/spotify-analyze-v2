@@ -663,9 +663,9 @@ impl CapturedPacket {
             },
             PacketType::MercuryReq => {
                 let packet = MercuryPacket::try_from_bytes(buffer)?;
-                if let Ok(request) = MercuryRequest::try_from_packet(&packet) {
+                if let Ok(request) = MercuryPacketWithHeader::try_from_packet(&packet) {
                     self.short_string = Some(request.short_description());
-                    self.details_formatter = PacketFormatter::MercuryRequest(request);
+                    self.details_formatter = PacketFormatter::MercuryPacketWithHeader(request);
                 } else {
                     self.short_string = Some(packet.short_description());
                     self.details_formatter = PacketFormatter::MercuryPacket(packet);
@@ -686,8 +686,13 @@ impl CapturedPacket {
             },
             PacketType::MercuryEvent => {
                 let packet = MercuryPacket::try_from_bytes(buffer)?;
-                self.short_string = Some(packet.short_description());
-                self.details_formatter = PacketFormatter::MercuryPacket(packet);
+                if let Ok(request) = MercuryPacketWithHeader::try_from_packet(&packet) {
+                    self.short_string = Some(request.short_description());
+                    self.details_formatter = PacketFormatter::MercuryPacketWithHeader(request);
+                } else {
+                    self.short_string = Some(packet.short_description());
+                    self.details_formatter = PacketFormatter::MercuryPacket(packet);
+                }
                 Ok(())
             },
             _ => Err(anyhow!("Unhandled packet type")),
@@ -791,7 +796,7 @@ enum PacketFormatter {
     APResponseMessage(keyexchange_old::APResponseMessage),
     ClientResponsePlaintext(keyexchange_old::ClientResponsePlaintext),
     MercuryPacket(MercuryPacket),
-    MercuryRequest(MercuryRequest),
+    MercuryPacketWithHeader(MercuryPacketWithHeader),
 }
 
 impl PacketFormatter {
@@ -829,9 +834,9 @@ impl PacketFormatter {
                 let doc = mercury::format_mercury_packet(mercury_packet, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
-            Self::MercuryRequest(mercury_request) => {
+            Self::MercuryPacketWithHeader(mercury_packet) => {
                 let arena = pretty::Arena::<()>::new();
-                let doc = mercury::format_mercury_request(mercury_request, &arena);
+                let doc = mercury::format_mercury_packet_with_header(mercury_packet, &arena);
                 Paragraph::new(render_doc(doc, area.width as usize))
             },
             _ => Paragraph::new("Unsupported"),
@@ -886,13 +891,13 @@ impl MercuryPacket {
     }
 }
 
-struct MercuryRequest {
+struct MercuryPacketWithHeader {
     packet: MercuryPacket,
     header: mercury_old::Header,
     parts: Box<[(u16, Bytes)]>,
 }
 
-impl MercuryRequest {
+impl MercuryPacketWithHeader {
     fn try_from_packet(packet: &MercuryPacket) -> anyhow::Result<Self> {
         if packet.parts.is_empty() {
             return Err(anyhow!("Missing header in mercury request"));
@@ -931,7 +936,7 @@ fn pb_bytes_str(bytes: &[u8]) -> String {
 
     if let Ok(str) = str::from_utf8(bytes) {
         let str = str.replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r");
-        format!("(bytes) {str}")
+        format!("(bytes-as-str) {str}")
     } else {
         let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
         format!("(bytes) {b64}")
@@ -1200,7 +1205,7 @@ mod mercury {
     use bytes::Bytes;
     use pretty::{DocAllocator, DocBuilder};
 
-    use super::{pb_bytes_str, MercuryPacket, MercuryRequest, INDENT_SIZE};
+    use super::{pb_bytes_str, MercuryPacket, MercuryPacketWithHeader, INDENT_SIZE};
     use crate::proto::mercury_old::Header;
 
     fn format_mercury_packet_fields<'a>(
@@ -1275,8 +1280,8 @@ mod mercury {
         doc
     }
 
-    pub fn format_mercury_request<'a>(
-        mercury_request: &'a MercuryRequest, arena: &'a pretty::Arena<'a>,
+    pub fn format_mercury_packet_with_header<'a>(
+        mercury_request: &'a MercuryPacketWithHeader, arena: &'a pretty::Arena<'a>,
     ) -> DocBuilder<'a, pretty::Arena<'a>> {
         let mut doc = arena.nil();
         doc = format_mercury_packet_fields(&mercury_request.packet, doc, arena);
