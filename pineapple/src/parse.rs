@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, rc::Rc};
 
 use anyhow::{anyhow, Context};
 use clap::ArgMatches;
@@ -12,15 +12,20 @@ use pcap_file::{
     },
     DataLink, PcapError,
 };
+use protobuf::Message;
 use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState},
+    text::{Line, Span, Text},
+    widgets::{Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState},
     Frame,
 };
+use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 
-use crate::pcap::{Interface, InterfaceDirection, PacketDirection};
+use crate::{
+    pcap::{Interface, InterfaceDirection, PacketDirection},
+    proto::keyexchange_old::{APResponseMessage, ClientHello, ClientResponsePlaintext},
+};
 
 pub fn launch_tui(args: &ArgMatches) -> anyhow::Result<()> {
     let file_path = args.get_one::<String>("file").unwrap();
@@ -72,6 +77,70 @@ trait Renderable {
 enum HandleEventResult {
     Ignored,
     Consumed,
+}
+
+struct StatusBar {
+    help_text: Line<'static>,
+    capture_summary: Line<'static>,
+    capture_summary_width: u16,
+    status: String,
+    should_quit: bool,
+}
+
+impl StatusBar {
+    fn new(capture: &CaptureFile) -> Self {
+        let help_text = Line::from(vec![
+            "q".bold(),
+            " to quit | ".into(),
+            "Enter".bold(),
+            " to select | ".into(),
+            "Backspace".bold(),
+            " to deselect | ".into(),
+            "Arrow[Up|Down]".bold(),
+            " to navigate".into(),
+        ])
+        .fg(Color::White)
+        .bg(Color::DarkGray);
+
+        let connection_count = capture.connections.len().to_string();
+        let packet_count =
+            capture.connections.iter().map(|connection| connection.packets.len()).sum::<usize>().to_string();
+        let capture_summary_width = (connection_count.len() + 15 + packet_count.len() + 8) as u16;
+        let capture_summary =
+            Line::from(vec![connection_count.bold(), " connections | ".into(), packet_count.bold(), " packets".into()])
+                .fg(Color::White)
+                .bg(Color::DarkGray);
+
+        Self { help_text, capture_summary, capture_summary_width, status: String::new(), should_quit: false }
+    }
+
+    fn set_status(&mut self, new_status: String) {
+        self.status = new_status;
+    }
+}
+
+impl Renderable for StatusBar {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        use Constraint::{Fill, Length};
+
+        let vertical = Layout::vertical([Length(1), Length(1)]);
+        let [status_area, details_area] = vertical.areas(area);
+        frame.render_widget(Line::from(self.status.as_str()).fg(Color::White).bg(Color::DarkGray), status_area);
+        let horizontal = Layout::horizontal([Fill(1), Length(self.capture_summary_width)]);
+        let [help_text_area, summary_area] = horizontal.areas(details_area);
+        frame.render_widget(&self.help_text, help_text_area);
+        frame.render_widget(&self.capture_summary, summary_area);
+    }
+
+    fn handle_event(&mut self, event: &Event) -> HandleEventResult {
+        if let Event::Key(key_event) = event {
+            if key_event.code == KeyCode::Char('q') {
+                self.should_quit = true;
+                return HandleEventResult::Consumed;
+            }
+        }
+        HandleEventResult::Ignored
+    }
 }
 
 struct CaptureFile {
@@ -147,13 +216,14 @@ impl CaptureFile {
             let Some(connection) = connections.get_mut(&packet.interface_id) else {
                 continue;
             };
+            let data = Rc::new(packet.data.to_vec());
             connection.packets.push(CapturedPacket {
                 direction,
-                data: packet.data.to_vec(),
+                data: data.clone(),
                 packet_type: None,
                 packet_len: None,
                 short_string: None,
-                formatted_string: None,
+                details_formatter: PacketFormatter::Hex(data),
             });
         }
 
@@ -274,6 +344,16 @@ impl CaptureFile {
 impl Renderable for CaptureFile {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if let Some(connection_index) = self.active_connection_index {
+            let vertical = Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Fill(if self.active_packet_index.is_some() {
+                    3
+                } else {
+                    0
+                }),
+            ]);
+            let [packet_list_area, packet_details_area] = vertical.areas(area);
+
             let connection = &mut self.connections[connection_index];
             let packet_count = connection.packets.len();
             let largest_packet_len = connection
@@ -319,7 +399,7 @@ impl Renderable for CaptureFile {
             ])
             .header(header)
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-            frame.render_stateful_widget(table, area, &mut self.packet_state);
+            frame.render_stateful_widget(table, packet_list_area, &mut self.packet_state);
 
             let scrollbar = Scrollbar::default()
                 .orientation(ScrollbarOrientation::VerticalRight)
@@ -327,9 +407,14 @@ impl Renderable for CaptureFile {
                 .end_symbol(None);
             frame.render_stateful_widget(
                 scrollbar,
-                area.inner(Margin { vertical: 1, horizontal: 1 }),
+                packet_list_area.inner(Margin { vertical: 1, horizontal: 1 }),
                 &mut self.packet_scroll_state,
             );
+
+            if let Some(packet_index) = self.active_packet_index {
+                let packet = &connection.packets[packet_index];
+                packet.details_formatter.render(frame, packet_details_area);
+            }
         } else {
             let header = ["Id".bold(), "Direction".bold(), "# Packets".bold(), "Description".bold()]
                 .into_iter()
@@ -419,11 +504,11 @@ struct CapturedConnection {
 
 struct CapturedPacket {
     direction: PacketDirection,
-    data: Vec<u8>,
+    data: Rc<Vec<u8>>,
     packet_type: Option<PacketType>,
     packet_len: Option<u16>,
     short_string: Option<String>,
-    formatted_string: Option<String>,
+    details_formatter: PacketFormatter,
 }
 
 impl CapturedPacket {
@@ -432,15 +517,15 @@ impl CapturedPacket {
             self.packet_type = Some(PacketType::None);
             self.packet_len = Some(0);
             self.short_string = Some("Missing header".to_owned());
-            self.formatted_string = Some("Missing header".to_owned());
+            self.details_formatter = PacketFormatter::string("Missing header");
             return;
         }
 
-        if self.data.len() == 2 && self.data == [0x00, 0x04] {
+        if self.data.len() == 2 && self.data.as_slice() == [0x00, 0x04] {
             self.packet_type = Some(PacketType::SPIRCMagic);
             self.packet_len = Some(2);
             self.short_string = Some("SPIRC Magic - 0x00 0x04".to_owned());
-            self.formatted_string = Some("SPIRC Magic - 0x00 0x04".to_owned());
+            self.details_formatter = PacketFormatter::string("SPIRC Magic - 0x00 0x04");
             return;
         }
 
@@ -448,27 +533,45 @@ impl CapturedPacket {
         if self.data.len() > 4 {
             let len = u32::from_be_bytes(self.data[0..4].try_into().unwrap()) as usize;
             if len == self.data.len() + 2 {
-                self.packet_type = Some(PacketType::ClientHello);
-                self.packet_len = Some(self.data.len() as u16);
-                let hex = hex::encode(&self.data[4..]);
-                self.short_string = Some(hex.clone());
-                self.formatted_string = Some(hex);
-                return;
+                if let Ok(client_hello) = ClientHello::parse_from_bytes(&self.data[4..]) {
+                    self.packet_type = Some(PacketType::ClientHello);
+                    self.packet_len = Some(self.data.len() as u16);
+                    let product = if client_hello.build_info.has_product() {
+                        Some(client_hello.build_info.product())
+                    } else {
+                        None
+                    };
+                    let platform = if client_hello.build_info.has_platform() {
+                        Some(client_hello.build_info.platform())
+                    } else {
+                        None
+                    };
+                    let version = if client_hello.build_info.has_version() {
+                        Some(client_hello.build_info.version())
+                    } else {
+                        None
+                    };
+                    self.short_string =
+                        Some(format!("Product: {product:?} Platform: {platform:?} Version: {version:?}"));
+                    self.details_formatter = PacketFormatter::ClientHello(client_hello);
+                    return;
+                }
             } else if len == self.data.len() {
                 if matches!(self.direction, PacketDirection::Recv) {
-                    self.packet_type = Some(PacketType::APChallenge);
-                    self.packet_len = Some(len as u16);
-                    let hex = hex::encode(&self.data[4..]);
-                    self.short_string = Some(hex.clone());
-                    self.formatted_string = Some(hex);
-                } else {
+                    if let Ok(ap_response) = APResponseMessage::parse_from_bytes(&self.data[4..]) {
+                        self.packet_type = Some(PacketType::APChallenge);
+                        self.packet_len = Some(len as u16);
+                        self.short_string = None;
+                        self.details_formatter = PacketFormatter::APResponseMessage(ap_response);
+                        return;
+                    }
+                } else if let Ok(client_response) = ClientResponsePlaintext::parse_from_bytes(&self.data[4..]) {
                     self.packet_type = Some(PacketType::ClientResponsePlaintext);
                     self.packet_len = Some(len as u16);
-                    let hex = hex::encode(&self.data[4..]);
-                    self.short_string = Some(hex.clone());
-                    self.formatted_string = Some(hex);
+                    self.short_string = None;
+                    self.details_formatter = PacketFormatter::ClientResponsePlaintext(client_response);
+                    return;
                 }
-                return;
             }
         }
 
@@ -478,7 +581,7 @@ impl CapturedPacket {
         if self.data.len() < 3 {
             self.packet_len = Some(0);
             self.short_string = Some("Invalid packet header - Missing length".to_owned());
-            self.formatted_string = Some("Invalid packet header - Missing length".to_owned());
+            self.details_formatter = PacketFormatter::string("Invalid packet header - Missing length");
             return;
         }
         let packet_len = u16::from_be_bytes([self.data[1], self.data[2]]);
@@ -486,14 +589,14 @@ impl CapturedPacket {
 
         if packet_len == 0 {
             self.short_string = Some("Empty packet".to_owned());
-            self.formatted_string = Some("Empty packet".to_owned());
+            self.details_formatter = PacketFormatter::string("Empty packet");
             return;
         }
 
         // TODO: Implement parsing for the rest of the packet types
         let hex = hex::encode(&self.data[3..]);
         self.short_string = Some(hex.clone());
-        self.formatted_string = Some(hex);
+        self.details_formatter = PacketFormatter::Hex(self.data.clone());
     }
 }
 
@@ -586,66 +689,314 @@ impl std::fmt::Display for PacketType {
     }
 }
 
-struct StatusBar {
-    help_text: Line<'static>,
-    capture_summary: Line<'static>,
-    capture_summary_width: u16,
-    status: String,
-    should_quit: bool,
+enum PacketFormatter {
+    String(String),
+    Hex(Rc<Vec<u8>>),
+    ClientHello(ClientHello),
+    APResponseMessage(APResponseMessage),
+    ClientResponsePlaintext(ClientResponsePlaintext),
 }
 
-impl StatusBar {
-    fn new(capture: &CaptureFile) -> Self {
-        let help_text = Line::from(vec![
-            "q".bold(),
-            " to quit | ".into(),
-            "Enter".bold(),
-            " to select | ".into(),
-            "Backspace".bold(),
-            " to deselect | ".into(),
-            "Arrow[Up|Down]".bold(),
-            " to navigate".into(),
-        ])
-        .fg(Color::White)
-        .bg(Color::DarkGray);
-
-        let connection_count = capture.connections.len().to_string();
-        let packet_count =
-            capture.connections.iter().map(|connection| connection.packets.len()).sum::<usize>().to_string();
-        let capture_summary_width = (connection_count.len() + 15 + packet_count.len() + 8) as u16;
-        let capture_summary =
-            Line::from(vec![connection_count.bold(), " connections | ".into(), packet_count.bold(), " packets".into()])
-                .fg(Color::White)
-                .bg(Color::DarkGray);
-
-        Self { help_text, capture_summary, capture_summary_width, status: String::new(), should_quit: false }
+impl PacketFormatter {
+    fn string<S: AsRef<str>>(str: S) -> Self {
+        Self::String(str.as_ref().to_string())
     }
 
-    fn set_status(&mut self, new_status: String) {
-        self.status = new_status;
-    }
-}
-
-impl Renderable for StatusBar {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        use Constraint::{Fill, Length};
-
-        let vertical = Layout::vertical([Length(1), Length(1)]);
-        let [status_area, details_area] = vertical.areas(area);
-        frame.render_widget(Line::from(self.status.as_str()).fg(Color::White).bg(Color::DarkGray), status_area);
-        let horizontal = Layout::horizontal([Fill(1), Length(self.capture_summary_width)]);
-        let [help_text_area, summary_area] = horizontal.areas(details_area);
-        frame.render_widget(&self.help_text, help_text_area);
-        frame.render_widget(&self.capture_summary, summary_area);
-    }
-
-    fn handle_event(&mut self, event: &Event) -> HandleEventResult {
-        if let Event::Key(key_event) = event {
-            if key_event.code == KeyCode::Char('q') {
-                self.should_quit = true;
-                return HandleEventResult::Consumed;
-            }
+    fn render(&self, frame: &mut Frame<'_>, area: Rect) {
+        match self {
+            Self::String(str) => frame.render_widget(Paragraph::new(str.as_str()), area),
+            Self::Hex(bytes) => {
+                let width = area.width as usize / 2;
+                let lines = bytes.as_slice().par_chunks(width).map(hex::encode).map(Line::from).collect::<Vec<_>>();
+                let text = Text::from(lines);
+                frame.render_widget(text, area);
+            },
+            Self::ClientHello(client_hello) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = keyexchange::format_client_hello(client_hello, &arena);
+                let text = {
+                    let mut buffer = Vec::new();
+                    if let Err(render_error) = doc.1.render(area.width as usize, &mut buffer) {
+                        format!("Failed to render: {render_error:?}")
+                    } else {
+                        match String::from_utf8(buffer) {
+                            Ok(text) => text,
+                            Err(utf8_error) => format!("Failed to decode rendered text: {utf8_error}"),
+                        }
+                    }
+                };
+                frame.render_widget(Paragraph::new(text), area);
+            },
+            _ => frame.render_widget(Span::raw("Unsupported"), area),
         }
-        HandleEventResult::Ignored
+    }
+}
+
+fn pb_enum_str<E: protobuf::Enum + std::fmt::Debug>(e: &protobuf::EnumOrUnknown<E>) -> String {
+    e.enum_value().map(|f| format!("{f:?}")).unwrap_or(e.value().to_string())
+}
+
+fn pb_bytes_str(bytes: &[u8]) -> String {
+    use base64::Engine;
+
+    let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
+    format!("(bytes) {b64}")
+}
+
+mod keyexchange {
+    use pretty::{DocAllocator, DocBuilder};
+
+    use super::{pb_bytes_str, pb_enum_str};
+    use crate::proto::keyexchange_old::{
+        BuildInfo, ClientHello, FeatureSet, LoginCryptoDiffieHellmanHello, LoginCryptoHelloUnion, StreamingRules, Trial,
+    };
+
+    const INDENT_SIZE: usize = 2;
+
+    pub fn format_client_hello<'a>(
+        client_hello: &'a ClientHello, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(build_info) = client_hello.build_info.as_ref() {
+            doc = doc
+                .append(arena.text("build_info {"))
+                .append(arena.hardline())
+                .append(format_build_info(build_info, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        for fingerprint in &client_hello.fingerprints_supported {
+            doc = doc
+                .append(arena.text("fingerprints_supported:"))
+                .append(arena.space())
+                .append(pb_enum_str(fingerprint))
+                .append(arena.hardline());
+        }
+
+        for cryptosuite in &client_hello.cryptosuites_supported {
+            doc = doc
+                .append(arena.text("cryptosuites_supported:"))
+                .append(arena.space())
+                .append(pb_enum_str(cryptosuite))
+                .append(arena.hardline());
+        }
+
+        for powscheme in &client_hello.powschemes_supported {
+            doc = doc
+                .append(arena.text("powschemes_supported:"))
+                .append(arena.space())
+                .append(pb_enum_str(powscheme))
+                .append(arena.hardline());
+        }
+
+        if let Some(login_crypto_hello) = client_hello.login_crypto_hello.as_ref() {
+            doc = doc
+                .append(arena.text("login_crypto_hello {"))
+                .append(arena.hardline())
+                .append(format_login_crypto_hello(login_crypto_hello, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if client_hello.has_client_nonce() {
+            doc = doc
+                .append(arena.text("client_nonce:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(client_hello.client_nonce())))
+                .append(arena.hardline());
+        }
+
+        if client_hello.has_padding() {
+            doc = doc
+                .append(arena.text("padding:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(client_hello.padding())))
+                .append(arena.hardline());
+        }
+
+        if let Some(feature_set) = client_hello.feature_set.as_ref() {
+            doc = doc
+                .append(arena.text("feature_set {"))
+                .append(arena.hardline())
+                .append(format_feature_set(feature_set, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_build_info<'a>(
+        build_info: &'a BuildInfo, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if build_info.has_product() {
+            doc = doc.append(arena.text(format!("product: {:?}", build_info.product()))).append(arena.hardline());
+        }
+
+        for product_flag in &build_info.product_flags {
+            let flag =
+                product_flag.enum_value().map(|flag| format!("{flag:?}")).unwrap_or(product_flag.value().to_string());
+            doc = doc.append(arena.text("product_flag: ")).append(flag).append(arena.hardline());
+        }
+
+        if build_info.has_platform() {
+            doc = doc.append(arena.text(format!("platform: {:?}", build_info.platform()))).append(arena.hardline());
+        }
+
+        if build_info.has_version() {
+            doc = doc.append(arena.text(format!("version: {}", build_info.version()))).append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_login_crypto_hello<'a>(
+        login_crypto_hello: &'a LoginCryptoHelloUnion, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if let Some(diffie_hellman) = login_crypto_hello.diffie_hellman.as_ref() {
+            doc = doc
+                .append(arena.text("diffie_hellman {"))
+                .append(arena.hardline())
+                .append(format_login_crypto_diffie_hellman_hello(diffie_hellman, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline())
+        }
+
+        doc
+    }
+
+    fn format_login_crypto_diffie_hellman_hello<'a>(
+        diffie_hellman: &'a LoginCryptoDiffieHellmanHello, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if diffie_hellman.has_gc() {
+            doc = doc
+                .append(arena.text("gc:"))
+                .append(arena.space())
+                .append(arena.text(pb_bytes_str(diffie_hellman.gc())))
+                .append(arena.hardline());
+        }
+
+        if diffie_hellman.has_server_keys_known() {
+            // TODO: This is a bit field, only one key is ever used though
+            doc = doc
+                .append(arena.text("server_keys_known:"))
+                .append(arena.space())
+                .append(arena.text(diffie_hellman.server_keys_known().to_string()))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_feature_set<'a>(
+        feature_set: &'a FeatureSet, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if feature_set.has_autoupdate2() {
+            doc = doc
+                .append("autoupdate2:")
+                .append(arena.space())
+                .append(feature_set.autoupdate2().to_string())
+                .append(arena.hardline());
+        }
+
+        if feature_set.has_current_location() {
+            doc = doc
+                .append("current_location:")
+                .append(arena.space())
+                .append(feature_set.current_location().to_string())
+                .append(arena.hardline());
+        }
+
+        if let Some(streaming_rules) = feature_set.supported_streaming_rules.as_ref() {
+            doc = doc
+                .append("supported_streaming_rules {")
+                .append(arena.hardline())
+                .append(format_streaming_rules(streaming_rules, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        if feature_set.has_unk_4() {
+            doc = doc
+                .append(arena.text("unk_4:"))
+                .append(arena.space())
+                .append(feature_set.unk_4().to_string())
+                .append(arena.hardline());
+        }
+
+        if let Some(trial) = feature_set.trial.as_ref() {
+            doc = doc
+                .append("trial {")
+                .append(arena.hardline())
+                .append(format_trial(trial, arena).indent(INDENT_SIZE))
+                .append(arena.text("}"))
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_streaming_rules<'a>(
+        streaming_rules: &'a StreamingRules, arena: &'a pretty::Arena<'a>,
+    ) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if streaming_rules.has_dmca_radio() {
+            doc = doc
+                .append(arena.text("dmca_radio:"))
+                .append(arena.space())
+                .append(streaming_rules.dmca_radio().to_string())
+                .append(arena.hardline());
+        }
+
+        if streaming_rules.has_unk_2() {
+            doc = doc
+                .append(arena.text("unk_2:"))
+                .append(arena.space())
+                .append(streaming_rules.unk_2().to_string())
+                .append(arena.hardline());
+        }
+
+        if streaming_rules.has_shuffle_mode() {
+            doc = doc
+                .append(arena.text("shuffle_mode:"))
+                .append(arena.space())
+                .append(streaming_rules.shuffle_mode().to_string())
+                .append(arena.hardline());
+        }
+
+        if streaming_rules.has_unk_4() {
+            doc = doc
+                .append(arena.text("unk_4:"))
+                .append(arena.space())
+                .append(streaming_rules.unk_4().to_string())
+                .append(arena.hardline());
+        }
+
+        doc
+    }
+
+    fn format_trial<'a>(trial: &'a Trial, arena: &'a pretty::Arena<'a>) -> DocBuilder<'a, pretty::Arena<'a>> {
+        let mut doc = arena.nil();
+
+        if trial.has_no_autostart() {
+            doc = doc
+                .append(arena.text("no_autostart:"))
+                .append(arena.space())
+                .append(trial.no_autostart().to_string())
+                .append(arena.hardline());
+        }
+
+        doc
     }
 }

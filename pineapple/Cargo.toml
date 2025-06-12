@@ -38,6 +38,9 @@ ratatui = "0.29.0"
 crossterm = "0.29.0"
 count-digits = "0.5.1"
 num_enum = "0.7.3"
+pretty = "0.12.4"
+rayon = "1.10.0"
+base64 = "0.22.1"
 
 [target.'cfg(windows)'.dependencies]
 known-folders = "1.1.0"
