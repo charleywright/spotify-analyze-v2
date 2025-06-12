@@ -1494,6 +1494,7 @@ dependencies = [
  "time",
  "walkdir",
  "winapi",
+ "xml",
 ]
 
 [[package]]
@@ -2800,6 +2801,21 @@ dependencies = [
  "linux-raw-sys 0.4.13",
  "rustix 0.38.34",
 ]
+
+[[package]]
+name = "xml"
+version = "0.8.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ede1c99c55b4b3ad0349018ef0eccbe954ce9c342334410707ee87177fcf2ab4"
+dependencies = [
+ "xml-rs",
+]
+
+[[package]]
+name = "xml-rs"
+version = "0.8.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a62ce76d9b56901b19a74f19431b0d8b3bc7ca4ad685a746dfd78ca8f4fc6bda"
 
 [[package]]
 name = "xz"

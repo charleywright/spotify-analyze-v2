@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, ops::Deref, path::PathBuf, time::Duration};
 
 use anyhow::{anyhow, Context};
 use bytes::{Buf, Bytes};
@@ -25,7 +25,7 @@ use ratatui::{
     Frame,
 };
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime, PrimitiveDateTime};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     pcap::{Interface, InterfaceDirection, PacketDirection},
@@ -657,6 +657,32 @@ impl CapturedPacket {
                 let display = format!("Ping at {formatted_timestamp}");
                 self.short_string = Some(display.clone());
                 self.details_formatter = PacketFormatter::String(display);
+                Ok(())
+            },
+            PacketType::ProductInfo => {
+                use xml::{
+                    reader::ParserConfig,
+                    writer::{EmitterConfig, XmlEvent},
+                };
+
+                let mut element_counter = 0;
+                let reader = ParserConfig::new().trim_whitespace(true).create_reader(buffer.deref());
+                let mut dest = Vec::new();
+                let mut writer = EmitterConfig::new().perform_indent(true).create_writer(&mut dest);
+                for event in reader {
+                    if let Some(event) = event?.as_writer_event() {
+                        if let XmlEvent::StartElement { name, .. } = &event {
+                            if name.local_name != "products" && name.local_name != "product" {
+                                element_counter += 1;
+                            }
+                        }
+                        writer.write(event)?;
+                    }
+                }
+                let formatted_xml = String::from_utf8(dest)?;
+
+                self.short_string = Some(format!("A/B config with {element_counter} elements"));
+                self.details_formatter = PacketFormatter::String(formatted_xml);
                 Ok(())
             },
             PacketType::CountryCode => {
