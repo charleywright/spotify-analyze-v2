@@ -6,6 +6,8 @@ An updated version of [librespot-org/spotify-analyze](https://github.com/libresp
 
 A proxy that performs a Man-In-The-Middle attack on the Spotify apps by faking being a Spotify server. This contains the most up-to-date parsing code and can be used as a reference implementation for SPIRC which is Spotify's custom protocol built upon TCP. More details are available in the [README](./pineapple/)
 
+![Pineapple TUI Parser](/assets/pineapple-parser.jpg)
+
 ## Needle
 
 **NOTE: [Pineapple](#pineapple) contains the latest parsing code, this is preserved as instrumenting can be useful for other reasons**

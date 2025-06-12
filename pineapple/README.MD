@@ -56,6 +56,23 @@ cargo run --release -- wireshark --dir C:\\Users\\Bee\\Documents\\Wireshark\\bin
 cargo run --release -- wireshark --host 192.168.1.10
 ```
 
+### Explore previously captured packets
+
+Pineapple includes a simple TUI program to view connections and packets loaded from a `.pcapng` capture file
+
+```bash
+cargo run --release -- parse path/to/capture.pcapng
+```
+
+There are three main views: connections, packets, and packet details. After parsing the capture you will see all connections in the file, these are individual SPIRC sessions. Move the cursor up and down using the arrow keys then select a connection by pressing `Enter`. Now all packets in that connection are shown. To view more details about a packet again move the cursor to it then press `Enter`. This will show the packet details and a best-effort attempt to parse it. Press `Backspace` at any time to unselect the current packet or connection, or press `q` to quit.
+
+#### Copying
+
+Use `Ctrl + C` to copy the parsed view of a packet or `Alt + C` to copy a packet as hex.
+
+- When viewing packet details, the packet being shown will be copied irrespective of the cursor position
+- When no packet is selected, the packet under the cursor will be copied
+
 ## Theory
 
 ### Bypassing MITM Protection
