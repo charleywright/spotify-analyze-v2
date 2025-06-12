@@ -1,10 +1,11 @@
 use std::{collections::HashMap, ops::Deref, path::PathBuf, time::Duration};
 
 use anyhow::{anyhow, Context};
+use arboard::Clipboard;
 use bytes::{Buf, Bytes};
 use clap::ArgMatches;
 use count_digits::CountDigits;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use num_enum::FromPrimitive;
 use pcap_file::{
     pcapng::{
@@ -103,7 +104,11 @@ impl StatusBar {
             "Backspace".bold(),
             " to deselect | ".into(),
             "Arrow[Up|Down]".bold(),
-            " to navigate".into(),
+            " to navigate | ".into(),
+            "Ctrl + C".bold(),
+            " to copy | ".into(),
+            "Alt + C".bold(),
+            " to copy as hex".into(),
         ])
         .fg(Color::White)
         .bg(Color::DarkGray);
@@ -159,6 +164,8 @@ struct CaptureFile {
     packet_state: TableState,
     packet_scroll_state: ScrollbarState,
     active_packet_index: Option<usize>,
+
+    clipboard: Clipboard,
 }
 
 impl CaptureFile {
@@ -247,6 +254,8 @@ impl CaptureFile {
             packet_state: TableState::new(),
             packet_scroll_state: ScrollbarState::new(0),
             active_packet_index: None,
+
+            clipboard: Clipboard::new().expect("Failed to create clipboard"),
         })
     }
 
@@ -330,6 +339,28 @@ impl CaptureFile {
         } else {
             self.active_connection_index = None;
         }
+    }
+
+    fn copy(&mut self, as_hex: bool) {
+        let Some(active_connection_index) = self.active_connection_index else {
+            return;
+        };
+        let active_connection = &self.connections[active_connection_index];
+        let target_packet = if let Some(active_packet_index) = self.active_packet_index {
+            Some(&active_connection.packets[active_packet_index])
+        } else {
+            // If there are no packets then indexing will panic
+            self.packet_state.selected().and_then(|selected| active_connection.packets.get(selected))
+        };
+        let Some(target_packet) = target_packet else {
+            return;
+        };
+        let value = if as_hex {
+            hex::encode(&target_packet.data)
+        } else {
+            target_packet.details_formatter.render_to_string(usize::MAX)
+        };
+        self.clipboard.set_text(value).expect("Failed to copy to clipboard");
     }
 
     fn get_status(&self) -> String {
@@ -474,11 +505,21 @@ impl Renderable for CaptureFile {
         let Event::Key(key_event) = event else {
             return HandleEventResult::Ignored;
         };
+
         match key_event.code {
             KeyCode::Up => self.previous(),
             KeyCode::Down => self.next(),
             KeyCode::Enter => self.select(),
             KeyCode::Backspace => self.unselect(),
+            KeyCode::Char('c') => {
+                // On Mac we can't listen for cmd...
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.copy(false);
+                }
+                if key_event.modifiers.contains(KeyModifiers::ALT) {
+                    self.copy(true);
+                }
+            },
             _ => return HandleEventResult::Ignored,
         }
         HandleEventResult::Consumed
@@ -911,7 +952,7 @@ impl PacketFormatter {
         Self::String(str.as_ref().to_string())
     }
 
-    fn render(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_to_string(&self, width: usize) -> String {
         fn render_doc<'a>(doc: DocBuilder<'a, pretty::Arena<'a>>, width: usize) -> String {
             let mut buffer = Vec::new();
             if let Err(render_error) = doc.1.render(width, &mut buffer) {
@@ -924,6 +965,48 @@ impl PacketFormatter {
             }
         }
 
+        match self {
+            Self::String(str) => str.clone(),
+            Self::Hex(bytes) => hex::encode(bytes.deref()),
+            Self::ClientHello(client_hello) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = keyexchange::format_client_hello(client_hello, &arena);
+                render_doc(doc, width)
+            },
+            Self::APResponseMessage(ap_response) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = keyexchange::format_ap_response(ap_response, &arena);
+                render_doc(doc, width)
+            },
+            Self::ClientResponsePlaintext(client_response) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = keyexchange::format_client_response_plaintext(client_response, &arena);
+                render_doc(doc, width)
+            },
+            Self::ClientResponseEncrypted(client_response) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = authentication::format_client_response_encrypted(client_response, &arena);
+                render_doc(doc, width)
+            },
+            Self::APWelcome(ap_welcome) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = authentication::format_ap_welcome(ap_welcome, &arena);
+                render_doc(doc, width)
+            },
+            Self::MercuryPacket(mercury_packet) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = mercury::format_mercury_packet(mercury_packet, &arena);
+                render_doc(doc, width)
+            },
+            Self::MercuryPacketWithHeader(mercury_packet) => {
+                let arena = pretty::Arena::<()>::new();
+                let doc = mercury::format_mercury_packet_with_header(mercury_packet, &arena);
+                render_doc(doc, width)
+            },
+        }
+    }
+
+    fn render(&self, frame: &mut Frame<'_>, area: Rect) {
         let paragraph = match self {
             Self::String(str) => Paragraph::new(str.as_str()),
             Self::Hex(bytes) => {
@@ -931,41 +1014,7 @@ impl PacketFormatter {
                 let lines = bytes.par_chunks(width).map(hex::encode).map(Line::from).collect::<Vec<_>>();
                 Paragraph::new(lines)
             },
-            Self::ClientHello(client_hello) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = keyexchange::format_client_hello(client_hello, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
-            Self::APResponseMessage(ap_response) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = keyexchange::format_ap_response(ap_response, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
-            Self::ClientResponsePlaintext(client_response) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = keyexchange::format_client_response_plaintext(client_response, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
-            Self::ClientResponseEncrypted(client_response) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = authentication::format_client_response_encrypted(client_response, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
-            Self::APWelcome(ap_welcome) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = authentication::format_ap_welcome(ap_welcome, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
-            Self::MercuryPacket(mercury_packet) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = mercury::format_mercury_packet(mercury_packet, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
-            Self::MercuryPacketWithHeader(mercury_packet) => {
-                let arena = pretty::Arena::<()>::new();
-                let doc = mercury::format_mercury_packet_with_header(mercury_packet, &arena);
-                Paragraph::new(render_doc(doc, area.width as usize))
-            },
+            _ => Paragraph::new(self.render_to_string(area.width as usize)),
         };
         let block = Block::new().borders(Borders::TOP);
         frame.render_widget(paragraph.block(block), area);
