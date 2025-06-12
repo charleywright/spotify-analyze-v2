@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context};
 use clap::ArgMatches;
 use count_digits::CountDigits;
 use crossterm::event::{self, Event, KeyCode};
+use num_enum::FromPrimitive;
 use pcap_file::{
     pcapng::{
         blocks::{enhanced_packet::EnhancedPacketOption, interface_description::InterfaceDescriptionOption},
@@ -75,9 +76,14 @@ enum HandleEventResult {
 
 struct CaptureFile {
     connections: Vec<CapturedConnection>,
+
     connection_state: TableState,
     connection_scroll_state: ScrollbarState,
     active_connection_index: Option<usize>,
+
+    packet_state: TableState,
+    packet_scroll_state: ScrollbarState,
+    active_packet_index: Option<usize>,
 }
 
 impl CaptureFile {
@@ -144,7 +150,10 @@ impl CaptureFile {
             connection.packets.push(CapturedPacket {
                 direction,
                 data: packet.data.to_vec(),
-                formatted_string: FormattedString::NotAttempted,
+                packet_type: None,
+                packet_len: None,
+                short_string: None,
+                formatted_string: None,
             });
         }
 
@@ -154,14 +163,32 @@ impl CaptureFile {
 
         Ok(Self {
             connections,
+
             connection_state: TableState::new().with_selected(0),
             connection_scroll_state: ScrollbarState::new(connection_count),
             active_connection_index: None,
+
+            packet_state: TableState::new(),
+            packet_scroll_state: ScrollbarState::new(0),
+            active_packet_index: None,
         })
     }
 
     fn previous(&mut self) {
-        if self.active_connection_index.is_none() {
+        if let Some(connection_index) = self.active_connection_index {
+            let i = match self.packet_state.selected() {
+                Some(i) => {
+                    if i == 0 {
+                        self.connections[connection_index].packets.len().saturating_sub(1)
+                    } else {
+                        i - 1
+                    }
+                },
+                None => 0,
+            };
+            self.packet_state.select(Some(i));
+            self.packet_scroll_state = self.packet_scroll_state.position(i);
+        } else {
             let i = match self.connection_state.selected() {
                 Some(i) => {
                     if i == 0 {
@@ -174,13 +201,25 @@ impl CaptureFile {
             };
             self.connection_state.select(Some(i));
             self.connection_scroll_state = self.connection_scroll_state.position(i);
-        } else {
-            todo!()
         }
     }
 
     fn next(&mut self) {
-        if self.active_connection_index.is_none() {
+        if let Some(connection_index) = self.active_connection_index {
+            let connection = &self.connections[connection_index];
+            let i = match self.packet_state.selected() {
+                Some(i) => {
+                    if i >= connection.packets.len() - 1 {
+                        0
+                    } else {
+                        i + 1
+                    }
+                },
+                None => 0,
+            };
+            self.packet_state.select(Some(i));
+            self.packet_scroll_state = self.packet_scroll_state.position(i);
+        } else {
             let i = match self.connection_state.selected() {
                 Some(i) => {
                     if i >= self.connections.len() - 1 {
@@ -193,24 +232,26 @@ impl CaptureFile {
             };
             self.connection_state.select(Some(i));
             self.connection_scroll_state = self.connection_scroll_state.position(i);
-        } else {
-            todo!()
         }
     }
 
     fn select(&mut self) {
-        if self.active_connection_index.is_none() {
-            if let Some(idx) = self.connection_state.selected() {
-                self.active_connection_index = Some(idx);
+        if self.active_connection_index.is_some() {
+            if let Some(idx) = self.packet_state.selected() {
+                self.active_packet_index = Some(idx);
             }
-        } else {
-            todo!()
+        } else if let Some(idx) = self.connection_state.selected() {
+            self.active_connection_index = Some(idx);
+            let connection = &self.connections[idx];
+            self.packet_state.select(Some(0));
+            self.packet_scroll_state = self.packet_scroll_state.content_length(connection.packets.len()).position(0);
         }
     }
 
     fn unselect(&mut self) {
-        // TODO: Check if packet is selected
-        if self.active_connection_index.is_some() {
+        if self.active_packet_index.is_some() {
+            self.active_packet_index = None;
+        } else {
             self.active_connection_index = None;
         }
     }
@@ -232,7 +273,64 @@ impl CaptureFile {
 
 impl Renderable for CaptureFile {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        if self.active_connection_index.is_none() {
+        if let Some(connection_index) = self.active_connection_index {
+            let connection = &mut self.connections[connection_index];
+            let packet_count = connection.packets.len();
+            let largest_packet_len = connection
+                .packets
+                .iter_mut()
+                .map(|p| {
+                    p.try_parse();
+                    p.packet_len.unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0);
+            let header = ["Id".bold(), "Direction".bold(), "Type".bold(), "Length".bold(), "Details".bold()]
+                .into_iter()
+                .map(Cell::from)
+                .collect::<Row>()
+                .height(1);
+            let rows = connection
+                .packets
+                .iter_mut()
+                .enumerate()
+                .map(|(i, packet)| {
+                    if packet.packet_type.is_none() {
+                        packet.try_parse();
+                    }
+                    [
+                        i.to_string().into(),
+                        packet.direction.as_span(),
+                        packet.packet_type.as_ref().unwrap_or(&PacketType::None).to_string().into(),
+                        packet.packet_len.as_ref().map(u16::to_string).unwrap_or("Unknown".to_owned()).into(),
+                        packet.short_string.as_deref().unwrap_or("Missing details").into(),
+                    ]
+                    .into_iter()
+                    .map(Cell::from)
+                    .collect::<Row>()
+                })
+                .collect::<Vec<_>>();
+            let table = Table::new(rows, [
+                Constraint::Length(std::cmp::max(packet_count.count_digits() as u16 + 1, 5)),
+                Constraint::Length(10),
+                Constraint::Length(24),
+                Constraint::Length(std::cmp::max(largest_packet_len.count_digits() as u16 + 1, 7)),
+                Constraint::Fill(1),
+            ])
+            .header(header)
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            frame.render_stateful_widget(table, area, &mut self.packet_state);
+
+            let scrollbar = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None);
+            frame.render_stateful_widget(
+                scrollbar,
+                area.inner(Margin { vertical: 1, horizontal: 1 }),
+                &mut self.packet_scroll_state,
+            );
+        } else {
             let header = ["Id".bold(), "Direction".bold(), "# Packets".bold(), "Description".bold()]
                 .into_iter()
                 .map(Cell::from)
@@ -322,13 +420,170 @@ struct CapturedConnection {
 struct CapturedPacket {
     direction: PacketDirection,
     data: Vec<u8>,
-    formatted_string: FormattedString,
+    packet_type: Option<PacketType>,
+    packet_len: Option<u16>,
+    short_string: Option<String>,
+    formatted_string: Option<String>,
 }
 
-enum FormattedString {
-    NotAttempted,
-    Success(String),
-    Failed(String),
+impl CapturedPacket {
+    fn try_parse(&mut self) {
+        if self.data.is_empty() {
+            self.packet_type = Some(PacketType::None);
+            self.packet_len = Some(0);
+            self.short_string = Some("Missing header".to_owned());
+            self.formatted_string = Some("Missing header".to_owned());
+            return;
+        }
+
+        if self.data.len() == 2 && self.data == [0x00, 0x04] {
+            self.packet_type = Some(PacketType::SPIRCMagic);
+            self.packet_len = Some(2);
+            self.short_string = Some("SPIRC Magic - 0x00 0x04".to_owned());
+            self.formatted_string = Some("SPIRC Magic - 0x00 0x04".to_owned());
+            return;
+        }
+
+        // Check if its unencrypted, they use a 4 byte header
+        if self.data.len() > 4 {
+            let len = u32::from_be_bytes(self.data[0..4].try_into().unwrap()) as usize;
+            if len == self.data.len() + 2 {
+                self.packet_type = Some(PacketType::ClientHello);
+                self.packet_len = Some(self.data.len() as u16);
+                let hex = hex::encode(&self.data[4..]);
+                self.short_string = Some(hex.clone());
+                self.formatted_string = Some(hex);
+                return;
+            } else if len == self.data.len() {
+                if matches!(self.direction, PacketDirection::Recv) {
+                    self.packet_type = Some(PacketType::APChallenge);
+                    self.packet_len = Some(len as u16);
+                    let hex = hex::encode(&self.data[4..]);
+                    self.short_string = Some(hex.clone());
+                    self.formatted_string = Some(hex);
+                } else {
+                    self.packet_type = Some(PacketType::ClientResponsePlaintext);
+                    self.packet_len = Some(len as u16);
+                    let hex = hex::encode(&self.data[4..]);
+                    self.short_string = Some(hex.clone());
+                    self.formatted_string = Some(hex);
+                }
+                return;
+            }
+        }
+
+        let packet_type = PacketType::from_primitive(self.data[0]);
+        self.packet_type = Some(packet_type.clone());
+
+        if self.data.len() < 3 {
+            self.packet_len = Some(0);
+            self.short_string = Some("Invalid packet header - Missing length".to_owned());
+            self.formatted_string = Some("Invalid packet header - Missing length".to_owned());
+            return;
+        }
+        let packet_len = u16::from_be_bytes([self.data[1], self.data[2]]);
+        self.packet_len = Some(packet_len);
+
+        if packet_len == 0 {
+            self.short_string = Some("Empty packet".to_owned());
+            self.formatted_string = Some("Empty packet".to_owned());
+            return;
+        }
+
+        // TODO: Implement parsing for the rest of the packet types
+        let hex = hex::encode(&self.data[3..]);
+        self.short_string = Some(hex.clone());
+        self.formatted_string = Some(hex);
+    }
+}
+
+impl PacketDirection {
+    fn as_span(&self) -> Span {
+        match self {
+            Self::Recv => Span::from("Recv").light_red(),
+            Self::Send => Span::from("Send").light_green(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, FromPrimitive)]
+#[repr(u8)]
+enum PacketType {
+    None = 0x00,
+    SecretBlock = 0x02,
+    Ping = 0x04,
+    StreamChunk = 0x08,
+    StreamChunkRes = 0x09,
+    ChannelError = 0x0a,
+    ChannelAbort = 0x0b,
+    RequestKey = 0x0c,
+    AesKey = 0x0d,
+    AesKeyError = 0x0e,
+    Image = 0x19,
+    CountryCode = 0x1b,
+    Pong = 0x49,
+    PongAck = 0x4a,
+    Pause = 0x4b,
+    ProductInfo = 0x50,
+    LegacyWelcome = 0x69,
+    LicenseVersion = 0x76,
+    Login = 0xab,
+    APWelcome = 0xac,
+    AuthFailure = 0xad,
+    MercuryReq = 0xb2,
+    MercurySub = 0xb3,
+    MercuryUnsub = 0xb4,
+    MercuryEvent = 0xb5,
+    TrackEndedTime = 0x82,
+    PreferredLocale = 0x74,
+
+    // These aren't real, used for displaying
+    SPIRCMagic = 0xf0,
+    ClientHello = 0xf1,
+    APChallenge = 0xf2,
+    ClientResponsePlaintext = 0xf3,
+
+    #[num_enum(catch_all)]
+    Unknown(u8),
+}
+
+impl std::fmt::Display for PacketType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::SecretBlock => write!(f, "SecretBlock"),
+            Self::Ping => write!(f, "Ping"),
+            Self::StreamChunk => write!(f, "StreamChunk"),
+            Self::StreamChunkRes => write!(f, "StreamChunkResponse"),
+            Self::ChannelError => write!(f, "ChannelError"),
+            Self::ChannelAbort => write!(f, "ChannelAbort"),
+            Self::RequestKey => write!(f, "RequestKey"),
+            Self::AesKey => write!(f, "AesKey"),
+            Self::AesKeyError => write!(f, "AesKeyError"),
+            Self::Image => write!(f, "Image"),
+            Self::CountryCode => write!(f, "CountryCode"),
+            Self::Pong => write!(f, "Pong"),
+            Self::PongAck => write!(f, "PongAck"),
+            Self::Pause => write!(f, "Pause"),
+            Self::ProductInfo => write!(f, "ProductInfo"),
+            Self::LegacyWelcome => write!(f, "LegacyWelcome"),
+            Self::LicenseVersion => write!(f, "LicenseVersion"),
+            Self::Login => write!(f, "Login"),
+            Self::APWelcome => write!(f, "APWelcome"),
+            Self::AuthFailure => write!(f, "AuthFailure"),
+            Self::MercuryReq => write!(f, "MercuryReq"),
+            Self::MercurySub => write!(f, "MercurySub"),
+            Self::MercuryUnsub => write!(f, "MercuryUnsub"),
+            Self::MercuryEvent => write!(f, "MercuryEvent"),
+            Self::TrackEndedTime => write!(f, "TrackEndedTime"),
+            Self::PreferredLocale => write!(f, "PreferredLocale"),
+            Self::SPIRCMagic => write!(f, "SPIRC Magic"),
+            Self::ClientHello => write!(f, "ClientHello"),
+            Self::APChallenge => write!(f, "APChallenge"),
+            Self::ClientResponsePlaintext => write!(f, "ClientResponsePlaintext"),
+            Self::Unknown(value) => write!(f, "Unknown({value:#04x})"),
+        }
+    }
 }
 
 struct StatusBar {
