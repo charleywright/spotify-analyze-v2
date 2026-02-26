@@ -90,7 +90,7 @@ function replaceServerKey(locations: MemoryScanMatch[]) {
   }
 }
 
-function replaceServerKeyWin32(module: Module) {
+function replaceServerKeyWin32(module: Module): boolean {
   const file = new File(module.path, "rb");
 
   const header_buffer = file.readBytes(DosHeader.SIZE);
@@ -100,7 +100,7 @@ function replaceServerKeyWin32(module: Module) {
     console.error(
       `Read invalid DOS header from ${module.path}:\n${hexdump(header_buffer)}`
     );
-    return;
+    return false;
   }
 
   file.seek(header.pe_header_offset);
@@ -113,7 +113,7 @@ function replaceServerKeyWin32(module: Module) {
         pe_header_buffer
       )}`
     );
-    return;
+    return false;
   }
 
   const optional_header_buffer = file.readBytes(pe_header.optional_header_size);
@@ -125,7 +125,7 @@ function replaceServerKeyWin32(module: Module) {
         optional_header_buffer
       )}`
     );
-    return;
+    return false;
   }
 
   let key_locations: MemoryScanMatch[] = [];
@@ -157,6 +157,7 @@ function replaceServerKeyWin32(module: Module) {
     key_locations = Memory.scanSync(module.base, module.size, AP_SERVER_KEY);
   }
   replaceServerKey(key_locations);
+  return key_locations.length > 0;
 }
 
 function replaceServerKeyLinux(module: Module) {
@@ -355,15 +356,30 @@ function stopAllPlatformChecks() {
   clearInterval(android_check);
 }
 
+var checked_windows_exe = false;
 const windows_check = setInterval(() => {
-  const mod = Process.findModuleByName("Spotify.exe");
-  if (mod !== null && Process.platform === "windows") {
+if (checked_windows_exe) {
+  const mod = Process.findModuleByName("Spotify.dll");
+  if (mod == null || Process.platform !== "windows") return;
+    console.log(
+      `\rFound windows desktop library loaded at ${mod.base} from ${mod.path}`
+    );
     stopAllPlatformChecks();
+replaceServerKeyWin32(mod);
+    console.log(`[WINDOWS] Startup took ${Date.now() - SCRIPT_START}ms`);
+  } else {
+    const mod = Process.findModuleByName("Spotify.exe");
+    if (mod == null || Process.platform !== "windows") return;
     console.log(
       `\rFound windows desktop binary loaded at ${mod.base} from ${mod.path}`
     );
-    replaceServerKeyWin32(mod);
+if (    replaceServerKeyWin32(mod)) {
+      stopAllPlatformChecks();
     console.log(`[WINDOWS] Startup took ${Date.now() - SCRIPT_START}ms`);
+} else {
+      console.log(`\rChecked windows EXE, failed to find key. Checking DLL...`);
+      checked_windows_exe = true;
+    }
   }
 }, PLATFORM_CHECK_INTERVAL);
 
