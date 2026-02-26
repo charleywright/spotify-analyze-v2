@@ -358,14 +358,14 @@ function stopAllPlatformChecks() {
 
 var checked_windows_exe = false;
 const windows_check = setInterval(() => {
-if (checked_windows_exe) {
-  const mod = Process.findModuleByName("Spotify.dll");
-  if (mod == null || Process.platform !== "windows") return;
+  if (checked_windows_exe) {
+    const mod = Process.findModuleByName("Spotify.dll");
+    if (mod == null || Process.platform !== "windows") return;
     console.log(
       `\rFound windows desktop library loaded at ${mod.base} from ${mod.path}`
     );
     stopAllPlatformChecks();
-replaceServerKeyWin32(mod);
+    replaceServerKeyWin32(mod);
     console.log(`[WINDOWS] Startup took ${Date.now() - SCRIPT_START}ms`);
   } else {
     const mod = Process.findModuleByName("Spotify.exe");
@@ -373,10 +373,10 @@ replaceServerKeyWin32(mod);
     console.log(
       `\rFound windows desktop binary loaded at ${mod.base} from ${mod.path}`
     );
-if (    replaceServerKeyWin32(mod)) {
+    if (replaceServerKeyWin32(mod)) {
       stopAllPlatformChecks();
-    console.log(`[WINDOWS] Startup took ${Date.now() - SCRIPT_START}ms`);
-} else {
+      console.log(`[WINDOWS] Startup took ${Date.now() - SCRIPT_START}ms`);
+    } else {
       console.log(`\rChecked windows EXE, failed to find key. Checking DLL...`);
       checked_windows_exe = true;
     }
@@ -417,15 +417,40 @@ const darwin_check = setInterval(() => {
   }
 }, PLATFORM_CHECK_INTERVAL);
 
-const getaddrinfoCheck = setInterval(() => {
+function findGetAddrInfo(): NativePointer | null {
+  // Look for the module that defines getaddrinfo, we don't want a PLT or IAT entry
+
   const libc = Process.findModuleByName("libc.so");
-  if (libc === null) return;
-  console.log(
-    `[GETADDRINFO] Found libc at ${libc.base} loaded from ${libc.path}`
-  );
-  const getaddrinfo = libc.findExportByName("getaddrinfo");
-  if (getaddrinfo === null) {
-    console.error("[GETADDRINFO] Found libc but failed to find getaddrinfo");
+  if (libc !== null) {
+    console.log(
+      `[GETADDRINFO] Found libc at ${libc.base} loaded from ${libc.path}`
+    );
+    const getaddrinfo = libc.findExportByName("getaddrinfo");
+    if (getaddrinfo === null) {
+      console.error("[GETADDRINFO] Found libc but failed to find getaddrinfo");
+      return null;
+    }
+    return getaddrinfo;
+  }
+  
+  const ws2_32 = Process.findModuleByName("WS2_32");
+  if (ws2_32 !== null) {
+    console.log(`[GETADDRINFO] Found WS2_32 at ${ws2_32.base} loaded from ${ws2_32.path}`);
+    const getaddrinfo = ws2_32.findExportByName("getaddrinfo");
+    if (getaddrinfo === null) {
+      console.error("[GETADDRINFO] Found WS2_32 but failed to find getaddrinfo");
+      return null;
+    }
+    return getaddrinfo;
+  }
+
+  return null;
+}
+
+const getaddrinfoCheck = setInterval(() => {
+  const getaddrinfo = findGetAddrInfo();
+  if (getaddrinfo == null) {
+    console.warn("[GETADDRINFO] Failed to find getaddrinfo");
     return;
   }
   console.log(
