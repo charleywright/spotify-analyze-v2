@@ -1,5 +1,3 @@
-#![feature(if_let_guard)]
-
 use std::{
     net::{SocketAddr, SocketAddrV4},
     path::PathBuf,

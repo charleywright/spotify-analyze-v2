@@ -536,7 +536,7 @@ impl ConnectionDirection {
         }
     }
 
-    fn as_span(&self) -> Span {
+    fn as_span(&self) -> Span<'_> {
         match self {
             Self::Downstream => Span::from("Downstream").light_red(),
             Self::Upstream => Span::from("Upstream").light_green(),
@@ -847,7 +847,7 @@ impl CapturedPacket {
 }
 
 impl PacketDirection {
-    fn as_span(&self) -> Span {
+    fn as_span(&self) -> Span<'_> {
         match self {
             Self::Recv => Span::from("Recv").light_red(),
             Self::Send => Span::from("Send").light_green(),

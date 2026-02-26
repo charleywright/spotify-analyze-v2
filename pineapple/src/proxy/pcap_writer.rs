@@ -33,7 +33,7 @@ pub struct PcapWriter {
 }
 
 impl PcapWriter {
-    fn socket_addr_to_pcap(addr: &SocketAddr) -> InterfaceDescriptionOption {
+    fn socket_addr_to_pcap(addr: &SocketAddr) -> InterfaceDescriptionOption<'_> {
         match addr {
             SocketAddr::V4(addr) => {
                 let ip = addr.ip().octets();
@@ -301,6 +301,7 @@ impl WiresharkWriter {
                                 return Err(err.into());
                             },
                         },
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
                         Err(err) => {
                             info!("FIFO: Got error while accepting fifo {err:?}");
                             return Err(err.into());
