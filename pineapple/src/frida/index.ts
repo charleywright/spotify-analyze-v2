@@ -40,7 +40,6 @@ import {
 } from "./macho.js";
 
 const SCRIPT_START = Date.now();
-const AP_PORTS = [80, 443, 4070]; // The app will try these without modification
 const AP_SERVER_KEY =
   "ac e0 46 0b ff c2 30 af f4 6b fe c3 bf bf 86 3d a1 91 c6 cc 33 6c 93 a1 4f b3 b0 16 12 ac ac 6a f1 80 e7 f6 14 d9 42 9d be 2e 34 66 43 e3 62 d2 32 7a 1a 0d 92 3b ae dd 14 02 b1 81 55 05 61 04 d5 2c 96 a4 4c 1e cc 02 4a d4 b2 0c 00 1f 17 ed c2 2f c4 35 21 c8 f0 cb ae d2 ad d7 2b 0f 9d b3 c5 32 1a 2a fe 59 f3 5a 0d ac 68 f1 fa 62 1e fb 2c 8d 0c b7 39 2d 92 47 e3 d7 35 1a 6d bd 24 c2 ae 25 5b 88 ff ab 73 29 8a 0b cc cd 0c 58 67 31 89 e8 bd 34 80 78 4a 5f c9 6b 89 9d 95 6b fc 86 d7 4f 33 a6 78 17 96 c9 c3 2d 0d 32 a5 ab cd 05 27 e2 f7 10 a3 96 13 c4 2f 99 c0 27 bf ed 04 9c 3c 27 58 04 b6 b2 19 f9 c1 2f 02 e9 48 63 ec a1 b6 42 a0 9d 48 25 f8 b3 9d d0 e8 6a f9 48 4d a1 c2 ba 86 30 42 ea 9d b3 08 6c 19 0e 48 b3 9d 66 eb 00 06 a2 5a ee a1 1b 13 87 3c d7 19 e6 55 bd";
 const AP_SERVER_KEY_LEN = 256;
@@ -138,8 +137,7 @@ function replaceServerKeyWin32(module: Module): boolean {
       // PE uses "RVA" values which don't include the image base, no need to calculate relocations
       const section_address = module.base.add(section_header.virtual_addr);
       console.log(
-        `Found .rdata at {${section_address} ${
-          module.name
+        `Found .rdata at {${section_address} ${module.name
         }+0x${section_header.virtual_addr.toString(16)}}`
       );
       key_locations = Memory.scanSync(
@@ -294,7 +292,7 @@ function replaceDarwinServerKey(module: Module) {
     const load_commands_buffer = file.readBytes(header.load_commands_size);
     let relocations: RelocationEntry[] = [];
     let const_section = null;
-    for (let offset = 0; offset < load_commands_buffer.byteLength; ) {
+    for (let offset = 0; offset < load_commands_buffer.byteLength;) {
       const cmd = new MachOLoadCommand(
         load_commands_buffer.unwrap().add(offset)
       );
@@ -432,7 +430,7 @@ function findGetAddrInfo(): NativePointer | null {
     }
     return getaddrinfo;
   }
-  
+
   const ws2_32 = Process.findModuleByName("WS2_32");
   if (ws2_32 !== null) {
     console.log(`[GETADDRINFO] Found WS2_32 at ${ws2_32.base} loaded from ${ws2_32.path}`);
@@ -457,6 +455,7 @@ const getaddrinfoCheck = setInterval(() => {
     `[GETADDRINFO] Found getaddrinfo at ${DebugSymbol.fromAddress(getaddrinfo)}`
   );
   clearInterval(getaddrinfoCheck);
+
   Interceptor.attach(getaddrinfo, {
     onEnter: function (args) {
       const node = args[0].readCString() || "";
@@ -477,35 +476,33 @@ const getaddrinfoCheck = setInterval(() => {
       }
     },
   });
-  if (!AP_PORTS.includes(TARGET_PORT)) {
-    Interceptor.attach(Module.getExportByName(null, "connect"), {
-      onEnter: function (args) {
-        const addr = args[1];
-        const sa_family = addr.add(0).readU16();
-        switch (sa_family) {
-          /* AF_INET */
-          case 0x02: {
-            const sin_port = (addr.add(2).readU8() << 8) | addr.add(3).readU8();
-            const ip = [
-              addr.add(4 + 0).readU8(),
-              addr.add(4 + 1).readU8(),
-              addr.add(4 + 2).readU8(),
-              addr.add(4 + 3).readU8(),
-            ].join(".");
-            if (ip === TARGET_IP) {
-              if (sin_port != TARGET_PORT) {
-                addr.add(2).writeU8((TARGET_PORT >> 8) & 0xff);
-                addr.add(3).writeU8((TARGET_PORT >> 0) & 0xff);
-                console.log(
-                  `connect(${ip}:${sin_port}) -> connect(${ip}:${TARGET_PORT})`
-                );
-              } else {
-                console.log(`connect(${ip}:${sin_port})`);
-              }
+  Interceptor.attach(Module.getGlobalExportByName("connect"), {
+    onEnter: function (args) {
+      const addr = args[1];
+      const sa_family = addr.add(0).readU16();
+      switch (sa_family) {
+        /* AF_INET */
+        case 0x02: {
+          const sin_port = (addr.add(2).readU8() << 8) | addr.add(3).readU8();
+          const ip = [
+            addr.add(4 + 0).readU8(),
+            addr.add(4 + 1).readU8(),
+            addr.add(4 + 2).readU8(),
+            addr.add(4 + 3).readU8(),
+          ].join(".");
+          if (ip === TARGET_IP) {
+            if (sin_port != TARGET_PORT) {
+              addr.add(2).writeU8((TARGET_PORT >> 8) & 0xff);
+              addr.add(3).writeU8((TARGET_PORT >> 0) & 0xff);
+              console.log(
+                `connect(${ip}:${sin_port}) -> connect(${ip}:${TARGET_PORT})`
+              );
+            } else {
+              console.log(`connect(${ip}:${sin_port})`);
             }
           }
         }
-      },
-    });
-  }
+      }
+    },
+  });
 }, PLATFORM_CHECK_INTERVAL);

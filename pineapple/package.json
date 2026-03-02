@@ -7,9 +7,9 @@
     "watch": "frida-compile src/frida/index.ts -o _redirect.js -w -c"
   },
   "devDependencies": {
-    "@types/frida-gum": "^18.5.1",
-    "@types/node": "^18.19.3",
-    "frida-compile": "^16.4.1"
+    "@types/frida-gum": "^19.0.0",
+    "@types/node": "^18.19.111",
+    "frida-compile": "^19.0.4"
   },
   "dependencies": {
     "typescript": "^5.4.5"
